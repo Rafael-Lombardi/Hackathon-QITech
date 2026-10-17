@@ -7,7 +7,7 @@
     "amount": {"type": "integer", "exclusiveMinimum": 0},
     "transaction_date": {"type": "string", "format": "date-time"},
     "source_account": {"$ref": "#/$defs/account"},
-    "destination_account": {"$ref": "#/$defs/account"},
+    "destination_account": {"$ref": "#/$defs/destination_account"},
     "source": {
       "type": "object",
       "additionalProperties": false,
@@ -25,7 +25,12 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["document_number"],
-      "properties": {"document_number": {"type": "string", "minLength": 11, "maxLength": 18}}
+      "properties": {
+        "document_number": {
+          "type": "string",
+          "pattern": "^(\\d{11}|\\d{3}\\.\\d{3}\\.\\d{3}-\\d{2}|\\d{14}|\\d{2}\\.\\d{3}\\.\\d{3}/\\d{4}-\\d{2})$"
+        }
+      }
     },
     "account": {
       "type": "object",
@@ -35,8 +40,18 @@
         "branch": {"type": "string", "minLength": 1, "maxLength": 20},
         "account_number": {"type": "string", "minLength": 1, "maxLength": 30},
         "opening_date": {"type": "string", "format": "date-time"},
+        "participant": {"type": "string", "pattern": "^\\d{8}$"},
         "owner": {"$ref": "#/$defs/owner"}
       }
+    },
+    "destination_account": {
+      "allOf": [
+        {"$ref": "#/$defs/account"},
+        {
+          "required": ["participant"],
+          "properties": {"participant": {"type": "string", "pattern": "^\\d{8}$"}}
+        }
+      ]
     },
     "geolocation": {
       "type": "object",
