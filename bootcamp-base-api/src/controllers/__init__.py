@@ -1,1 +1,1 @@
-from controllers.sample_entity_controller import SampleEntityController
+"""Casos de uso Pix; controllers coordenam regra, persistência e commit."""

@@ -1,1 +1,1 @@
-from dtos.sample_entity_dto import SampleEntityDTO
+"""Formatos de resposta; DTO não consulta banco nem decide risco."""

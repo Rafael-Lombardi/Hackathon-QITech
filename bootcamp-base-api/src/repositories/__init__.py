@@ -1,1 +1,1 @@
-from repositories.sample_entity_repository import SampleEntityRepository
+"""Queries de persistência; regras de fraude ficam fora daqui."""

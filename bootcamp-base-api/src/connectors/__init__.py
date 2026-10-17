@@ -1,1 +1,1 @@
-from connectors.bankslip_connector import BankSlipConnector
+"""Integrações HTTP externas; não adicionar cliente solto em controllers."""

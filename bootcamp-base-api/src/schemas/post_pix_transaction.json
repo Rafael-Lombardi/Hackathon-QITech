@@ -1,0 +1,4 @@
+{
+  "$comment": "Challenge input contract. Replace with full JSON Schema before wiring route.",
+  "type": "object"
+}

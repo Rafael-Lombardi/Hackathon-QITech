@@ -1,70 +1,11 @@
-CREATE TABLE sample_entity_status(
-    id		                        SERIAL PRIMARY KEY,
-    enumerator                      VARCHAR(50) NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(enumerator)
-);
-
-INSERT INTO sample_entity_status (enumerator) VALUES
-('created'),
-('pending'),
-('success'),
-('failed');
-
-CREATE TABLE sample_entity(
-    id                              SERIAL PRIMARY KEY,
-    sample_entity_key               CHAR(36) NOT NULL,
-    status_id                       INTEGER NOT NULL REFERENCES sample_entity_status(id),
-    sample_entity_data              JSONB NOT NULL,
-    name                            VARCHAR(255) NOT NULL,
-    email                           VARCHAR(255) NOT NULL,
-    document_number                 CHAR(14) NOT NULL,
-    birthdate                       DATE NOT NULL,
-    counter                         INTEGER NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(sample_entity_key),
-    UNIQUE(document_number),
-    UNIQUE(email)
-);
-
-CREATE TABLE sample_entity_status_event(
-    id                              SERIAL PRIMARY KEY,
-    sample_entity_id                INTEGER NOT NULL REFERENCES sample_entity(id),
-    status_id                       INTEGER NOT NULL REFERENCES sample_entity_status(id),
-    event_datetime                  TIMESTAMP NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW())
-);
-
--- Daqui para baixo é o antifraude Pix. As tabelas sample_entity* acima
--- ficam até a entidade de exemplo ser trocada: o código e os testes dela
--- ainda dependem delas.
---
--- O modelo, em cinco tabelas:
---   pix_transaction_status       os três veredictos do contrato (enum).
---   customer                     o owner do payload: um por CPF ou CNPJ.
---   account                      uma conta de um customer, em qualquer banco.
---   pix_transaction              uma linha por Pix: payload + decisão, com FK
---                                pra conta de origem e de destino.
---   pix_transaction_rule_result  uma linha por regra por Pix: o metadata da
---                                resposta.
--- Os índices são um por eixo de histórico (conta de origem, conta de
--- destino, aparelho, IP), todos terminando em transaction_date, mais um
--- em account(customer_id) pra ir das contas ao documento.
-
--- As três decisões do contrato, e só elas. O Pix já nasce decidido (o
--- controller roda as regras antes do INSERT), então não existe pendente
--- aqui: o que chega sem decisão é erro, não estado.
 CREATE TABLE pix_transaction_status(
-    id                              SERIAL PRIMARY KEY,
-    enumerator                      VARCHAR(50) NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(enumerator)
+    id SERIAL PRIMARY KEY,
+    enumerator VARCHAR(50) NOT NULL UNIQUE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
 INSERT INTO pix_transaction_status (enumerator) VALUES
-('approved'),
-('rejected'),
-('two_factor_required');
+('approved'), ('rejected'), ('two_factor_required');
 
 -- Quem paga ou recebe, um por documento. Separado de account porque um
 -- documento tem contas em bancos diferentes: o laranja com três contas em
@@ -227,8 +168,6 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 -- contas).
 CREATE INDEX pix_transaction_device_id_idx
     ON pix_transaction (device_id, transaction_date);
-
--- IP: a mesma pergunta do aparelho, para o endereço.
 CREATE INDEX pix_transaction_ip_idx
     ON pix_transaction (ip, transaction_date);
 
@@ -250,17 +189,13 @@ CREATE INDEX pix_transaction_ip_idx
 -- uma vez por análise e, de quebra, é o índice que o GET usa pra montar
 -- a resposta.
 CREATE TABLE pix_transaction_rule_result(
-    id                              BIGSERIAL PRIMARY KEY,
-    pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
-    status_id                       INTEGER NOT NULL REFERENCES pix_transaction_status(id),
-    rule_result_data                JSONB NOT NULL,
-    rule_name                       VARCHAR(50) NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(pix_transaction_id, rule_name),
-    CHECK(rule_name <> ''),
-    CHECK(jsonb_typeof(rule_result_data) = 'object')
+    id BIGSERIAL PRIMARY KEY,
+    pix_transaction_id BIGINT NOT NULL REFERENCES pix_transaction(id),
+    status_id INTEGER NOT NULL REFERENCES pix_transaction_status(id),
+    rule_result_data JSONB NOT NULL,
+    rule_name VARCHAR(50) NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    UNIQUE (pix_transaction_id, rule_name),
+    CHECK (rule_name <> ''),
+    CHECK (jsonb_typeof(rule_result_data) = 'object')
 );
-
--- Não há pix_transaction_status_event: a decisão nasce pronta e o
--- contrato não tem rota que a mude. No dia em que o 2FA for confirmado
--- pela API, essa tabela nasce junto com o teste dela.
