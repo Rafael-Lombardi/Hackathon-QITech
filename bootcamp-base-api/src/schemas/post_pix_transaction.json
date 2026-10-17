@@ -1,14 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "PostPixTransaction",
-  "$comment": "O contrato de entrada do POST /pix/transaction, e o ÚNICO lugar com a medida de cada campo. Os tamanhos são os das colunas do database.sql: limite maior que a coluna vira 500 no INSERT. Todo objeto fecha com additionalProperties: false — campo a mais volta 400, inclusive um nome digitado errado, que de outro jeito seria ignorado sem aviso. Repare que os regex usam [0-9] e nunca \\d: no Python, \\d casa qualquer algarismo Unicode, e um '٣' arábico passaria aqui pra quebrar no CHECK do banco. O que o schema não tem como conferir (31 de fevereiro, NaN) é recusado em src/utils/pix_request.py, logo depois.",
+  "$comment": "O contrato de entrada do POST /pix/transaction, e o ÚNICO lugar com a medida de cada campo. Os tamanhos são os das colunas do database.sql: limite maior que a coluna vira 500 no INSERT. Todo objeto fecha com additionalProperties: false — campo a mais volta 400, inclusive um nome digitado errado, que de outro jeito seria ignorado sem aviso. Os regex seguem duas regras, porque o jsonschema roda o re do Python e não o regex do JavaScript que a especificação descreve: [0-9] no lugar de \\d, que no Python casa qualquer algarismo Unicode ('٣' passaria daqui pra quebrar no CHECK do banco); e $(?!\\n) no fim, porque o $ do Python também casa antes de uma quebra de linha final, e '0001' seguido de quebra de linha viraria outra agência — e outra conta no banco. O que o schema não tem como conferir (31 de fevereiro, NaN) é recusado em src/controllers/pix_request.py, logo depois.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "amount", "transaction_date", "source_account", "destination_account", "source"],
   "properties": {
-    "id": {"$ref": "#/$defs/text", "maxLength": 255},
+    "id": {
+      "$comment": "Vira caminho no GET /pix/transaction/{id}, e todo id aceito precisa ser consultável lá: barra nunca casa com o {id} da rota, e '.' e '..' o cliente HTTP resolve como pasta antes de enviar. Por isso começa com letra ou dígito e segue só com o que dispensa escape no caminho da URL (letra, dígito, '.', '_', '~', ':' e '-'), de 1 a 255 caracteres, o tamanho da coluna. Cabe o 'pix-000123' do desafio, um EndToEndId do Pix ('E' + 31 letras e dígitos) e um UUID.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._~:-]{0,254}$(?!\\n)"
+    },
     "amount": {
-      "$comment": "Centavos, de 1 até o teto do BIGINT da coluna. Repare que o JSON Schema conta 150000.0 como integer: quem garante o int é o pix_request.py.",
+      "$comment": "Centavos, de 1 até o teto do BIGINT da coluna. O JSON Schema conta 150000.0 como integer; quem garante o int é o pix_request.py.",
       "type": "integer",
       "minimum": 1,
       "maximum": 9223372036854775807
@@ -31,10 +35,9 @@
       "required": ["participant", "branch", "account_number", "opening_date", "owner"],
       "properties": {
         "participant": {
-          "$comment": "ISPB, o código de 8 dígitos de cada banco no Pix. Só existe no destino: o contrato não traz o de quem paga. O maxLength parece repetir o regex e não repete — o $ do Python também casa antes de uma quebra de linha no fim, e '60701190' com quebra de linha passaria no regex pra estourar o CHAR(8) da coluna.",
+          "$comment": "ISPB, o código de 8 dígitos de cada banco no Pix. Só existe no destino: o contrato não traz o de quem paga.",
           "type": "string",
-          "pattern": "^[0-9]{8}$",
-          "maxLength": 8
+          "pattern": "^[0-9]{8}$(?!\\n)"
         },
         "branch": {"$ref": "#/$defs/branch"},
         "account_number": {"$ref": "#/$defs/account_number"},
@@ -50,13 +53,13 @@
         "device_id": {"$ref": "#/$defs/text", "maxLength": 255},
         "channel": {"$ref": "#/$defs/text", "maxLength": 30},
         "ip": {
-          "$comment": "IPv4 ou IPv6, conferidos pelo FormatChecker com o ipaddress da biblioteca padrão — sem pacote extra. Sem format_checker no validate, os dois format viram enfeite e qualquer texto passa.",
+          "$comment": "IPv4 ou IPv6, conferidos pelo FormatChecker com o ipaddress da biblioteca padrão — sem pacote extra. Sem format_checker no validate, os dois format viram enfeite e qualquer texto passa. Grafias diferentes do mesmo IPv6 viram uma só no pix_request.py.",
           "type": "string",
           "maxLength": 45,
           "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]
         },
         "geolocation": {
-          "$comment": "Opcional: pode faltar ou vir null. Quando vem, vem inteira — latitude sem longitude não localiza ninguém.",
+          "$comment": "Opcional: pode faltar ou vir null — serializador costuma escrever null no campo opcional vazio, e recusar isso custaria um Pix legítimo. Quando vem, vem inteira: latitude sem longitude não localiza ninguém.",
           "type": ["object", "null"],
           "additionalProperties": false,
           "required": ["latitude", "longitude"],
@@ -70,27 +73,33 @@
   },
   "$defs": {
     "text": {
-      "$comment": "Texto opaco: id, device_id e channel. O regex só recusa o que derruba o INSERT — o NUL, que o Postgres não grava, e o surrogate solto (meia letra de UTF-16), que o driver não consegue codificar. Os dois virariam 500.",
+      "$comment": "Texto opaco: device_id e channel. O regex só recusa o que derruba o INSERT — o NUL, que o Postgres não grava, e o surrogate solto (meia letra de UTF-16), que o driver não consegue codificar. Os dois virariam 500.",
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$"
+      "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$(?!\\n)"
     },
     "date_time": {
-      "$comment": "Data e hora COM fuso: sem ele, 22h15 seria 22h15 de lugar nenhum e a regra noturna erraria por 3 horas. É regex, e não format: date-time, porque esse format só é conferido com o pacote rfc3339-validator, que não está instalado — sem ele, passa qualquer texto. O ano vai de 1900 a 2999: nas pontas do calendário do Python (ano 1 e ano 9999) a conversão de fuso estoura, e o banco gravaria um instante que o Python não lê de volta. Mês 13 e 31 de fevereiro têm a forma certa e são recusados no pix_request.py.",
+      "$comment": "Data e hora COM fuso: sem ele, 22h15 seria 22h15 de lugar nenhum e a regra noturna erraria por 3 horas. É regex, e não format: date-time, porque esse format só é conferido com o pacote rfc3339-validator, que não está instalado — sem ele, passa qualquer texto. Aceita T ou espaço entre data e hora e até 9 casas de fração (o .NET manda 7; Go e Java, até 9), que o fromisoformat lê e corta em 6. Ano de 1900 a 2999: nas pontas do calendário do Python (ano 1 e ano 9999) a conversão de fuso estoura, e o banco grava um instante que o psycopg2 não lê de volta. Fuso até ±14:59: o maior do mundo é +14:00, em Kiribati, e o Postgres recusa acima de ±15:59 com um 500. Mês 13 e 31 de fevereiro têm a forma certa e são recusados no pix_request.py.",
       "type": "string",
-      "pattern": "^(19|2[0-9])[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$"
+      "pattern": "^(19|2[0-9])[0-9]{2}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])$(?!\\n)"
     },
-    "branch": {"type": "string", "minLength": 1, "maxLength": 10, "pattern": "^[0-9A-Za-z-]+$"},
-    "account_number": {"type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[0-9A-Za-z-]+$"},
+    "branch": {
+      "$comment": "Agência e conta aceitam letra e hífen porque o dígito verificador às vezes vem junto, e no Banco do Brasil ele pode ser 'X' ('1234-X').",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 10,
+      "pattern": "^[0-9A-Za-z-]+$(?!\\n)"
+    },
+    "account_number": {"type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[0-9A-Za-z-]+$(?!\\n)"},
     "owner": {
       "type": "object",
       "additionalProperties": false,
       "required": ["document_number"],
       "properties": {
         "document_number": {
-          "$comment": "CPF ou CNPJ: só os dígitos (11 ou 14) ou com a máscara de sempre. Sem conferir dígito verificador — o pagador é cliente nosso e o recebedor veio do DICT, os dois já conferidos na origem, e um CPF sintético de teste não pode virar 400. A máscara cai em src/utils/document_number.py, antes de qualquer gravação.",
+          "$comment": "CPF ou CNPJ: só os dígitos (11 ou 14) ou com a máscara, como '123.456.789-09' e '12.345.678/0001-90'. Sem conferir dígito verificador — o pagador é cliente nosso e o recebedor veio do DICT, o diretório de chaves Pix do Banco Central, os dois já conferidos na origem; e um CPF sintético de teste não pode virar 400. A máscara cai em src/utils/document_number.py, antes de qualquer gravação. O CNPJ alfanumérico da Receita ainda não entra: pediria mudar junto o CHECK de customer no database.sql e o document_number.py.",
           "type": "string",
-          "pattern": "^([0-9]{11}|[0-9]{14}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{3}-[0-9]{2}|[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}/[0-9]{4}-[0-9]{2})$"
+          "pattern": "^([0-9]{11}|[0-9]{14}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{3}-[0-9]{2}|[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}/[0-9]{4}-[0-9]{2})$(?!\\n)"
         }
       }
     }
