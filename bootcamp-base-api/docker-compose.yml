@@ -10,14 +10,20 @@ services:
       APP_ENV: ${APP_ENV:-local}
       SERVICE_NAME: ${SERVICE_NAME:-bootcamp-api}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-default_token}
-      # O DICT, ou melhor, o mock dele (o servico dict-mock, la embaixo).
-      # Aqui dentro ele atende pelo nome do servico, nunca por localhost,
-      # e por isso o endereco nao tem padrao pra sobrescrever, como a
-      # DATABASE_URL. Prazo e token, sim: com DICT_API_TIMEOUT=5 no .env,
-      # a API espera mais pelo DICT.
+      # O DICT (o mock dele: o servico dict-mock, la embaixo). Aqui dentro
+      # ele atende pelo nome do servico, nunca por localhost, e por isso o
+      # endereco nao tem padrao pra sobrescrever, como a DATABASE_URL.
+      # Prazo e token, sim: com DICT_API_TIMEOUT=1.5 no .env, a API desiste
+      # do DICT mais cedo.
       DICT_API_URL: http://dict-mock:1080
       DICT_API_TIMEOUT: ${DICT_API_TIMEOUT:-2}
       DICT_API_INTERNAL_TOKEN: ${DICT_API_INTERNAL_TOKEN:-default_token}
+    # O prazo do DICT nao cobre o DNS: com o mock parado e o DNS da maquina
+    # mudo (Wi-Fi de evento), cada consulta levaria 16 s so pra descobrir
+    # que o nome dict-mock sumiu. Com isto, 2 s; o "db" resolve igual.
+    dns_opt:
+      - timeout:1
+      - attempts:1
     volumes:
       - ./src:/app
     command: uvicorn app:app --host 0.0.0.0 --port 3000 --no-server-header --reload
@@ -32,8 +38,8 @@ services:
         condition: service_healthy
       # So "started", e nao "healthy": a imagem do mock nao tem shell nem
       # curl, e nao ha com o que perguntar se ele ja responde. Nem faz
-      # falta: a API decide sem o DICT, e enquanto ele nao atende (uns
-      # 2 s depois de subir) a camada 3 sai "unavailable".
+      # falta: a API decide sem o DICT, e enquanto ele nao atende (alguns
+      # segundos depois de subir) a camada 3 sai "unavailable".
       dict-mock:
         condition: service_started
 
@@ -53,21 +59,24 @@ services:
 
   # O DICT do Banco Central, de mentira. A camada 3 do motor pergunta a
   # ele o trust factor do recebedor, e quem responde e um MockServer: um
-  # servidor HTTP que devolve o que estiver combinado no
-  # mockserver/dict-expectations.json (70 pra qualquer documento, e os
-  # casos de demonstracao do mockserver/README.md).
+  # servidor HTTP que devolve o que estiver combinado com ele. Cada
+  # combinado e uma expectativa (o pedido que ela reconhece e a resposta
+  # que ela da), e as do mockserver/dict-expectations.json sobem junto:
+  # 70 pra qualquer documento, mais os casos de demonstracao do
+  # mockserver/README.md.
   #
-  # Ele e infraestrutura de execucao, como o Postgres ali em cima, e nao
-  # mais uma API deste projeto: nao tem codigo nosso, so o roteiro das
-  # respostas. Os testes reescrevem o roteiro de cada documento pela
-  # porta dele, sem mudar uma linha de src/.
+  # Conta como infraestrutura de execucao, como o Postgres ali em cima, e
+  # nao como mais uma API nossa: o desafio deixa "outras APIs" de fora, e
+  # o mock nao tem codigo nosso, so o roteiro das respostas. Um FastAPI
+  # nosso fazendo o papel do DICT seria uma segunda API.
   dict-mock:
     # Versao fixa, como no requirements.txt: com "latest", o mock
     # mudaria por baixo dos testes sem ninguem pedir.
     image: mockserver/mockserver:5.15.0
     ports:
-      # Os testes combinam as respostas por esta porta. DICT_MOCK_PORT=1081
-      # no .env se a 1080 estiver ocupada.
+      # A mesma porta responde como DICT (/trust-factor/...) e recebe os
+      # combinados dos testes (/mockserver/...). DICT_MOCK_PORT=1081 no
+      # .env se a 1080 estiver ocupada.
       - "${DICT_MOCK_PORT:-1080}:1080"
     environment:
       MOCKSERVER_INITIALIZATION_JSON_PATH: /config/dict-expectations.json
@@ -77,5 +86,5 @@ services:
       # que e problema. Pra ver o que chegou: PUT /mockserver/retrieve.
       MOCKSERVER_LOG_LEVEL: WARN
     volumes:
-      # So leitura: o mock le o roteiro e nunca escreve nele.
+      # So leitura: teste nenhum muda o roteiro do repositorio.
       - ./mockserver:/config:ro

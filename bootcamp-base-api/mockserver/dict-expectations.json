@@ -8,9 +8,6 @@
     },
     "httpResponse": {
       "statusCode": 200,
-      "headers": {
-        "Content-Type": ["application/json"]
-      },
       "body": {
         "trust_factor": 70
       }
@@ -25,9 +22,6 @@
     },
     "httpResponse": {
       "statusCode": 200,
-      "headers": {
-        "Content-Type": ["application/json"]
-      },
       "body": {
         "trust_factor": 12
       }
@@ -42,9 +36,6 @@
     },
     "httpResponse": {
       "statusCode": 200,
-      "headers": {
-        "Content-Type": ["application/json"]
-      },
       "body": {
         "trust_factor": 70
       },

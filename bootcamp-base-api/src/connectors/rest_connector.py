@@ -51,7 +51,7 @@ class RestConnector(metaclass=ABCMeta):
 
         url = f"{self.base_url}{endpoint}"
 
-        # Endereço também carrega dado de gente: o DICT recebe o CPF no
+        # Endereço também carrega dado pessoal: o DICT recebe o CPF no
         # próprio caminho. Quem chama passa em log_as a versão que pode
         # ir pro log, e o pedido de verdade segue pro endereço inteiro.
         if log_as is None:
@@ -63,7 +63,13 @@ class RestConnector(metaclass=ABCMeta):
 
         # Se o outro serviço demorar mais que o timeout, o requests
         # levanta um Timeout aqui — e isso é o comportamento desejado:
-        # falhar rápido e com nome, em vez de esperar pra sempre.
+        # falhar rápido e com nome, em vez de esperar pra sempre. Repare
+        # que o prazo vale por etapa (conectar, e cada leitura), não pela
+        # chamada inteira, e não cobre o DNS.
+        #
+        # Redirecionamento não se segue. Serviço interno não manda a gente
+        # pra outro lugar, e seguir um 302 levaria o INTERNAL-TOKEN pra
+        # outro host e aceitaria a resposta de lá. O 3xx volta como veio.
         try:
             response = requests.request(
                 method.upper(),
@@ -71,19 +77,13 @@ class RestConnector(metaclass=ABCMeta):
                 json=payload,
                 headers=headers,
                 timeout=self.timeout,
+                allow_redirects=False,
             )
         except requests.RequestException as error:
-            # A volta que não veio também entra no log, com o tempo que
-            # levou — e o tempo já conta a história. Medido com o DICT:
-            # 2005 ms é o prazo de 2 s inteiro, com o outro lado calado;
-            # 10 ms é ninguém atendendo naquele endereço.
-            #
-            # Repare que vai só o NOME do erro: a mensagem do requests
-            # repete o endereço inteiro, documento junto.
-            #
-            # E o erro segue adiante intacto. Traduzir em erro nosso é
-            # trabalho do connector de cada serviço, que sabe o que
-            # aquela falha significa.
+            # Vai só o NOME do erro: a mensagem do requests repete o
+            # endereço inteiro, documento junto. E o erro segue intacto —
+            # traduzir em erro nosso é trabalho do connector de cada
+            # serviço, que sabe o que aquela falha significa.
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             self.logger.warning(f"FAILED REQUEST {method} {logged_url} - {elapsed_ms:.1f} ms - {type(error).__name__}")
             raise
@@ -114,9 +114,11 @@ class BaseConnectorResponse:
 
         # Nem toda resposta tem corpo JSON (um 204, um proxy no meio do
         # caminho respondendo HTML). Corpo que não é JSON vira None em
-        # vez de derrubar a requisição.
+        # vez de derrubar a requisição — e o JSON aninhado fundo demais
+        # também: ele estoura a pilha do decodificador com um
+        # RecursionError, que não é ValueError.
         self.json = None
         try:
             self.json = json.loads(response.content)
-        except ValueError:
+        except (ValueError, RecursionError):
             pass

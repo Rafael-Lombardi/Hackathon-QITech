@@ -9,22 +9,20 @@ from utils.document_number import mask_document
 class DictConnector(RestConnector):
     """Fala com o DICT do Banco Central — aqui, com o mock dele.
 
-    É a parte de I/O da camada 3 do motor: pergunta quão confiável é o
-    titular de um documento e recebe um número de 0 a 100, o trust
-    factor (maior é mais confiável). O DICT de verdade não tem essa
-    pergunta pronta; o mock do docker-compose.yml faz de conta que tem,
-    e a ficção está contada no mockserver/README.md. Só o recebedor é
-    consultado, e quem chama é o controller, com o documento do destino.
+    DICT é o Diretório de Identificadores de Contas Transacionais, o
+    cadastro do Banco Central que liga chave Pix a conta. O de verdade
+    devolve contadores de fraude por CPF/CNPJ (Manual do DICT, cap. 18);
+    o time aceitou a ficção de um DICT que já responde a nota: o trust
+    factor do titular de um documento, de 0 a 100, e maior é mais
+    confiável. É a parte de I/O da camada 3 do motor, e quem faz o papel
+    do DICT é o mock do docker-compose.yml (mockserver/README.md).
 
     Repare no que este connector NÃO decide: o que fazer quando o DICT
-    falha. Prazo estourado, ninguém atendendo, 404, 500, corpo fora do
-    combinado — tudo vira DictUnavailable, e mais nada. Quem decide que
-    isso significa "camada 3 indisponível, o Pix segue sem ela" é o
-    controller. Aqui se traduz; lá se decide.
-
-    Até o 404 entra na mesma conta. "O DICT não conhece este documento"
-    é falta de informação, e no motor falta de informação nunca vira
-    ponto: vira "unavailable", igual ao DICT fora do ar.
+    falha. Prazo estourado, ninguém atendendo, status ou corpo fora do
+    combinado — tudo vira DictUnavailable, e mais nada. O que isso
+    significa pro Pix, quem decide é o controller. O combinado é 200 com
+    um número pra qualquer documento; o resto, 404 incluído, é fora do
+    combinado.
     """
 
     def __init__(self) -> None:
@@ -53,12 +51,7 @@ class DictConnector(RestConnector):
                 method="GET",
                 log_as=f"/trust-factor/{masked_document}",
             )
-        except requests.Timeout:
-            raise self._unavailable(masked_document, f"no response within {self.timeout} s") from None
-        except (requests.RequestException, ValueError) as error:
-            # O ValueError é configuração que o requests recusa antes de
-            # sair, como um DICT_API_TIMEOUT=0. Pro motor dá no mesmo que
-            # a URL errada: o DICT ficou fora de alcance, e o Pix segue.
+        except requests.RequestException as error:
             raise self._unavailable(masked_document, f"request failed ({type(error).__name__})") from None
 
         if response.status != 200:
