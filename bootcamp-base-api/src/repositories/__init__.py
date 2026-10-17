@@ -1,1 +1,4 @@
-"""Queries de persistência; regras de fraude ficam fora daqui."""
+from repositories.customer_repository import CustomerRepository
+from repositories.account_repository import AccountRepository
+from repositories.pix_transaction_repository import PixTransactionRepository
+from repositories.pix_history_repository import PixHistoryRepository
