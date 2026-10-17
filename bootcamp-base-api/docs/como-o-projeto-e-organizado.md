@@ -13,3 +13,7 @@
 Middleware registration order in `app.py` is reverse execution order. Keep request context before logging, and session lifecycle inside auth.
 
 Public routes: `/` and `/health_check`. All other routes require `INTERNAL-TOKEN`.
+
+`POST /pix/transaction` currently flows resource → DTO → controller → decision DTO. Persistence joins after database modelling settles.
+
+Resource validates raw JSON with `src/schemas/` before DTO conversion.

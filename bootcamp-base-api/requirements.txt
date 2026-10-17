@@ -5,6 +5,7 @@
 fastapi==0.141.1
 uvicorn[standard]==0.52.3
 pydantic==2.13.4
+jsonschema==4.17.3
 SQLAlchemy==2.0.23
 psycopg2-binary==2.9.10
 requests==2.32.3

@@ -29,4 +29,4 @@ Request path: request id → log → internal token → DB context → resource.
 
 Resource handles HTTP. Controller owns use-case rules. Repository owns SQLAlchemy queries. DTO owns response shape. Middleware opens/closes DB context; controller commits.
 
-Challenge schema lives in `database/database.sql`. Pix route/rules are intentionally not implemented yet.
+`POST /pix/transaction` validates the payload, then returns `501` until risk rules and persistence are defined. JSON Schema validates the HTTP payload; Pydantic DTO converts it to typed Python data.

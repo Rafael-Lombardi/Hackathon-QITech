@@ -1,4 +1,51 @@
 {
-  "$comment": "Challenge input contract. Replace with full JSON Schema before wiring route.",
-  "type": "object"
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "amount", "transaction_date", "source_account", "destination_account", "source"],
+  "properties": {
+    "id": {"type": "string", "minLength": 1, "maxLength": 255},
+    "amount": {"type": "integer", "exclusiveMinimum": 0},
+    "transaction_date": {"type": "string", "format": "date-time"},
+    "source_account": {"$ref": "#/$defs/account"},
+    "destination_account": {"$ref": "#/$defs/account"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["device_id", "channel", "ip"],
+      "properties": {
+        "device_id": {"type": "string", "minLength": 1, "maxLength": 255},
+        "channel": {"type": "string", "minLength": 1, "maxLength": 30},
+        "ip": {"type": "string", "minLength": 1, "maxLength": 45},
+        "geolocation": {"$ref": "#/$defs/geolocation"}
+      }
+    }
+  },
+  "$defs": {
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["document_number"],
+      "properties": {"document_number": {"type": "string", "minLength": 11, "maxLength": 18}}
+    },
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "account_number", "opening_date", "owner"],
+      "properties": {
+        "branch": {"type": "string", "minLength": 1, "maxLength": 20},
+        "account_number": {"type": "string", "minLength": 1, "maxLength": 30},
+        "opening_date": {"type": "string", "format": "date-time"},
+        "owner": {"$ref": "#/$defs/owner"}
+      }
+    },
+    "geolocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["latitude", "longitude"],
+      "properties": {
+        "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+        "longitude": {"type": "number", "minimum": -180, "maximum": 180}
+      }
+    }
+  }
 }
