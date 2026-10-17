@@ -1,10 +1,9 @@
 """Camada 1 — validações iniciais: o que o próprio Pix diz, sem olhar
 histórico.
 
-Idade das contas, horário e documentos vêm no payload, então os quatro
-sinais daqui sempre respondem e nunca ficam unavailable. São os únicos
-que valem no primeiro Pix de um cliente: o resto do motor ainda não tem
-com o que comparar.
+Idade das contas, horário e documentos vêm no payload: os quatro sinais
+daqui respondem sem histórico e sem DICT, e por isso nunca ficam
+unavailable — nem no primeiro Pix de um cliente.
 """
 
 from antifraud import policy
@@ -31,8 +30,8 @@ def _p01_new_payer_account(context: Context) -> Signal:
 def _l01_night_high_amount(context: Context) -> Signal:
     transaction = context.transaction
     local = transaction.local_datetime
-    # A janela atravessa a meia-noite, daí o or: das 20h às 23h59 de um
-    # dia e da 0h às 5h59 do outro. Com and, nenhuma hora caberia.
+    # A janela atravessa a meia-noite, daí o `or`: das 20h às 23h59 de um
+    # dia e da 0h às 5h59 do outro. Com `and`, nenhuma hora caberia.
     is_night = local.hour >= policy.NIGHT_START_HOUR or local.hour < policy.NIGHT_END_HOUR
     if is_night and transaction.amount > policy.NIGHT_AMOUNT_LIMIT:
         return policy.triggered("L01", {

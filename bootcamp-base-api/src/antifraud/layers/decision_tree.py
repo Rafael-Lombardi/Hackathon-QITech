@@ -1,15 +1,19 @@
 """Camada 2 — árvore de decisão: as regras que comparam o Pix com o
 histórico.
 
-Árvore aqui é if/else escrito à mão, e não modelo treinado: sem dado
-rotulado não há o que treinar, e cada resposta precisa caber numa
-frase. Toda regra tem o mesmo formato — primeiro pergunta se há
-histórico pra responder (se não há, unavailable), e só depois se a
-condição vale.
+Cadê a árvore? Cada regra é um galho de dois níveis: tem histórico pra
+responder? Se não tem, unavailable. Se tem, a condição vale? As 14
+rodam sempre, sem atalho de uma pra outra, porque o GET precisa mostrar
+o estado de cada uma. O tronco, que junta os galhos numa decisão, é a
+DECISION_TABLE do policy.py. É `if/else` escrito à mão, e não modelo
+treinado: sem dado rotulado não há o que treinar, e cada resposta
+precisa caber numa frase.
 
 As contagens do Context são dos Pix anteriores. Quem precisa do Pix
-atual na conta (L02, P04, P05, R02) soma ele aqui, uma vez.
+atual na conta (L02, P04, P05, R02) soma o atual aqui, uma vez.
 """
+
+import math
 
 from antifraud import policy
 from antifraud.contract import Context, Signal
@@ -35,16 +39,20 @@ class DecisionTreeLayer:
         ]
 
 
-# As pré-condições que mais de uma regra usa. A primeira serve a L02, P03,
-# P09 e P10, e mora numa função só por causa do P10: ele fica unavailable
-# quando o P03 ou o P09 ficam, e com a mesma função os dois não têm como
-# divergir.
+# As perguntas de histórico, uma por função. A primeira serve a L02,
+# P03, P09 e P10, e é uma função só por causa do P10: ele fica
+# unavailable quando o P03 ou o P09 ficam, e com a mesma função os dois
+# não têm como divergir.
 def _short_access_history(context: Context) -> bool:
     return context.payer.prior_attempts < policy.ACCESS_MIN_PRIOR_ATTEMPTS
 
 
 def _payer_is_new(context: Context) -> bool:
     return context.payer.prior_attempts == 0
+
+
+def _device_is_new(context: Context) -> bool:
+    return context.device.prior_attempts == 0
 
 
 def _recipient_is_new(context: Context) -> bool:
@@ -55,12 +63,12 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
     if _short_access_history(context):
         return policy.unavailable("L02")
     # A RFC escreve "P03 disparado e (valor > R$ 200 ou soma do dia >
-    # R$ 1.000)". Com o P03 ao pé da letra — aparelho nunca visto —, a soma
-    # do dia é sempre o próprio Pix e a segunda metade nunca decide nada.
-    # Aqui aparelho novo é o que não tinha Pix approved antes de hoje: o
-    # limite do Banco Central pra dispositivo não cadastrado é diário, e
-    # assim o segundo e o terceiro Pix do dia no aparelho novo também
-    # entram na soma.
+    # R$ 1.000)". Com o P03 da RFC ao pé da letra (aparelho sem registro
+    # nenhum com o pagador), a soma do dia seria sempre o próprio Pix, e
+    # a segunda metade nunca decidiria nada. Aqui aparelho novo é o que
+    # não tinha Pix approved antes de hoje: o limite do Banco Central pra
+    # dispositivo não cadastrado é diário, e assim o segundo e o terceiro
+    # Pix do dia no aparelho novo também entram na soma.
     payer = context.payer
     amount = context.transaction.amount
     day_amount = payer.device_day_amount + amount
@@ -105,25 +113,32 @@ def _p05_high_hourly_amount(context: Context) -> Signal:
 
 def _p06_atypical_amount(context: Context) -> Signal:
     payer = context.payer
-    median = payer.approved_median_amount
-    # Mediana, e não média: um Pix de R$ 5.000 no meio de vinte de R$ 50
-    # puxa a média pra R$ 286 e deixa a mediana nos R$ 50. Sem lastro, ou
-    # sem mediana nenhuma, não há com o que comparar — e conferir o zero
-    # impede a divisão da evidência de explodir.
-    if (
-        payer.approved_count < policy.MEDIAN_MIN_APPROVED
-        or payer.approved_days < policy.MEDIAN_MIN_DAYS
-        or median is None
-        or median <= 0
-    ):
+    if payer.approved_count < policy.MEDIAN_MIN_APPROVED or payer.approved_days < policy.MEDIAN_MIN_DAYS:
         return policy.unavailable("P06")
+    # Abaixo do piso o P06 não dispara, seja qual for a mediana. A
+    # pergunta vem antes da mediana pra que o controller possa nem
+    # calculá-la nesse caso: o percentile_cont ordena todos os Pix
+    # approved do pagador.
     amount = context.transaction.amount
-    if amount > policy.MEDIAN_MULTIPLIER * median and amount >= policy.ATYPICAL_MIN_AMOUNT:
+    if amount < policy.ATYPICAL_MIN_AMOUNT:
+        return policy.not_triggered("P06")
+    # Mediana, e não média: um Pix de R$ 5.000 no meio de vinte de R$ 50
+    # puxa a média pra R$ 286 e deixa a mediana nos R$ 50. Sem mediana
+    # nenhuma não há com o que comparar, e conferir o zero impede a
+    # divisão da evidência de explodir.
+    median = payer.approved_median_amount
+    if median is None or median <= 0:
+        return policy.unavailable("P06")
+    if amount > policy.MEDIAN_MULTIPLIER * median:
         return policy.triggered("P06", {
             "amount": amount,
             # O percentile_cont devolve float; 100000.0 sai como 100000.
             "median_amount": int(median) if median == int(median) else median,
-            "ratio": round(amount / median, 1),
+            # Pra cima, em 2 casas: quem disparou com 5,001x aparece como
+            # 5,01x, e nunca como 5x, que não dispararia.
+            "ratio": math.ceil(amount * 100 / median) / 100,
+            "ratio_threshold": policy.MEDIAN_MULTIPLIER,
+            "amount_threshold": policy.ATYPICAL_MIN_AMOUNT,
         })
     return policy.not_triggered("P06")
 
@@ -141,14 +156,11 @@ def _p07_many_new_destinations(context: Context) -> Signal:
 
 
 def _p08_shared_device(context: Context) -> Signal:
-    device = context.device
-    if device.prior_attempts == 0:
+    if _device_is_new(context):
         return policy.unavailable("P08")
-    if device.distinct_payers_24h >= policy.SHARED_DEVICE_THRESHOLD:
-        return policy.triggered("P08", {
-            "distinct_payers_24h": device.distinct_payers_24h,
-            "threshold": policy.SHARED_DEVICE_THRESHOLD,
-        })
+    payers = context.device.distinct_payers_24h
+    if payers >= policy.SHARED_DEVICE_THRESHOLD:
+        return policy.triggered("P08", {"distinct_payers_24h": payers, "threshold": policy.SHARED_DEVICE_THRESHOLD})
     return policy.not_triggered("P08")
 
 
@@ -196,7 +208,7 @@ def _r04_new_account_many_payers(context: Context) -> Signal:
     if _recipient_is_new(context):
         return policy.unavailable("R04")
     # Conta nova é a condição do R01, que mora na camada 1. Ela é refeita
-    # aqui, a partir do Context, e não lida do sinal do R01 — o porquê
+    # aqui, a partir do Context, e não lida do sinal do R01: o porquê
     # está no Layer, em contract.py.
     age = context.transaction.recipient_account_age_days
     payers = context.recipient.distinct_payers_1h

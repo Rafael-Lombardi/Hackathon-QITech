@@ -1,7 +1,7 @@
-"""As três camadas do motor, uma por arquivo, todas no formato do Layer de
-contract.py: recebem o Context e devolvem os sinais delas.
+"""As três camadas do motor, uma por arquivo, todas no formato do Layer
+de contract.py: recebem o Context e devolvem os sinais delas.
 
-Camada nenhuma importa outra — o porquê está no próprio Layer. Quem põe
+Nenhuma camada importa outra; o porquê está no próprio Layer. Quem põe
 as três em fila é o LAYERS, no engine.
 """
 

@@ -1,39 +1,53 @@
-"""O engine: roda as camadas, soma os pontos, aplica a tabela de decisão e
-escreve os motivos.
+"""O engine: roda as camadas, soma os pontos, aplica a tabela de decisão
+e escreve o motivo.
 
-É a única peça que olha sinais de camadas diferentes ao mesmo tempo, e só
-na tabela de decisão. A porta de entrada é evaluate: o controller monta o
-Context, chama evaluate(context) e grava a Analysis que volta.
+É a única peça que olha sinais de camadas diferentes ao mesmo tempo, e
+só na tabela de decisão. A porta de entrada é evaluate: o controller
+monta o Context, chama evaluate(context) e grava a Analysis que volta.
 """
 
 from collections.abc import Collection, Iterable, Mapping
 
 from antifraud import policy
-from antifraud.contract import Analysis, Axis, Context, EvidenceValue, Layer, Signal, SignalStatus, Sufficiency
+from antifraud.contract import (
+    Analysis,
+    Axis,
+    Context,
+    EvidenceValue,
+    Layer,
+    Signal,
+    SignalStatus,
+    Sufficiency,
+)
 from antifraud.layers import DecisionTreeLayer, InitialChecksLayer, TrustFactorLayer
 from antifraud.policy import DecisionRule
 
 # As camadas, na ordem em que rodam, uma por linha — como as cascas de
-# middleware do app.py. Desligar uma camada é apagar a linha dela, e as
-# outras não percebem: nenhuma lê o sinal da outra. Diferente dos
-# middlewares, aqui a ordem não muda a resposta, porque os sinais saem na
-# ordem do catálogo de qualquer jeito; ela segue a da RFC só pra leitura.
+# middleware do app.py. A semelhança para aí: nenhuma camada interrompe
+# a seguinte, do jeito que o 403 do token interrompe a requisição. As
+# três rodam sempre, a resposta mostra os 19 sinais, e rejeição só sai
+# da tabela de decisão. Desligar uma camada é apagar a linha dela, e as
+# outras não percebem, porque nenhuma lê o sinal da outra. A ordem
+# também não muda a resposta (os sinais saem na ordem do catálogo); ela
+# segue a da RFC só pra leitura.
 LAYERS: tuple[Layer, ...] = (
     InitialChecksLayer(),
     DecisionTreeLayer(),
     TrustFactorLayer(),
 )
 
-# Quantos sinais a primeira frase do D-PAY e do D-RCP cita. Os outros que
-# dispararam vêm nas frases seguintes, um por frase.
-_HEAVIEST_SIGNALS = 3
+# Quantos sinais a frase do D-PAY e do D-RCP cita, do mais pesado pro
+# mais leve. Os outros continuam em metadata.signals.
+_REASON_MAX_SIGNALS = 3
 
 _CATALOG_POSITION = {code: position for position, code in enumerate(policy.CATALOG)}
 
 
 def evaluate(context: Context) -> Analysis:
-    """Do Context à decisão explicada. Os sinais saem na ordem do catálogo,
-    seja qual for a ordem do LAYERS."""
+    """Do Context à decisão explicada.
+
+    Os sinais saem na ordem do catálogo, seja qual for a ordem do LAYERS.
+    """
     signals: list[Signal] = []
     for layer in LAYERS:
         signals.extend(layer.evaluate(context))
@@ -47,7 +61,7 @@ def evaluate(context: Context) -> Analysis:
     return Analysis(
         status=rule.status,
         decision_rule=rule.name,
-        reasons=_reasons(rule, triggered, payer_risk, recipient_risk),
+        reasons=(_reason(rule, triggered, payer_risk, recipient_risk),),
         payer_risk=payer_risk,
         recipient_risk=recipient_risk,
         payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
@@ -97,65 +111,66 @@ def _matches(rule: DecisionRule, triggered: Collection[str], payer_risk: int, re
     return True
 
 
-def _reasons(
-    rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int, recipient_risk: int,
-) -> tuple[str, ...]:
-    """A primeira frase explica a linha que decidiu, com números da
-    evidência; as seguintes nomeiam os outros sinais que dispararam, na
-    ordem do catálogo. A ordem nunca sai de um set, e a mesma análise tem
-    sempre as mesmas frases."""
-    first, cited = _decisive_reason(rule, triggered, payer_risk, recipient_risk)
-    others = [_describe(signal) for code, signal in triggered.items() if code not in cited]
-    return (first, *others)
+# Repare que as frases leem a evidência pelo nome da chave: renomear uma
+# chave numa camada quebra o motivo aqui, com KeyError.
+def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int, recipient_risk: int) -> str:
+    """A frase da linha da tabela que decidiu, com números da evidência.
 
-
-def _decisive_reason(
-    rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int, recipient_risk: int,
-) -> tuple[str, Collection[str]]:
+    É uma frase só: os sinais, um a um, já estão em metadata.signals.
+    """
     if rule.name == "D-REJ":
         age = triggered["R01"].evidence["account_age_days"]
         payers = triggered["R03"].evidence["distinct_payers_1h"]
         attempts = triggered["R02"].evidence["attempts_10m"]
-        text = (
-            f"Conta destino aberta {_opened(age)} recebendo de {payers} pagadores distintos "
-            f"na última hora e {attempts} tentativas em 10 min"
+        return (
+            f"Conta destino aberta {_opened(age)}, com {_number(payers)} pagadores distintos "
+            f"na última hora e {_number(attempts)} tentativas em 10 min"
         )
-        return text, rule.all_triggered
     if rule.name == "D-ATO-1":
         ratio = triggered["P06"].evidence["ratio"]
-        return f"Dispositivo nunca visto para este pagador com valor {_decimal(ratio)}x acima da mediana", rule.all_triggered
+        return f"Dispositivo sem Pix aprovado deste pagador, com valor {_number(ratio)}x a mediana"
     if rule.name == "D-ATO-2":
         prior = triggered["P03"].evidence["payer_prior_tx"]
-        return f"Dispositivo e IP nunca vistos para este pagador, que tem {prior} Pix anteriores", rule.all_triggered
-    if rule.min_payer_risk is not None:
-        return _risk_reason(Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
-    if rule.min_recipient_risk is not None:
-        return _risk_reason(Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
-    if rule.all_triggered:
-        # Linha de combinação que ainda não ganhou frase própria. Sem isto,
-        # ela cairia na frase do D-OK, que diria o contrário do que houve.
-        names = " e ".join(policy.CATALOG[code].name for code in rule.all_triggered)
-        return f"{names}, ao mesmo tempo", rule.all_triggered
-    return "Nenhum indício justificou fricção", ()
+        return f"Dispositivo e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
+    if rule.name == "D-PAY":
+        return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
+    if rule.name == "D-RCP":
+        return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
+    if rule.name == "D-OK":
+        return (
+            "Nenhum indício pesou o bastante para pedir 2FA "
+            f"(risco do pagador {payer_risk}, do destino {recipient_risk})"
+        )
+    raise RuntimeError(f"a linha {rule.name} da DECISION_TABLE não tem frase")
 
 
 def _risk_reason(
-    axis: Axis, risk: int, threshold: int, triggered: Mapping[str, Signal],
-) -> tuple[str, Collection[str]]:
-    # Os que mais pesaram: só os que somaram ponto neste eixo, do maior pro
-    # menor. No empate fica a ordem do catálogo — o sorted não troca iguais
-    # de lugar.
+    owner: str, axis: Axis, risk: int, threshold: int | None, triggered: Mapping[str, Signal],
+) -> str:
+    # Os que mais pesaram: só os que somaram ponto neste eixo, do maior
+    # pro menor, e no empate fica a ordem do catálogo (o sorted não troca
+    # iguais de lugar). Os pontos ficam fora da frase: com teto, a soma
+    # deles não bate com a nota.
     heaviest = sorted(
         (signal for signal in triggered.values() if signal.axis == axis and signal.points > 0),
         key=lambda signal: -signal.points,
-    )[:_HEAVIEST_SIGNALS]
-    owner = "do pagador" if axis == Axis.PAYER else "do destino"
-    listed = ", ".join(_describe(signal) for signal in heaviest)
-    return f"Risco {owner} {risk} (2FA a partir de {threshold}): {listed}", [signal.code for signal in heaviest]
+    )[:_REASON_MAX_SIGNALS]
+    cited = [f"{_mid_sentence(policy.signal_spec(signal.code).name)} ({signal.code})" for signal in heaviest]
+    return f"Risco {owner} em {risk} (2FA a partir de {threshold}): {_join(cited)}"
 
 
-def _describe(signal: Signal) -> str:
-    return f"{policy.CATALOG[signal.code].name} ({signal.code}, {signal.points:+d})"
+def _mid_sentence(name: str) -> str:
+    # O nome do catálogo começa com maiúscula, que cai no meio da frase;
+    # sigla fica como está (IP continua IP).
+    if name[1:2].islower():
+        return name[0].lower() + name[1:]
+    return name
+
+
+def _join(items: list[str]) -> str:
+    if len(items) < 2:
+        return "".join(items)
+    return f"{', '.join(items[:-1])} e {items[-1]}"
 
 
 def _opened(days: EvidenceValue) -> str:
@@ -163,11 +178,14 @@ def _opened(days: EvidenceValue) -> str:
         return "hoje"
     if days == 1:
         return "há 1 dia"
-    return f"há {days} dias"
+    return f"há {_number(days)} dias"
 
 
-def _decimal(value: EvidenceValue) -> str:
-    return str(value).replace(".", ",")
+def _number(value: EvidenceValue) -> str:
+    # Do jeito brasileiro: ponto no milhar, vírgula na decimal, e 6 em vez
+    # de 6,0 (10.000 e 6,2).
+    text = f"{value:,.2f}".rstrip("0").rstrip(".")
+    return text.replace(",", "_").replace(".", ",").replace("_", ".")
 
 
 def _clamp(value: int, floor: int, ceiling: int) -> int:

@@ -1,13 +1,17 @@
 """O motor antifraude Pix: recebe um Context pronto e devolve a Analysis.
 
-Puro de propósito: não importa banco, FastAPI nem nada de fora deste
-pacote. Quem busca o histórico e consulta o DICT é o controller; o motor
-só faz a conta. O controller chama assim:
+No Base Service a regra de negócio mora no controller. Aqui são 19
+sinais, tetos e uma tabela de decisão, que no controller ficariam
+misturados com trava, sessão e commit: o motor é a parte da regra que
+não precisa de banco. Não importa SQLAlchemy, FastAPI nem nada de fora
+deste pacote. Quem busca o histórico e consulta o DICT continua sendo o
+controller, que chama assim:
 
     from antifraud import evaluate
     analysis = evaluate(context)
 
-O Context e as peças dele estão em contract.py; os números, em policy.py.
+O Context e as peças dele estão em contract.py; os números, em
+policy.py.
 """
 
 from antifraud.contract import (
@@ -16,8 +20,6 @@ from antifraud.contract import (
     Axis,
     Context,
     DeviceHistory,
-    Evidence,
-    Layer,
     PairHistory,
     PayerHistory,
     PixStatus,
@@ -27,5 +29,5 @@ from antifraud.contract import (
     Sufficiency,
     Transaction,
 )
-from antifraud.engine import LAYERS, evaluate
-from antifraud.policy import POLICY_VERSION
+from antifraud.engine import evaluate
+from antifraud.policy import POLICY_VERSION, SignalSpec, signal_spec
