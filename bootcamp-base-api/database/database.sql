@@ -1,11 +1,51 @@
+-- O antifraude Pix, em seis tabelas:
+--   pix_transaction_status       os três veredictos do contrato.
+--   pix_signal_status            os três estados de um sinal.
+--   customer                     quem paga ou recebe: um por CPF ou CNPJ (o
+--                                owner do payload).
+--   account                      uma conta de um customer, em qualquer banco.
+--   pix_transaction              uma linha por Pix: payload + decisão
+--                                explicada, com FK pra conta de origem e
+--                                de destino.
+--   pix_transaction_rule_result  uma linha por sinal por Pix: a lista de
+--                                regras que a resposta devolve em
+--                                metadata.signals.
+-- Os índices são um por pergunta de regra (conta de origem, conta de
+-- destino, aparelho, IP), todos terminando em transaction_date, mais um
+-- em account(customer_id) pra ir das contas ao documento.
+
+-- As três decisões do contrato, e só elas. O Pix já nasce decidido (o
+-- controller roda as regras antes do INSERT): não há pendente, e não há
+-- pix_transaction_status_event como no Base Service porque nenhuma rota
+-- muda a decisão. No dia em que o 2FA for confirmado pela API, a tabela
+-- de eventos nasce junto com o teste dela.
 CREATE TABLE pix_transaction_status(
-    id SERIAL PRIMARY KEY,
-    enumerator VARCHAR(50) NOT NULL UNIQUE,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    id                              SERIAL PRIMARY KEY,
+    enumerator                      VARCHAR(50) NOT NULL,
+    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(enumerator)
 );
 
 INSERT INTO pix_transaction_status (enumerator) VALUES
-('approved'), ('rejected'), ('two_factor_required');
+('approved'),
+('rejected'),
+('two_factor_required');
+
+-- Os três estados de um sinal. Uma regra dispara, não dispara, ou não
+-- tinha histórico pra responder. Os dois últimos parecem a mesma coisa
+-- e não são: falta de informação não é prova de que está tudo bem, e o
+-- GET precisa dizer "esta regra não rodou" em vez de "não viu nada".
+CREATE TABLE pix_signal_status(
+    id                              SERIAL PRIMARY KEY,
+    enumerator                      VARCHAR(50) NOT NULL,
+    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(enumerator)
+);
+
+INSERT INTO pix_signal_status (enumerator) VALUES
+('triggered'),
+('not_triggered'),
+('unavailable');
 
 -- Quem paga ou recebe, um por documento. Separado de account porque um
 -- documento tem contas em bancos diferentes: o laranja com três contas em
@@ -20,17 +60,21 @@ INSERT INTO pix_transaction_status (enumerator) VALUES
 -- bruto guarda o que chegou e o controller decide. Por isso só o
 -- REFERENCES customer(id) em account amarra conta a documento.
 --
--- document_number é VARCHAR(18), não CHAR(14): o contrato aceita CNPJ, e
--- "12.345.678/0001-90" tem 18. Fica como chega, mascarado; o JSON Schema
--- só aceita as duas máscaras, senão o UNIQUE deixa de agrupar o mesmo
--- documento.
+-- document_number é só dígitos: 11 (CPF) ou 14 (CNPJ), sem máscara. O
+-- UNIQUE nele é a chave do histórico, e "123.456.789-09" e "12345678909"
+-- são o mesmo documento — se a máscara entrasse, virariam dois customers
+-- e toda regra por documento contaria metade. O controller tira a máscara
+-- antes de gravar e de consultar; o JSON Schema aceita as duas formas. O
+-- CHECK é o que impede uma máscara de escapar e furar o agrupamento:
+-- VARCHAR(14) sozinho ainda deixaria passar "123.456.789-0".
 CREATE TABLE customer(
     id                              BIGSERIAL PRIMARY KEY,
     customer_key                    CHAR(36) NOT NULL,
-    document_number                 VARCHAR(18) NOT NULL,
+    document_number                 VARCHAR(14) NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(customer_key),
-    UNIQUE(document_number)
+    UNIQUE(document_number),
+    CHECK(document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$')
 );
 
 -- Uma conta, de qualquer banco, de um customer. É a linha que o
@@ -85,6 +129,23 @@ CREATE INDEX account_customer_id_idx
 -- tabela (uns 650 bytes por Pix), e a primeira alavanca de retenção
 -- quando o disco apertar.
 --
+-- status_id é o veredicto; as sete colunas logo abaixo dele são como ele
+-- foi tomado. Duas notas de risco, 0 a 100, uma pro pagador e uma pro
+-- destino — a RFC chama cada uma de eixo (payer_risk, recipient_risk).
+-- Quanto histórico havia pra sustentar cada nota (payer_sufficiency,
+-- recipient_sufficiency: unavailable, low, medium, high) — sem histórico
+-- a nota é baixa por falta de dado, e é isso que a coluna diz, pra
+-- ninguém ler nota baixa como conta limpa. Que versão dos pesos e da
+-- tabela de decisão estava valendo (policy_version). Qual linha da tabela
+-- venceu (decision_rule: D-REJ, D-ATO-1, D-PAY...) e os motivos em texto
+-- (reasons). São colunas, não um JSONB de análise, porque ajustar os
+-- pesos depois, olhando o que aconteceu, é uma consulta — "qual era o
+-- payer_risk dos Pix que viraram 2FA?" — e não deveria passar por
+-- reasons->>'payer_risk'. Sem índice nelas: quem ajusta peso roda a
+-- consulta de vez em quando e pode esperar; não é caminho do POST. Os
+-- sinais, um a um, ficam em pix_transaction_rule_result, no fim do
+-- arquivo.
+--
 -- Sobre as colunas, o que não está escrito no tipo:
 --
 -- • external_id é o id do payload (pix-000123) e o {id} do GET. O UNIQUE
@@ -95,7 +156,7 @@ CREATE INDEX account_customer_id_idx
 -- • amount em centavos, inteiro, BIGINT: R$ 21 milhões já estouram um
 --   INTEGER, e dinheiro nunca é float. Os ids das tabelas Pix também são
 --   BIGSERIAL, diferente do Base Service: a 20 milhões de Pix por mês,
---   INT4 dura nove anos aqui e menos de dois na tabela de regras logo
+--   INT4 dura nove anos aqui e menos de um ano na tabela de sinais logo
 --   abaixo, e trocar depois reescreve a tabela inteira com ela travada.
 --
 -- • transaction_date (e opening_date, em account) é TIMESTAMPTZ,
@@ -103,13 +164,10 @@ CREATE INDEX account_customer_id_idx
 --   created_at é o relógio do nosso servidor; essas vêm de fora, com fuso
 --   ("2026-10-17T22:15:00-03:00"), e TIMESTAMP descartaria o -03:00 em
 --   silêncio: as 22h15 de São Paulo virariam 22h15 de lugar nenhum e a
---   regra de horário noturno (20h às 6h) erraria em três horas.
---
---   Repare que TIMESTAMPTZ guarda o instante, não o fuso: o banco roda em
---   UTC, e EXTRACT(HOUR FROM transaction_date) devolve 1, não 22, para o
---   Pix do exemplo. Toda regra que olha hora ou dia converte antes —
---   transaction_date AT TIME ZONE 'America/Sao_Paulo' no SQL,
---   .astimezone() no Python. O -03:00 literal está no payload bruto.
+--   regra de horário noturno (20h às 6h) erraria em três horas. Repare
+--   que TIMESTAMPTZ guarda o instante e não o fuso: o banco roda em UTC,
+--   e toda regra de horário converte com AT TIME ZONE 'America/Sao_Paulo'
+--   antes de olhar a hora (no exemplo, 1 em UTC, 22 em São Paulo).
 --
 -- • external_id e device_id são opacos ("ID único", "ID do aparelho"), por
 --   isso 255. ip em VARCHAR(45) cabe IPv6; INET daria operadores de rede
@@ -119,6 +177,13 @@ CREATE TABLE pix_transaction(
     id                              BIGSERIAL PRIMARY KEY,
     pix_transaction_key             CHAR(36) NOT NULL,
     status_id                       INTEGER NOT NULL REFERENCES pix_transaction_status(id),
+    payer_risk                      SMALLINT NOT NULL,
+    recipient_risk                  SMALLINT NOT NULL,
+    payer_sufficiency               VARCHAR(12) NOT NULL,
+    recipient_sufficiency           VARCHAR(12) NOT NULL,
+    policy_version                  VARCHAR(20) NOT NULL,
+    decision_rule                   VARCHAR(20) NOT NULL,
+    reasons                         JSONB NOT NULL,
     source_account_id               BIGINT NOT NULL REFERENCES account(id),
     destination_account_id          BIGINT NOT NULL REFERENCES account(id),
     pix_transaction_data            JSONB NOT NULL,
@@ -134,6 +199,13 @@ CREATE TABLE pix_transaction(
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
     CHECK(jsonb_typeof(pix_transaction_data) = 'object'),
+    CHECK(payer_risk BETWEEN 0 AND 100),
+    CHECK(recipient_risk BETWEEN 0 AND 100),
+    CHECK(payer_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
+    CHECK(recipient_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
+    CHECK(policy_version <> ''),
+    CHECK(decision_rule <> ''),
+    CHECK(jsonb_typeof(reasons) = 'array'),
     CHECK(amount > 0),
     CHECK((latitude IS NULL) = (longitude IS NULL)),
     CHECK(latitude IS NULL OR latitude BETWEEN -90 AND 90),
@@ -163,39 +235,66 @@ CREATE INDEX pix_transaction_source_account_id_idx
 CREATE INDEX pix_transaction_destination_account_id_idx
     ON pix_transaction (destination_account_id, transaction_date);
 
--- Aparelho: quantos Pix por device_id e aparelho compartilhado (um
--- aparelho pagando por vários documentos distintos é indício de farm de
--- contas).
+-- Aparelho e IP: quantos Pix por device_id ou por ip, e aparelho
+-- compartilhado (um aparelho pagando por vários documentos distintos é
+-- indício de farm de contas).
 CREATE INDEX pix_transaction_device_id_idx
     ON pix_transaction (device_id, transaction_date);
+
 CREATE INDEX pix_transaction_ip_idx
     ON pix_transaction (ip, transaction_date);
 
--- A explicação da decisão: uma linha por regra avaliada, por Pix. É
--- daqui que sai o metadata da resposta e é isto que o README promete:
--- quais regras rodaram, o que cada uma viu e o que cada uma pediu.
+-- A explicação da decisão: uma linha por sinal avaliado, por Pix,
+-- inclusive os unavailable. É daqui que sai metadata.signals da resposta
+-- e é isto que a RFC promete: quais regras rodaram, o que cada uma viu e
+-- quanto cada uma pesou.
 --
--- status_id é o que a regra, sozinha, diria; a decisão final é a mais
--- severa entre elas. rule_result_data guarda os números que a regra viu
--- (observado, limite, janela), porque os parâmetros vão ser calibrados e
--- o motivo de ontem tem de continuar legível com os parâmetros de amanhã.
+-- Cada linha é um sinal; o veredicto é um só e mora em pix_transaction.
+-- rule_name é o código da regra na tabela da RFC (seção 5: P03, R01,
+-- REL02...); signal_status_id é o estado; points é quanto o sinal somou
+-- ao eixo, e pode ser negativo (REL02 é -8). Repare que not_triggered e
+-- unavailable gravam 0 os dois, e rule_result_data vazio ({}): o que os
+-- separa é o status. family é a família que a resposta devolve (Perfil,
+-- Velocity, Contraparte...), não o grupo de teto da RFC — somar points
+-- por Pix não reproduz payer_risk, porque o teto é aplicado no motor.
 --
--- O nome da regra é texto, não FK pra uma tabela de regras: regra é
--- código, nasce e muda no motor, e uma tabela populada por INSERT aqui
--- custaria um docker compose down -v a cada regra nova. Os três status
--- são fixos pelo contrato; as regras não.
+-- Do sinal à decisão: soma por família (as regras que olham o mesmo
+-- padrão) com um teto, pra que cinco regras vendo a mesma rajada não
+-- contem cinco vezes; soma por eixo (payer_risk e recipient_risk, 0 a
+-- 100); e a tabela de decisão, linha a linha, até uma bater. Pesos, tetos
+-- e a tabela moram no motor e na RFC. O banco guarda o que cada regra
+-- viu (rule_result_data: observado, limite, janela) e o que disse (status
+-- e points) naquela hora, pra que o motivo de ontem continue legível com
+-- os pesos de amanhã.
 --
--- Append-only: ninguém dá UPDATE aqui. O UNIQUE diz que cada regra roda
--- uma vez por análise e, de quebra, é o índice que o GET usa pra montar
--- a resposta.
+-- rule_name, axis e family são texto com CHECK, não FK pra tabela: regra
+-- é código, nasce e muda no motor, e uma tabela populada por INSERT aqui
+-- custaria um docker compose down -v a cada regra ou família nova. Só o
+-- status do sinal tem tabela própria (pix_signal_status): é o status da
+-- linha, o papel que status_id tem no Base Service; domínio fixo de
+-- atributo, como axis aqui e as sufficiency em pix_transaction, é CHECK.
+--
+-- Append-only: ninguém dá UPDATE aqui, e o controller grava os sinais de
+-- um Pix num INSERT só (dezoito idas ao banco custam o dobro de uma). O
+-- UNIQUE diz que cada regra roda uma vez por análise e, de quebra, é o
+-- índice que o GET usa pra montar a resposta. É a tabela que mais cresce
+-- — dezoito linhas por Pix, dois terços do disco — e a primeira alavanca
+-- quando apertar é deixar de gravar os not_triggered e devolvê-los no GET
+-- a partir do catálogo da policy_version: o schema não muda.
 CREATE TABLE pix_transaction_rule_result(
-    id BIGSERIAL PRIMARY KEY,
-    pix_transaction_id BIGINT NOT NULL REFERENCES pix_transaction(id),
-    status_id INTEGER NOT NULL REFERENCES pix_transaction_status(id),
-    rule_result_data JSONB NOT NULL,
-    rule_name VARCHAR(50) NOT NULL,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    UNIQUE (pix_transaction_id, rule_name),
-    CHECK (rule_name <> ''),
-    CHECK (jsonb_typeof(rule_result_data) = 'object')
+    id                              BIGSERIAL PRIMARY KEY,
+    pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
+    signal_status_id                INTEGER NOT NULL REFERENCES pix_signal_status(id),
+    rule_result_data                JSONB NOT NULL,
+    rule_name                       VARCHAR(50) NOT NULL,
+    axis                            VARCHAR(10) NOT NULL,
+    family                          VARCHAR(30) NOT NULL,
+    points                          SMALLINT NOT NULL,
+    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(pix_transaction_id, rule_name),
+    CHECK(rule_name <> ''),
+    CHECK(axis IN ('payer', 'recipient')),
+    CHECK(family <> ''),
+    CHECK(points BETWEEN -100 AND 100),
+    CHECK(jsonb_typeof(rule_result_data) = 'object')
 );
