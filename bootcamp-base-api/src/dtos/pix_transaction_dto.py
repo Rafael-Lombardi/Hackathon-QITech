@@ -6,6 +6,9 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
+DOCUMENT_PATTERN = r"^(?:\d{11}|\d{3}\.\d{3}\.\d{3}-\d{2}|\d{14}|\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})$"
+
+
 class Geolocation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -16,7 +19,12 @@ class Geolocation(BaseModel):
 class AccountOwner(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    document_number: str = Field(min_length=11, max_length=18)
+    document_number: str = Field(pattern=DOCUMENT_PATTERN)
+
+    @field_validator("document_number")
+    @classmethod
+    def normalize_document_number(cls, value: str) -> str:
+        return "".join(character for character in value if character.isdigit())
 
 
 class Account(BaseModel):
@@ -31,6 +39,10 @@ class Account(BaseModel):
     @classmethod
     def require_opening_timezone(cls, value: datetime) -> datetime:
         return _require_timezone(value, "opening_date")
+
+
+class DestinationAccount(Account):
+    participant: str = Field(pattern=r"^\d{8}$")
 
 
 class TransactionSource(BaseModel):
@@ -49,7 +61,7 @@ class PixTransactionInput(BaseModel):
     amount: int = Field(gt=0)
     transaction_date: datetime
     source_account: Account
-    destination_account: Account
+    destination_account: DestinationAccount
     source: TransactionSource
 
     @field_validator("transaction_date")

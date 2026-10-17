@@ -1,0 +1,57 @@
+[
+  {
+    "id": "trust-factor-default",
+    "priority": 0,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/trust-factor/.*"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": {
+        "Content-Type": ["application/json"]
+      },
+      "body": {
+        "trust_factor": 70
+      }
+    }
+  },
+  {
+    "id": "trust-factor-99999999999",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/trust-factor/99999999999"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": {
+        "Content-Type": ["application/json"]
+      },
+      "body": {
+        "trust_factor": 12
+      }
+    }
+  },
+  {
+    "id": "trust-factor-88888888888",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/trust-factor/88888888888"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "headers": {
+        "Content-Type": ["application/json"]
+      },
+      "body": {
+        "trust_factor": 70
+      },
+      "delay": {
+        "timeUnit": "SECONDS",
+        "value": 3
+      }
+    }
+  }
+]

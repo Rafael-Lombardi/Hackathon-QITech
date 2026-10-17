@@ -18,6 +18,7 @@ def payload(**overrides):
             "owner": {"document_number": "123.456.789-09"},
         },
         "destination_account": {
+            "participant": "60701190",
             "branch": "3675",
             "account_number": "10442",
             "opening_date": "2025-03-02T09:00:00-03:00",

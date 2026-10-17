@@ -1,0 +1,25 @@
+from sqlalchemy import CHAR, BigInteger, CheckConstraint, Column, DateTime, String, UniqueConstraint, func
+
+from models.base import Base
+
+
+class Customer(Base):
+    """Quem paga ou recebe: um por documento, só dígitos (11 ou 14).
+
+    Nasce na primeira vez que o documento aparece num payload, pelo
+    CustomerRepository.get_or_create, e não muda depois. As regras "por
+    pessoa" do motor agrupam aqui, somando todas as contas do documento.
+    """
+
+    __tablename__ = "customer"
+
+    id = Column(BigInteger, primary_key=True)
+    customer_key = Column(CHAR(36), nullable=False)
+    document_number = Column(String(14), nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("customer_key"),
+        UniqueConstraint("document_number"),
+        CheckConstraint("document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$'"),
+    )

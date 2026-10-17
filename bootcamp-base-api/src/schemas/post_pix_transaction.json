@@ -1,50 +1,97 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PostPixTransaction",
+  "$comment": "O contrato de entrada do POST /pix/transaction, e o ÚNICO lugar com a medida de cada campo. Os tamanhos são os das colunas do database.sql: limite maior que a coluna vira 500 no INSERT. Todo objeto fecha com additionalProperties: false — campo a mais volta 400, inclusive um nome digitado errado, que de outro jeito seria ignorado sem aviso. Repare que os regex usam [0-9] e nunca \\d: no Python, \\d casa qualquer algarismo Unicode, e um '٣' arábico passaria aqui pra quebrar no CHECK do banco. O que o schema não tem como conferir (31 de fevereiro, NaN) é recusado em src/utils/pix_request.py, logo depois.",
   "type": "object",
   "additionalProperties": false,
   "required": ["id", "amount", "transaction_date", "source_account", "destination_account", "source"],
   "properties": {
-    "id": {"type": "string", "minLength": 1, "maxLength": 255},
-    "amount": {"type": "integer", "exclusiveMinimum": 0},
-    "transaction_date": {"type": "string", "format": "date-time"},
-    "source_account": {"$ref": "#/$defs/account"},
-    "destination_account": {"$ref": "#/$defs/account"},
+    "id": {"$ref": "#/$defs/text", "maxLength": 255},
+    "amount": {
+      "$comment": "Centavos, de 1 até o teto do BIGINT da coluna. Repare que o JSON Schema conta 150000.0 como integer: quem garante o int é o pix_request.py.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "transaction_date": {"$ref": "#/$defs/date_time"},
+    "source_account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["branch", "account_number", "opening_date", "owner"],
+      "properties": {
+        "branch": {"$ref": "#/$defs/branch"},
+        "account_number": {"$ref": "#/$defs/account_number"},
+        "opening_date": {"$ref": "#/$defs/date_time"},
+        "owner": {"$ref": "#/$defs/owner"}
+      }
+    },
+    "destination_account": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["participant", "branch", "account_number", "opening_date", "owner"],
+      "properties": {
+        "participant": {
+          "$comment": "ISPB, o código de 8 dígitos de cada banco no Pix. Só existe no destino: o contrato não traz o de quem paga. O maxLength parece repetir o regex e não repete — o $ do Python também casa antes de uma quebra de linha no fim, e '60701190' com quebra de linha passaria no regex pra estourar o CHAR(8) da coluna.",
+          "type": "string",
+          "pattern": "^[0-9]{8}$",
+          "maxLength": 8
+        },
+        "branch": {"$ref": "#/$defs/branch"},
+        "account_number": {"$ref": "#/$defs/account_number"},
+        "opening_date": {"$ref": "#/$defs/date_time"},
+        "owner": {"$ref": "#/$defs/owner"}
+      }
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
       "required": ["device_id", "channel", "ip"],
       "properties": {
-        "device_id": {"type": "string", "minLength": 1, "maxLength": 255},
-        "channel": {"type": "string", "minLength": 1, "maxLength": 30},
-        "ip": {"type": "string", "minLength": 1, "maxLength": 45},
-        "geolocation": {"$ref": "#/$defs/geolocation"}
+        "device_id": {"$ref": "#/$defs/text", "maxLength": 255},
+        "channel": {"$ref": "#/$defs/text", "maxLength": 30},
+        "ip": {
+          "$comment": "IPv4 ou IPv6, conferidos pelo FormatChecker com o ipaddress da biblioteca padrão — sem pacote extra. Sem format_checker no validate, os dois format viram enfeite e qualquer texto passa.",
+          "type": "string",
+          "maxLength": 45,
+          "anyOf": [{"format": "ipv4"}, {"format": "ipv6"}]
+        },
+        "geolocation": {
+          "$comment": "Opcional: pode faltar ou vir null. Quando vem, vem inteira — latitude sem longitude não localiza ninguém.",
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["latitude", "longitude"],
+          "properties": {
+            "latitude": {"type": "number", "minimum": -90, "maximum": 90},
+            "longitude": {"type": "number", "minimum": -180, "maximum": 180}
+          }
+        }
       }
     }
   },
   "$defs": {
+    "text": {
+      "$comment": "Texto opaco: id, device_id e channel. O regex só recusa o que derruba o INSERT — o NUL, que o Postgres não grava, e o surrogate solto (meia letra de UTF-16), que o driver não consegue codificar. Os dois virariam 500.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$"
+    },
+    "date_time": {
+      "$comment": "Data e hora COM fuso: sem ele, 22h15 seria 22h15 de lugar nenhum e a regra noturna erraria por 3 horas. É regex, e não format: date-time, porque esse format só é conferido com o pacote rfc3339-validator, que não está instalado — sem ele, passa qualquer texto. O ano vai de 1900 a 2999: nas pontas do calendário do Python (ano 1 e ano 9999) a conversão de fuso estoura, e o banco gravaria um instante que o Python não lê de volta. Mês 13 e 31 de fevereiro têm a forma certa e são recusados no pix_request.py.",
+      "type": "string",
+      "pattern": "^(19|2[0-9])[0-9]{2}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,6})?(Z|[+-][0-9]{2}:[0-9]{2})$"
+    },
+    "branch": {"type": "string", "minLength": 1, "maxLength": 10, "pattern": "^[0-9A-Za-z-]+$"},
+    "account_number": {"type": "string", "minLength": 1, "maxLength": 20, "pattern": "^[0-9A-Za-z-]+$"},
     "owner": {
       "type": "object",
       "additionalProperties": false,
       "required": ["document_number"],
-      "properties": {"document_number": {"type": "string", "minLength": 11, "maxLength": 18}}
-    },
-    "account": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["branch", "account_number", "opening_date", "owner"],
       "properties": {
-        "branch": {"type": "string", "minLength": 1, "maxLength": 20},
-        "account_number": {"type": "string", "minLength": 1, "maxLength": 30},
-        "opening_date": {"type": "string", "format": "date-time"},
-        "owner": {"$ref": "#/$defs/owner"}
-      }
-    },
-    "geolocation": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["latitude", "longitude"],
-      "properties": {
-        "latitude": {"type": "number", "minimum": -90, "maximum": 90},
-        "longitude": {"type": "number", "minimum": -180, "maximum": 180}
+        "document_number": {
+          "$comment": "CPF ou CNPJ: só os dígitos (11 ou 14) ou com a máscara de sempre. Sem conferir dígito verificador — o pagador é cliente nosso e o recebedor veio do DICT, os dois já conferidos na origem, e um CPF sintético de teste não pode virar 400. A máscara cai em src/utils/document_number.py, antes de qualquer gravação.",
+          "type": "string",
+          "pattern": "^([0-9]{11}|[0-9]{14}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{3}-[0-9]{2}|[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}/[0-9]{4}-[0-9]{2})$"
+        }
       }
     }
   }

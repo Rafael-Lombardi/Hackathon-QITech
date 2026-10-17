@@ -1,1 +1,1 @@
-"""Integrações HTTP externas; não adicionar cliente solto em controllers."""
+from connectors.dict_connector import DictConnector
