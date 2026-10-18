@@ -34,7 +34,7 @@ class PixTransactionRuleResult(Base):
     signal_status_id = Column(Integer, ForeignKey(PixSignalStatus.id), nullable=False)
     rule_result_data = Column(JSONB, nullable=False)
     rule_name = Column(String(50), nullable=False)
-    axis = Column(String(10), nullable=False)
+    risk_subject = Column(String(10), nullable=False)
     family = Column(String(30), nullable=False)
     points = Column(SmallInteger, nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
@@ -42,7 +42,7 @@ class PixTransactionRuleResult(Base):
     __table_args__ = (
         UniqueConstraint("pix_transaction_id", "rule_name"),
         CheckConstraint("rule_name <> ''"),
-        CheckConstraint("axis IN ('payer', 'recipient')"),
+        CheckConstraint("risk_subject IN ('payer', 'recipient')"),
         CheckConstraint("family <> ''"),
         CheckConstraint("points BETWEEN -100 AND 100"),
         CheckConstraint("jsonb_typeof(rule_result_data) = 'object'"),

@@ -373,10 +373,10 @@ class PixTransactionController(BaseController):
                 at=transaction_date,
             )
             payer_assessment = self.risk_repository.dict_security_evidence(
-                account_id=payer_account_id, axis="payer", at=transaction_date,
+                account_id=payer_account_id, risk_subject="payer", at=transaction_date,
             )
             recipient_assessment = self.risk_repository.dict_security_evidence(
-                account_id=recipient_account_id, axis="recipient", at=transaction_date,
+                account_id=recipient_account_id, risk_subject="recipient", at=transaction_date,
             )
         except SQLAlchemyError:
             return {
@@ -406,7 +406,7 @@ class PixTransactionController(BaseController):
                 "source_type": "restriction",
                 "scope": restriction.scope,
                 "assessment": None,
-                "axis": None,
+                "risk_subject": None,
                 "provenance": restriction.provenance,
                 "occurrence_id": restriction.occurrence_id,
                 "valid_from": restriction.valid_from,
@@ -422,7 +422,7 @@ class PixTransactionController(BaseController):
                 "source_type": "dict_security",
                     "scope": None,
                     "assessment": assessment.assessment,
-                    "axis": assessment.axis,
+                    "risk_subject": assessment.risk_subject,
                     "provenance": assessment.provenance,
                     "occurrence_id": assessment.occurrence_id,
                     "valid_from": assessment.valid_from,
@@ -495,7 +495,7 @@ class PixTransactionController(BaseController):
             {
                 "rule_name": signal.code,
                 "signal_status_id": self.pix_transaction_repository.get_signal_status_id(enumerator=signal.status),
-                "axis": signal.axis,
+                "risk_subject": signal.axis,
                 "family": signal.family,
                 "points": signal.points,
                 "rule_result_data": signal.evidence,

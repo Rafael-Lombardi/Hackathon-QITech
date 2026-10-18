@@ -64,7 +64,7 @@ class PixTransactionRepository:
         """Grava os sinais de um Pix num INSERT só, uma linha por sinal.
 
         Cada dict usa os nomes das colunas (rule_name, signal_status_id,
-        axis, family, points, rule_result_data); o pix_transaction_id
+        risk_subject, family, points, rule_result_data); o pix_transaction_id
         entra aqui. Passar a lista inteira ao session.execute vira um
         INSERT ... VALUES (...), (...) — o insertmanyvalues do SQLAlchemy
         2.0. Um INSERT por sinal custaria o dobro: medido com 8 clientes,

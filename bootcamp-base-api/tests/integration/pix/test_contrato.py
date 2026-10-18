@@ -54,7 +54,7 @@ CATALOG = {
     "DICT03": (3, "Contraparte", "recipient", "recipient", 25),
 }
 
-SIGNAL_KEYS = {"code", "layer", "family", "axis", "granularity", "status", "points"}
+SIGNAL_KEYS = {"code", "layer", "family", "risk_subject", "granularity", "status", "points"}
 
 PIX_STATUSES = {"approved", "rejected", "two_factor_required"}
 SUFFICIENCIES = {"unavailable", "low", "medium", "high"}
@@ -258,15 +258,15 @@ class TestContrato:
             "limit", "payer_account", "payer_velocity", "payer_behavior",
             "recipient_network", "dict_security_statistics", "dict_security", "relation",
         }
-        assert all(set(item) == {"axis", "raw", "applied", "floor", "cap"} for item in contributions.values())
-        assert {item["axis"] for item in contributions.values()} == {"payer", "recipient"}
+        assert all(set(item) == {"risk_subject", "raw", "applied", "floor", "cap"} for item in contributions.values())
+        assert {item["risk_subject"] for item in contributions.values()} == {"payer", "recipient"}
         assert sum(
             item["applied"] for group, item in contributions.items()
-            if item["axis"] == "payer"
+            if item["risk_subject"] == "payer"
         ) == metadata["scores"]["payer"]
         assert sum(
             item["applied"] for group, item in contributions.items()
-            if item["axis"] == "recipient"
+            if item["risk_subject"] == "recipient"
         ) == metadata["scores"]["recipient"]
         assert [signal["code"] for signal in metadata["signals"]] == list(CATALOG)
         assert all(type(signal["points"]) is int and type(signal["layer"]) is int for signal in metadata["signals"])
@@ -283,7 +283,7 @@ class TestContrato:
 
         for signal in pix.metadata["signals"]:
             layer, family, axis, granularity, points = CATALOG[signal["code"]]
-            described = (signal["layer"], signal["family"], signal["axis"], signal["granularity"])
+            described = (signal["layer"], signal["family"], signal["risk_subject"], signal["granularity"])
             assert described == (layer, family, axis, granularity), signal
             if signal["status"] == "triggered":
                 assert set(signal) == SIGNAL_KEYS | {"evidence"}, signal

@@ -25,7 +25,7 @@ class RestrictionSnapshot:
 
 @dataclass(frozen=True)
 class DictSecurityEvidenceSnapshot:
-    axis: str
+    risk_subject: str
     assessment: str
     provenance: str
     occurrence_id: str
@@ -90,17 +90,17 @@ class RiskRepository:
         self,
         *,
         account_id: int,
-        axis: str,
+        risk_subject: str,
         at: datetime,
     ) -> DictSecurityEvidenceSnapshot | None:
-        """Retorna evidência de segurança DICT vigente para o eixo."""
+        """Retorna evidência DICT vigente para o sujeito de risco."""
         document = select(Account.document_number).where(Account.id == account_id).scalar_subquery()
         row = self.session.scalar(
             select(DictSecurityEvidence)
             .join(Account, Account.id == DictSecurityEvidence.account_id)
             .where(
                 Account.document_number == document,
-                DictSecurityEvidence.axis == axis,
+                DictSecurityEvidence.risk_subject == risk_subject,
                 DictSecurityEvidence.valid_from <= at,
                 or_(
                     DictSecurityEvidence.valid_until.is_(None),
@@ -113,7 +113,7 @@ class RiskRepository:
         if row is None:
             return None
         return DictSecurityEvidenceSnapshot(
-            axis=row.axis,
+            risk_subject=row.risk_subject,
             assessment=row.assessment,
             provenance=row.provenance,
             occurrence_id=row.occurrence_id,

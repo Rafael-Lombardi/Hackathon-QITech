@@ -306,20 +306,20 @@ O pagador tinha 10 Pix aprovados de R$ 1.000, um por dia, sempre do mesmo aparel
     "scores": {"payer": 46, "recipient": 8},
     "evidence_sufficiency": {"payer": "medium", "recipient": "unavailable"},
     "family_contributions": {
-      "limit": {"axis": "payer", "raw": 10, "applied": 10, "floor": 0, "cap": 15},
-      "payer_behavior": {"axis": "payer", "raw": 36, "applied": 36, "floor": 0, "cap": 45},
-      "relation": {"axis": "recipient", "raw": 8, "applied": 8, "floor": -10, "cap": 8}
+      "limit": {"risk_subject": "payer", "raw": 10, "applied": 10, "floor": 0, "cap": 15},
+      "payer_behavior": {"risk_subject": "payer", "raw": 36, "applied": 36, "floor": 0, "cap": 45},
+      "relation": {"risk_subject": "recipient", "raw": 8, "applied": 8, "floor": -10, "cap": 8}
     },
     "signals": [
-      {"code": "L02", "layer": 2, "granularity": "payer", "family": "Limite", "axis": "payer", "status": "triggered", "points": 10, "evidence": {"amount": 620000, "amount_threshold": 20000, "device_day_amount": 620000, "device_seen_before_today": false, "device_day_amount_threshold": 100000}},
-      {"code": "P03", "layer": 2, "granularity": "payer", "family": "Perfil", "axis": "payer", "status": "triggered", "points": 18, "evidence": {"payer_prior_tx": 10, "device_seen_before": false}},
+      {"code": "L02", "layer": 2, "granularity": "payer", "family": "Limite", "risk_subject": "payer", "status": "triggered", "points": 10, "evidence": {"amount": 620000, "amount_threshold": 20000, "device_day_amount": 620000, "device_seen_before_today": false, "device_day_amount_threshold": 100000}},
+      {"code": "P03", "layer": 2, "granularity": "payer", "family": "Perfil", "risk_subject": "payer", "status": "triggered", "points": 18, "evidence": {"payer_prior_tx": 10, "device_seen_before": false}},
       ...
-      {"code": "P06", "layer": 2, "granularity": "payer", "family": "Perfil", "axis": "payer", "status": "triggered", "points": 18, "evidence": {"ratio": 6.2, "amount": 620000, "median_amount": 100000, "ratio_threshold": 5, "amount_threshold": 100000}},
+      {"code": "P06", "layer": 2, "granularity": "payer", "family": "Perfil", "risk_subject": "payer", "status": "triggered", "points": 18, "evidence": {"ratio": 6.2, "amount": 620000, "median_amount": 100000, "ratio_threshold": 5, "amount_threshold": 100000}},
       ...
-      {"code": "P08", "layer": 2, "granularity": "device", "family": "Perfil", "axis": "payer", "status": "unavailable", "points": 0},
-      {"code": "P09", "layer": 2, "granularity": "payer", "family": "Perfil", "axis": "payer", "status": "not_triggered", "points": 0},
+      {"code": "P08", "layer": 2, "granularity": "device", "family": "Perfil", "risk_subject": "payer", "status": "unavailable", "points": 0},
+      {"code": "P09", "layer": 2, "granularity": "payer", "family": "Perfil", "risk_subject": "payer", "status": "not_triggered", "points": 0},
       ...
-      {"code": "REL01", "layer": 2, "granularity": "pair", "family": "Contraparte", "axis": "recipient", "status": "triggered", "points": 8, "evidence": {"pair_prior_approved": 0}},
+      {"code": "REL01", "layer": 2, "granularity": "pair", "family": "Contraparte", "risk_subject": "recipient", "status": "triggered", "points": 8, "evidence": {"pair_prior_approved": 0}},
       ...
     ]
   }
@@ -477,7 +477,7 @@ erDiagram
     EXTERNAL_RISK_ASSESSMENT {
         bigint id PK
         bigint account_id FK
-        string axis
+        string risk_subject
         string assessment
         datetime valid_from
     }
@@ -502,7 +502,7 @@ erDiagram
         bigint id PK
         bigint pix_transaction_id FK
         string source_type
-        string axis
+        string risk_subject
         string occurrence_id
     }
     PIX_TRANSACTION_STATUS {
@@ -523,8 +523,10 @@ Como ler o modelo: `account` combina documento e conta concreta usada na origem 
 - **`pix_transaction_status`:** resultado final do Pix: `approved`, `rejected` ou `two_factor_required`.
 - **`pix_signal_status`:** resultado de uma regra individual: `triggered`, `not_triggered` ou `unavailable`. Um Pix tem um status final, mas tem uma linha de status para cada sinal.
 - **`pix_transaction_rule_result`:** explicação de cada regra executada — código, eixo, família, pontos e evidência observada. São as linhas que formam `metadata.signals`.
-- **`pix_transaction_risk_evidence`:** snapshot das fontes externas/autoritativas consultadas. `source_type` só aceita `restriction` (veto operacional, com `scope`) ou `dict_security` (avaliação do DICT, com `axis`/sujeito `payer` ou `recipient`). `family` não fica aqui: pertence ao resultado individual de regra. Não é outra regra; registra qual fonte estava válida para que a análise continue auditável mesmo depois que a fonte mudar.
-- **`axis` na evidência (risk subject):** o nome legado da coluna indica a identidade de risco à qual a fonte se aplica: `payer` ou `recipient`. Não é eixo geométrico nem score; serve para não aplicar evidência do pagador ao recebedor. Em uma evolução de schema, `risk_subject` seria um nome mais claro.
+- **`pix_transaction_risk_evidence`:** snapshot das fontes externas/autoritativas consultadas. `source_type` só aceita `restriction` (veto operacional, com `scope`) ou `dict_security` (avaliação do DICT, com `risk_subject` `payer` ou `recipient`). `family` não fica aqui: pertence ao resultado individual de regra. Não é outra regra; registra qual fonte estava válida para que a análise continue auditável mesmo depois que a fonte mudar.
+- **`risk_subject` em `external_risk_assessment` e na evidência:** sujeito de risco ao qual a fonte se aplica: `payer` ou `recipient`. Nome explícito evita confundir a coluna com eixo geométrico ou score.
+- **`assessment`:** classificação devolvida pela fonte externa: `clear`, `suspicious`, `confirmed_in_mock` ou `unavailable`. Ela descreve a qualidade/estado da evidência; o motor transforma `suspicious` e `confirmed_in_mock` em sinais DICT, mas não trata `clear` como prova de segurança.
+- **`pix_signal_status`:** catálogo do estado de cada regra individual. `triggered` soma seus pontos, `not_triggered` respondeu sem disparar e `unavailable` não conseguiu responder por falta de dados/fonte. O status final do Pix fica em `pix_transaction_status`; são conceitos diferentes.
 
 | Tabela | O que guarda | Por que existe |
 |---|---|---|
@@ -556,7 +558,7 @@ O fluxo de escrita é intencionalmente curto: fontes autoritativas existem antes
 
 As FKs de `pix_transaction` apontam para as contas concreta de origem e destino. A mesma conta pode aparecer em muitos Pix e nos dois papéis em momentos diferentes. Consultas por titular usam `account.document_number` quando a regra pede visão agregada; consultas por conta usam `account.id`. Essa distinção evita confundir “mesmo documento” com “mesma conta bancária”.
 
-`pix_transaction_rule_result` e `pix_transaction_risk_evidence` são append-only na prática: não corrigimos uma análise antiga sobrescrevendo suas linhas. Se uma fonte ou política mudar, o próximo Pix recebe nova captura e nova `policy_version`; a análise anterior continua reproduzível com o contexto e os snapshots que já guardou.
+`pix_transaction_rule_result` e `pix_transaction_risk_evidence` são append-only na prática: não corrigimos uma análise antiga sobrescrevendo suas linhas. A evidência se liga diretamente à análise (`pix_transaction_id`), e não a um único rule result, por dois motivos: uma mesma avaliação externa pode sustentar DICT02 e DICT03, e uma restrição pode decidir por veto antes de qualquer score. A relação com regras aparece no `rule_result_data`/`metadata.signals` e no mesmo `pix_transaction_id`. Se a auditoria exigir proveniência relacional por regra no futuro, o desenho correto é uma tabela associativa many-to-many, não uma FK única em evidence. Se uma fonte ou política mudar, o próximo Pix recebe nova captura e nova `policy_version`; a análise anterior continua reproduzível com o contexto e os snapshots que já guardou.
 
 No código, esses modelos ficam separados pelo papel que desempenham: `Account` e as fontes (`DeviceRegistry`, `RiskRestriction`, `DictSecurityEvidence`) representam estado autoritativo; `PixTransaction` representa o fato observado, o payload original e a decisão produzida; `PixTransactionRuleResult` e `PixTransactionRiskEvidence` representam a explicação imutável daquela decisão. O fluxo não cria um objeto intermediário de processamento: antes do commit, ainda não existe análise consultável.
 

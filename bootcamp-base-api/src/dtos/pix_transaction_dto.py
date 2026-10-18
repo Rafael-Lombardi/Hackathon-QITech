@@ -30,7 +30,7 @@ class PixTransactionDTO:
         controller grava nessa ordem num INSERT só, e o list_signals lê de
         volta pela ordem do id.
 
-        family e axis vêm da linha, como a regra disse na hora. Camada e
+        family e risk_subject vêm da linha, como a regra disse na hora. Camada e
         granularidade não são coluna: saem do catálogo pelo código, no
         signal_spec. Repare no preço. Se um dia um código sair do
         catálogo, o GET dos Pix antigos dele quebra aqui — e é a hora de
@@ -46,7 +46,7 @@ class PixTransactionDTO:
                 "layer": spec.layer,
                 "granularity": spec.granularity,
                 "family": rule_result.family,
-                "axis": rule_result.axis,
+                "risk_subject": rule_result.risk_subject,
                 "status": rule_result.signal_status.enumerator,
                 "points": rule_result.points,
             }

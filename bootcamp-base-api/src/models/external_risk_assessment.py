@@ -1,6 +1,6 @@
 """Evidência antifraude simulada retornada pelo DICT."""
 
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint, func
 
 from models.base import Base
 from models.account import Account
@@ -13,7 +13,7 @@ class DictSecurityEvidence(Base):
 
     id = Column(BigInteger, primary_key=True)
     account_id = Column(BigInteger, ForeignKey(Account.id), nullable=False)
-    axis = Column(String(10), nullable=False)
+    risk_subject = Column(String(10), nullable=False)
     assessment = Column(String(30), nullable=False)
     valid_from = Column(DateTime(timezone=True), nullable=False)
     valid_until = Column(DateTime(timezone=True))
@@ -22,10 +22,11 @@ class DictSecurityEvidence(Base):
     severity = Column(String(20))
     source_version = Column(String(50))
     observed_at = Column(DateTime(timezone=True))
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("occurrence_id"),
-        Index("external_risk_account_axis_idx", "account_id", "axis", "valid_from"),
+        Index("external_risk_account_subject_idx", "account_id", "risk_subject", "valid_from"),
     )
 
 

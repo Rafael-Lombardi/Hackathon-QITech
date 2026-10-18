@@ -103,13 +103,13 @@ def seed_dict_security_evidence(assessments: list[dict]) -> None:
                 text(
                     """
                     INSERT INTO external_risk_assessment
-                        (account_id, axis, assessment, valid_from, valid_until,
+                        (account_id, risk_subject, assessment, valid_from, valid_until,
                          provenance, occurrence_id, severity, source_version, observed_at)
-                    VALUES (:account_id, :axis, :assessment, :valid_from, :valid_until,
+                    VALUES (:account_id, :risk_subject, :assessment, :valid_from, :valid_until,
                             :provenance, :occurrence_id, :severity, :source_version, :observed_at)
                     ON CONFLICT (occurrence_id) DO UPDATE SET
                         account_id = EXCLUDED.account_id,
-                        axis = EXCLUDED.axis,
+                        risk_subject = EXCLUDED.risk_subject,
                         assessment = EXCLUDED.assessment,
                         valid_from = EXCLUDED.valid_from,
                         valid_until = EXCLUDED.valid_until,
@@ -121,7 +121,7 @@ def seed_dict_security_evidence(assessments: list[dict]) -> None:
                 ),
                 {
                     "account_id": account_id,
-                    "axis": assessment["axis"],
+                    "risk_subject": assessment["risk_subject"],
                     "assessment": assessment["assessment"],
                     "valid_from": assessment["valid_from"],
                     "valid_until": assessment.get("valid_until"),

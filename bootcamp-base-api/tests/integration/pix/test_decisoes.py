@@ -22,7 +22,7 @@ def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
     dict_mock.set_security_statistics(recipient.document, 12)
     seed_dict_security_evidence([{
         "document": recipient.document,
-        "axis": "recipient",
+        "risk_subject": "recipient",
         "assessment": assessment,
         "valid_from": T0.replace(hour=0),
         "occurrence_id": f"external-{assessment}-{recipient.document}",
@@ -142,7 +142,7 @@ class TestDecisoes:
         )
         seed_dict_security_evidence([{
             "document": payer.document,
-            "axis": "payer",
+        "risk_subject": "payer",
             "assessment": "suspicious",
             "valid_from": T0.replace(hour=0),
             "occurrence_id": f"external-payer-{payer.document}",
@@ -273,7 +273,7 @@ class TestDecisoes:
         dict_mock.set_security_statistics(recipient.document, 12)
         seed_dict_security_evidence([{
             "document": recipient.document,
-            "axis": "recipient",
+        "risk_subject": "recipient",
             "assessment": "confirmed_in_mock",
             "valid_from": T0.replace(hour=0),
             "occurrence_id": f"external-cross-{recipient.document}",

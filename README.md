@@ -2,6 +2,8 @@
 
 **Integrantes:** [nomes]
 
+Este é o README principal do projeto. Ele explica a decisão antifraude, as camadas, o modelo de dados, como executar a API e como reproduzir cenários. O [README do serviço](bootcamp-base-api/README.md) contém somente comandos operacionais; a explicação de manutenção fica em [`docs/README-interno.md`](docs/README-interno.md).
+
 ## Como o motor de decisão funciona
 
 O serviço recebe um Pix, valida o contrato, consulta o estado autoritativo e o histórico, avalia evidências do DICT e produz uma decisão determinística antes da autorização: `approved`, `two_factor_required` ou `rejected`.
@@ -27,6 +29,39 @@ flowchart TD
 As restrições são vetos explícitos e vêm antes dos scores. Os scorers são lógicos: o código compartilha o agregador, mas mantém os eixos separados. O DICT é uma fonte de evidência, não uma probabilidade de fraude. `unavailable` não significa segurança.
 
 As restrições autoritativas são vetos operacionais, avaliados antes dos scores.
+
+### Camadas do sistema
+
+| Camada | Responsabilidade | Não faz |
+|---|---|---|
+| API/controller | valida entrada, resolve idempotência, consulta fontes, coordena locks e commit | não contém pesos ou limiares de risco |
+| Context builder | combina Pix atual, histórico, cadastro, restrições e DICT num contexto congelado | não decide o resultado |
+| Feature extractor | calcula idade, velocidade, distância, relações e baselines | não acessa a política final |
+| Rule evaluators | avaliam sinais independentes e registram `triggered`, `not_triggered` ou `unavailable` | não conhecem outros sinais |
+| Scorers + policy | agrega por sujeito (`payer`/`recipient`), aplica tetos e percorre a tabela de decisão | não consulta banco ou rede |
+| Persistência/DTO | grava fato, decisão, sinais e evidências; transforma linhas em resposta JSON | não reavalia um GET |
+
+O desenho separa coordenação de infraestrutura e decisão antifraude: o controller prepara um `Context`; o pacote `antifraud` é determinístico e puro; o resultado volta para o controller, que persiste a análise completa. Isso permite testar política sem banco e testar integração sem duplicar a política.
+
+### Infraestrutura e fontes
+
+| Serviço/fonte | Papel |
+|---|---|
+| `api` | recebe o Pix, coordena o caso de uso e executa o motor |
+| PostgreSQL | mantém contas, histórico, sinais, decisão e evidências |
+| DICT mock | simula estatísticas e marcações externas de segurança |
+| cadastro de devices | fonte autoritativa de aparelhos confiáveis; um Pix observado não cadastra aparelho |
+| restrições | blocklist temporal, aplicada como veto antes dos scores |
+
+O DICT não retorna probabilidade de fraude nem decide sozinho. `clear` significa ausência de evidência adversa conhecida; `unavailable` significa que a fonte não respondeu. O mock existe para tornar cenários reproduzíveis; em produção, seria substituído por um connector para o DICT real.
+
+### Semântica dos dados
+
+`account` é a unidade concreta do domínio: documento, banco, agência e número. Não existe `customer` separado. Quando uma regra precisa da visão do titular, agrega contas pelo documento; quando precisa da conta usada no Pix, consulta o `account_id` exato.
+
+Uma tentativa observada não equivale a uma aprovação. Todas as tentativas entram no histórico de rajadas e volume; apenas `approved` ensina device/IP, mediana, destinos conhecidos e relações recorrentes. `two_factor_required` não vira aprovação automaticamente porque não existe retorno real de 2FA neste escopo.
+
+As restrições são diferentes dos sinais: `risk_restriction` é um veto explícito e temporal, não pontos heurísticos. Já `pix_transaction_rule_result` registra cada regra avaliada (`triggered`, `not_triggered` ou `unavailable`). `pix_transaction_risk_evidence` congela as fontes consultadas para a análise; ela se liga ao Pix inteiro porque uma fonte pode sustentar várias regras ou um veto anterior aos scores.
 
 ## Regras
 
@@ -73,6 +108,50 @@ A política percorre a tabela na ordem abaixo; a primeira condição que casar v
 
 `approved` é um rótulo operacional, não uma confirmação posterior de legitimidade. Ainda não há retorno real de 2FA ou ground truth de fraude; por isso a política é determinística e auditável, não um modelo ML calibrado.
 
+### Relógios, idempotência e indisponibilidade
+
+Há três instantes diferentes porque cada um responde uma pergunta diferente:
+
+| Campo | Quem define | Para que serve |
+|---|---|---|
+| `transaction_date` | cliente Pix | horário de negócio, horário noturno, idade da conta e auditoria do evento |
+| `received_at` | servidor, na entrada da requisição | ordem de chegada e janelas de velocidade/volume |
+| `evaluated_at` | servidor, depois dos locks | instante monotônico da avaliação; evita que concorrência faça histórico concluído desaparecer |
+
+Fluxo temporal: validação captura o recebimento → locks serializam o pagador → `evaluated_at` é calculado → histórico é consultado até esse corte → sinais e decisão são persistidos. Testes em `APP_ENV=test` injetam `received_at` controlado, sem alterar o relógio de produção.
+
+- `external_id`: chave única do Pix; reenvio idêntico devolve `200`, payload diferente devolve `409`.
+
+O processamento é síncrono. Não há fila, `receipt`, `lease`, `processing` ou `failed` persistidos. Se o processo morrer antes do commit, o próximo POST tenta de novo; depois do commit, a análise é reutilizada.
+
+Indisponibilidade é tratada por fonte: histórico insuficiente torna sinais específicos `unavailable`; DICT indisponível remove apenas sua evidência; cadastro de devices pode levar a `D-DATA-UNAVAILABLE`; fonte de restrições indisponível impede aprovação silenciosa, pois poderia esconder um veto.
+
+## Endpoints e contrato
+
+| Método | Rota | Autenticação | Comportamento |
+|---|---|---|---|
+| `GET` | `/` | pública | identifica o serviço e o processo |
+| `GET` | `/health_check` | pública | retorna `204` quando a API está viva |
+| `POST` | `/pix/transaction` | `INTERNAL-TOKEN` | valida, avalia, grava e retorna a análise; `201` para análise nova |
+| `GET` | `/pix/transaction/{id}` | `INTERNAL-TOKEN` | lê análise persistida; não chama DICT nem reexecuta regras |
+| `GET` | `/docs` | pública | Swagger interativo |
+| `GET` | `/openapi.json` | pública | contrato OpenAPI |
+
+O POST recebe `id`, `amount` em centavos, `transaction_date` com fuso, contas de origem/destino e sinais de contexto (`device_id`, canal, IP e geolocalização opcional). `destination_account.participant` é o ISPB do banco de destino. O schema rejeita campos desconhecidos, documentos inválidos, datas sem fuso e `transaction_date` fora da tolerância de cinco minutos do relógio do servidor.
+
+Respostas de negócio:
+
+| Status HTTP | Quando |
+|---:|---|
+| `201` | Pix válido e análise criada |
+| `200` | reenvio idêntico; devolve exatamente a análise já gravada |
+| `400` | contrato inválido, data fora da tolerância ou relógio de teste inválido |
+| `403` | `INTERNAL-TOKEN` ausente/incorreto |
+| `404` | análise inexistente no GET |
+| `409` | mesmo `id` com payload diferente |
+
+O corpo de sucesso contém `status` e `metadata`: regra vencedora, motivos, scores, suficiência de evidências, sinais, contribuições por família e versão da política.
+
 ## Como rodar e testar
 
 ```bash
@@ -85,7 +164,7 @@ Envie um Pix para `POST /pix/transaction` com `INTERNAL-TOKEN: default_token`. A
 
 ### Casos manuais com `curl`
 
-O serviço desativa as páginas automáticas Swagger/OpenAPI; o contrato de entrada está em [`post_pix_transaction.json`](bootcamp-base-api/src/schemas/post_pix_transaction.json). Este caso cria um Pix simples e imprime a análise:
+O contrato de entrada está em [`post_pix_transaction.json`](bootcamp-base-api/src/schemas/post_pix_transaction.json), e a API também expõe Swagger em [`/docs`](http://localhost:3000/docs) e OpenAPI em [`/openapi.json`](http://localhost:3000/openapi.json). Este caso cria um Pix simples e imprime a análise:
 
 ```bash
 PIX_ID="manual-$(date +%s)"
@@ -188,7 +267,7 @@ docker compose exec db psql -U bootcamp -d bootcamp -c \
   "SELECT id, external_id, decision_rule, payer_risk, recipient_risk, received_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
 
 docker compose exec db psql -U bootcamp -d bootcamp -c \
-  "SELECT pix_transaction_id, rule_name, axis, signal_status_id, points FROM pix_transaction_rule_result ORDER BY id DESC LIMIT 30;"
+  "SELECT pix_transaction_id, rule_name, risk_subject, signal_status_id, points FROM pix_transaction_rule_result ORDER BY id DESC LIMIT 30;"
 
 docker compose exec db psql -U bootcamp -d bootcamp -c \
   "SELECT external_id, status_id, received_at, evaluated_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
@@ -205,18 +284,58 @@ O banco usa um modelo account-scoped: cada `account` combina documento e conta b
 | `account` | identidade usada como origem/destino; documento, participante, agência, número e data de abertura |
 | `device_registry` | cadastro autoritativo de devices confiáveis e revogações; um Pix observado não cadastra device |
 | `risk_restriction` | veto temporal explícito para pagador, titular recebedor ou conta recebedora; avaliado antes dos scores |
-| `external_risk_assessment` | snapshot de inteligência externa/DICT por eixo (`payer`/`recipient`); não é histórico nem ground truth |
+| `external_risk_assessment` | snapshot de inteligência externa/DICT por `risk_subject` (`payer`/`recipient`); não é histórico nem ground truth |
 | `pix_transaction` | fato observado, payload original, relógios, scores, regra vencedora e decisão final; `UNIQUE(external_id)` dá idempotência |
-| `pix_transaction_rule_result` | uma linha por regra, incluindo `unavailable`, com status, família, eixo, pontos e evidência observada |
+| `pix_transaction_rule_result` | uma linha por regra, incluindo `unavailable`, com status, família, sujeito, pontos e evidência observada |
 | `pix_transaction_risk_evidence` | cópia imutável das restrições e avaliações externas usadas naquela decisão |
 | `pix_transaction_status` / `pix_signal_status` | catálogos dos três estados finais e dos três estados de cada regra |
 
 `pix_transaction` aponta para as contas de origem e destino. A decisão e suas duas coleções de explicação são gravadas na mesma transação; não há `receipt`, `lease`, fila ou estado intermediário persistido. Assim, o `GET` só encontra análises completas e cada Pix continua auditável mesmo se as fontes externas mudarem depois.
 
+### Dicionário das tabelas
+
+| Tabela | Campos que importam | Relações e ciclo de vida |
+|---|---|---|
+| `account` | `document_number`, `participant`, `branch`, `account_number`, `opening_date` | criada no primeiro uso ou por seed; origem/destino de muitos Pix; documento permite agregação por titular |
+| `device_registry` | `device_id`, `registered_at`, `revoked_at`, `provenance` | cadastro autoritativo; FK para `account`; nunca nasce de uma transação |
+| `risk_restriction` | `scope`, `active_from`, `active_until`, `status`, `occurrence_id` | blocklist temporal; FK para `account`; consultada antes de pontuar |
+| `external_risk_assessment` | `risk_subject`, `assessment`, validade, severidade e versão da fonte | inteligência externa vigente; FK para `account`; alimenta DICT02/03 |
+| `pix_transaction_status` | `enumerator` | catálogo fixo: `approved`, `rejected`, `two_factor_required` |
+| `pix_signal_status` | `enumerator` | catálogo fixo por regra: `triggered`, `not_triggered`, `unavailable` |
+| `pix_transaction` | payload, `external_id`, `received_at`, `evaluated_at`, scores, `decision_rule`, `reasons`, contexto | fato observado + decisão; FKs para conta de origem/destino; pai das explicações |
+| `pix_transaction_rule_result` | `rule_name`, `risk_subject`, `family`, `points`, `rule_result_data` | filho de `pix_transaction`; uma linha por regra executada; compõe `metadata.signals` |
+| `pix_transaction_risk_evidence` | `source_type`, `occurrence_id`, validade, `captured_at`, avaliação | snapshot filho do Pix; congela restrição/DICT usado, mesmo se fonte mudar depois |
+
+```mermaid
+erDiagram
+    ACCOUNT ||--o{ DEVICE_REGISTRY : cadastra
+    ACCOUNT ||--o{ RISK_RESTRICTION : restringe
+    ACCOUNT ||--o{ EXTERNAL_RISK_ASSESSMENT : avalia
+    ACCOUNT ||--o{ PIX_TRANSACTION : origem
+    ACCOUNT ||--o{ PIX_TRANSACTION : destino
+    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RULE_RESULT : explica
+    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RISK_EVIDENCE : congela
+    PIX_TRANSACTION_STATUS ||--o{ PIX_TRANSACTION : classifica
+    PIX_SIGNAL_STATUS ||--o{ PIX_TRANSACTION_RULE_RESULT : estado
+```
+
+`created_at` existe nos registros persistidos para indicar entrada no banco. Ele não substitui validade da fonte (`valid_from`/`valid_until`), cadastro de device (`registered_at`/`revoked_at`) nem o instante em que uma evidência foi capturada (`captured_at`).
+
 ## Documentação operacional
 
 - [README da API](bootcamp-base-api/README.md): configuração, rotas, mock do DICT e operação local.
 - [Testes de integração](bootcamp-base-api/tests/integration/pix/README.md): catálogo dos cenários.
+
+## Como a entrega atende ao desafio
+
+- **Entrada e decisão:** `POST /pix/transaction` valida o contrato e retorna `approved`, `two_factor_required` ou `rejected` antes da autorização.
+- **Persistência:** cada Pix aceito pelo contrato fica gravado com `external_id`, payload, contas de origem/destino, relógios, scores, regra vencedora e explicações.
+- **Consulta:** `GET /pix/transaction/{id}` devolve a análise persistida, sem reexecutar o motor.
+- **Rastreabilidade:** a resposta mostra regra vencedora, sinais, pontos, famílias, suficiência de evidência e versão da política; o banco preserva os snapshots das fontes externas.
+- **Testabilidade:** os cenários de integração exercitam contrato, fronteiras, histórico, concorrência, DICT, indisponibilidade e persistência; o relógio de teste permite reproduzir janelas temporais.
+- **Documentação:** este README apresenta racional, regras, decisão, banco e operação; o documento interno aprofunda manutenção e decisões de implementação.
+
+O projeto não apresenta calibração estatística ou modelo ML como resultado: não existe ground truth confiável de fraude e de sucesso de 2FA. A escolha foi uma política determinística, explicável e reproduzível, deixando a coleta de rótulos como evolução posterior.
 
 ## Referência do desafio
 

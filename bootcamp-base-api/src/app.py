@@ -30,20 +30,18 @@ def create_app() -> FastAPI:
     ordem DENTRO do bloco de middlewares tem consequência, e ela está
     explicada logo abaixo.
     """
-    # Os três None desligam a documentação automática: o FastAPI sabe
-    # gerar sozinho umas páginas descrevendo a API, e aqui elas não
-    # existem. O contrato de entrada é o src/schemas/post_pix_transaction.json,
-    # e o README tem um exemplo pronto de cada rota.
-    #
     # O redirect_slashes=False desliga um atalho do Starlette: endereço
     # com uma barra a mais no fim (GET /pix/transaction/) respondia 307,
     # mandando o cliente pra versão sem a barra — que no GET nem existe e
     # dá 405. Sem o atalho, endereço fora da tabela de rotas é 404, como
     # qualquer outro.
     application = FastAPI(
-        docs_url=None,
-        redoc_url=None,
-        openapi_url=None,
+        title="Antifraude Pix API",
+        description="Motor determinístico de decisão antifraude Pix. Use INTERNAL-TOKEN nas rotas de transação.",
+        version="1.0.0",
+        docs_url="/docs",
+        redoc_url="/redoc",
+        openapi_url="/openapi.json",
         redirect_slashes=False,
     )
 

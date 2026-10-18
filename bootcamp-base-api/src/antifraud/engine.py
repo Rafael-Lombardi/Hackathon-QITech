@@ -102,7 +102,7 @@ def _family_contributions(triggered: Iterable[Signal]) -> dict[str, dict[str, in
 
     return {
         group: {
-            "axis": next(spec.axis.value for spec in policy.CATALOG.values() if spec.cap_group == group),
+            "risk_subject": next(spec.axis.value for spec in policy.CATALOG.values() if spec.cap_group == group),
             "raw": raw,
             "applied": _clamp(raw, floor, ceiling),
             "floor": floor,
@@ -115,7 +115,7 @@ def _family_contributions(triggered: Iterable[Signal]) -> dict[str, dict[str, in
 
 def _axis_risk(contributions: Mapping[str, Mapping[str, int | str]], axis: Axis) -> int:
     return _clamp(
-        sum(int(group["applied"]) for group in contributions.values() if group["axis"] == axis.value),
+        sum(int(group["applied"]) for group in contributions.values() if group["risk_subject"] == axis.value),
         policy.MIN_RISK,
         policy.MAX_RISK,
     )

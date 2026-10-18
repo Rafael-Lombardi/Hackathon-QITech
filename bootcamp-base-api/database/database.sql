@@ -132,7 +132,7 @@ CREATE INDEX risk_restriction_account_idx
 CREATE TABLE external_risk_assessment(
     id                              BIGSERIAL PRIMARY KEY,
     account_id                     BIGINT NOT NULL REFERENCES account(id),
-    axis                            VARCHAR(10) NOT NULL,
+    risk_subject                    VARCHAR(10) NOT NULL,
     assessment                     VARCHAR(30) NOT NULL,
     valid_from                     TIMESTAMPTZ NOT NULL,
     valid_until                    TIMESTAMPTZ,
@@ -142,14 +142,14 @@ CREATE TABLE external_risk_assessment(
     source_version                 VARCHAR(50),
     observed_at                    TIMESTAMPTZ,
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
-    CHECK(axis IN ('payer', 'recipient')),
+    CHECK(risk_subject IN ('payer', 'recipient')),
     CHECK(assessment IN ('clear', 'suspicious', 'confirmed_in_mock', 'unavailable')),
     CHECK(valid_until IS NULL OR valid_until > valid_from),
     CHECK(provenance <> '')
 );
 
 CREATE INDEX external_risk_account_axis_idx
-    ON external_risk_assessment (account_id, axis, valid_from);
+    ON external_risk_assessment (account_id, risk_subject, valid_from);
 
 -- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
 --
@@ -305,12 +305,12 @@ CREATE INDEX pix_transaction_device_id_idx
 -- janela) e o que disse (status e points) naquela hora, pra que o motivo
 -- de ontem continue legível com os pesos de amanhã.
 --
--- rule_name, axis e family são texto com CHECK, não FK pra tabela: regra
+-- rule_name, risk_subject e family são texto com CHECK, não FK pra tabela: regra
 -- é código, nasce e muda no motor, e uma tabela populada por INSERT aqui
 -- custaria um docker compose down -v a cada regra ou família nova. Só o
 -- status do sinal tem tabela própria (pix_signal_status): é o status da
 -- linha, o papel que status_id tem no Base Service; domínio fixo de
--- atributo, como axis aqui e as sufficiency em pix_transaction, é CHECK.
+-- atributo, como risk_subject aqui e as sufficiency em pix_transaction, é CHECK.
 --
 -- Append-only: ninguém dá UPDATE aqui, e o controller grava os sinais de
 -- um Pix num INSERT só (dezenove idas ao banco custam o dobro de uma). O
@@ -325,13 +325,13 @@ CREATE TABLE pix_transaction_rule_result(
     signal_status_id                INTEGER NOT NULL REFERENCES pix_signal_status(id),
     rule_result_data                JSONB NOT NULL,
     rule_name                       VARCHAR(50) NOT NULL,
-    axis                            VARCHAR(10) NOT NULL,
+    risk_subject                    VARCHAR(10) NOT NULL,
     family                          VARCHAR(30) NOT NULL,
     points                          SMALLINT NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_id, rule_name),
     CHECK(rule_name <> ''),
-    CHECK(axis IN ('payer', 'recipient')),
+    CHECK(risk_subject IN ('payer', 'recipient')),
     CHECK(family <> ''),
     CHECK(points BETWEEN -100 AND 100),
     CHECK(jsonb_typeof(rule_result_data) = 'object')
@@ -343,7 +343,7 @@ CREATE TABLE pix_transaction_risk_evidence(
     id                              BIGSERIAL PRIMARY KEY,
     pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
     source_type                    VARCHAR(30) NOT NULL,
-    axis                            VARCHAR(10),
+    risk_subject                    VARCHAR(10),
     scope                           VARCHAR(30),
     assessment                     VARCHAR(30),
     provenance                     VARCHAR(80) NOT NULL,
@@ -357,9 +357,9 @@ CREATE TABLE pix_transaction_risk_evidence(
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_id, source_type, occurrence_id),
     CHECK(source_type IN ('restriction', 'dict_security')),
-    CHECK(axis IS NULL OR axis IN ('payer', 'recipient')),
+    CHECK(risk_subject IS NULL OR risk_subject IN ('payer', 'recipient')),
     CHECK(source_type <> 'restriction' OR scope IS NOT NULL),
-    CHECK(source_type <> 'dict_security' OR axis IS NOT NULL),
+    CHECK(source_type <> 'dict_security' OR risk_subject IS NOT NULL),
     CHECK(provenance <> ''),
     CHECK(occurrence_id <> ''),
     CHECK(valid_until IS NULL OR valid_until > valid_from)

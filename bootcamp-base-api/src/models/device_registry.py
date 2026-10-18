@@ -1,4 +1,4 @@
-from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint, func
 
 from models.base import Base
 from models.account import Account
@@ -19,6 +19,7 @@ class DeviceRegistry(Base):
     registered_at = Column(DateTime(timezone=True), nullable=False)
     revoked_at = Column(DateTime(timezone=True))
     provenance = Column(String(50), nullable=False)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("account_id", "device_id"),

@@ -47,6 +47,10 @@ DICT_API_TIMEOUT = _read_dict_api_timeout()
 BYPASS_ENDPOINTS = [
     "/",
     "/health_check",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/openapi.json",
 ]
 
 REQUIRED_VARIABLES = ["DATABASE_URL", "INTERNAL_TOKEN"]
