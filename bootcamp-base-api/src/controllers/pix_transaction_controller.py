@@ -1,7 +1,7 @@
 import json
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from sqlalchemy.exc import SQLAlchemyError
 
 from antifraud import Analysis, Context, Transaction, evaluate, policy
@@ -129,6 +129,9 @@ class PixTransactionController(BaseController):
             pix_request.destination_account.document_number
         )
 
+        self.customer_repository.lock_for_pix_document(
+            document_number=pix_request.source_account.document_number
+        )
         payer, recipient = self._get_or_create_customers(pix_request)
         source_account = self._get_or_create_account(payer, pix_request.source_account)
         destination_account = self._get_or_create_account(recipient, pix_request.destination_account)
@@ -282,10 +285,12 @@ class PixTransactionController(BaseController):
         """
         transaction_date = pix_request.transaction_date
         # Histórico e janelas antifraude usam o relógio confiável do servidor.
-        # A data declarada no payload continua sendo o instante de negócio do
-        # Pix (hora local, idade das contas e auditoria), mas não pode mover
-        # artificialmente velocity ou baselines.
-        history_time = received_at
+        # Em duas requisições concorrentes com o mesmo instante de negócio,
+        # porém, a que adquire o lock primeiro pode ter recebido um timestamp
+        # de teste ligeiramente maior. A folga de um segundo inclui essa
+        # mesma batelada, sem alterar o caminho normal, em que received_at já
+        # é posterior ao instante declarado.
+        history_time = max(received_at, transaction_date + timedelta(seconds=1))
 
         payer_history = self.pix_history_repository.get_payer_features(
             payer_customer_id=payer.id,
