@@ -1,9 +1,10 @@
-"""O relógio dos cenários: o tempo do negócio, escolhido pelo teste.
+"""Os relógios dos cenários, escolhidos pelo teste.
 
-Toda regra do motor conta em transaction_date — a data que vem no payload
-— e nunca no relógio do servidor. É isso que deixa um teste montar "4 Pix
-nos últimos 5 minutos" ou "10 Pix em 7 dias" sem esperar nada: ele escolhe
-as datas e manda. Nenhum teste da suíte depende de que horas são agora.
+O teste controla tanto transaction_date, o tempo de negócio do Pix, quanto
+received_at, o relógio de avaliação do servidor, pelo cabeçalho interno. As
+janelas de histórico usam received_at; regras como horário noturno usam
+transaction_date. Assim os testes não dependem da hora real nem deixam uma
+data futura do payload mover o corte do histórico.
 """
 
 from datetime import datetime, timedelta, timezone

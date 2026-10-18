@@ -58,23 +58,26 @@ def evaluate(context: Context) -> Analysis:
     if not context.restriction_available:
         raise RuntimeError("fonte de restrições indisponível; análise sem veredicto")
 
-    if not context.device_registry_available:
+    triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
+    payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
+    recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
+    rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
+
+    # Indisponibilidade só é fallback: não pode apagar restrição ou
+    # rejeição comprovável por outras fontes. Sinais dependentes do cadastro
+    # continuam unavailable e impedem as regras que exigem esses sinais.
+    if not context.device_registry_available and rule.name == "D-OK":
         return Analysis(
             status=PixStatus.TWO_FACTOR_REQUIRED,
             decision_rule="D-DATA-UNAVAILABLE",
             reasons=("Cadastro de dispositivos indisponível; 2FA obrigatório",),
-            payer_risk=0,
-            recipient_risk=0,
+            payer_risk=payer_risk,
+            recipient_risk=recipient_risk,
             payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
             recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
             policy_version=policy.POLICY_VERSION,
             signals=tuple(signals),
         )
-
-    triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
-    payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
-    recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
-    rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
 
     return Analysis(
         status=rule.status,
@@ -198,7 +201,11 @@ def _risk_reason(
         key=lambda signal: -signal.points,
     )[:_REASON_MAX_SIGNALS]
     cited = [f"{_mid_sentence(policy.signal_spec(signal.code).name)} ({signal.code})" for signal in heaviest]
-    return f"Risco {owner} em {risk} (2FA a partir de {threshold}): {_join(cited)}"
+    if threshold is not None:
+        qualifier = f"acima do limiar de {threshold}"
+    else:
+        qualifier = "com evidência suficiente"
+    return f"Risco {owner} em {risk} ({qualifier}): {_join(cited)}"
 
 
 def _mid_sentence(name: str) -> str:

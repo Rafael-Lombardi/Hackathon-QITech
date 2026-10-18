@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
@@ -81,16 +81,42 @@ class PixTransactionRepository:
         receipt.pix_transaction_id = None
         return receipt, True
 
-    def mark_receipt_failed(self, receipt: PixTransactionReceipt, reason: str) -> None:
-        receipt.state = "failed"
-        receipt.failure_reason = reason[:1000]
-        receipt.evaluated_at = datetime.now(timezone.utc)
+    def mark_receipt_failed(
+        self, receipt: PixTransactionReceipt, *, owner_token: str, reason: str,
+    ) -> bool:
+        result = self.session.execute(
+            update(PixTransactionReceipt)
+            .where(
+                PixTransactionReceipt.id == receipt.id,
+                PixTransactionReceipt.owner_token == owner_token,
+                PixTransactionReceipt.state == "processing",
+            )
+            .values(
+                state="failed",
+                failure_reason=reason[:1000],
+                evaluated_at=datetime.now(timezone.utc),
+            )
+        )
+        return result.rowcount == 1
 
-    def mark_receipt_completed(self, receipt: PixTransactionReceipt, transaction_id: int, now: datetime) -> None:
-        receipt.state = "completed"
-        receipt.pix_transaction_id = transaction_id
-        receipt.evaluated_at = now
-        receipt.failure_reason = None
+    def mark_receipt_completed(
+        self, receipt: PixTransactionReceipt, *, owner_token: str, transaction_id: int, now: datetime,
+    ) -> bool:
+        result = self.session.execute(
+            update(PixTransactionReceipt)
+            .where(
+                PixTransactionReceipt.id == receipt.id,
+                PixTransactionReceipt.owner_token == owner_token,
+                PixTransactionReceipt.state == "processing",
+            )
+            .values(
+                state="completed",
+                pix_transaction_id=transaction_id,
+                evaluated_at=now,
+                failure_reason=None,
+            )
+        )
+        return result.rowcount == 1
 
     def create(self, **fields) -> PixTransaction | None:
         """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.

@@ -3,8 +3,8 @@
 As regras da camada 2 comparam o Pix com o passado, e quase todo erro de
 antifraude mora na definição de passado. As que o motor usa (o bloco
 "Janelas de histórico" de src/antifraud/policy.py):
-  • anterior é o que foi gravado com transaction_date até a do Pix atual —
-    um Pix datado depois não conta, mesmo que tenha chegado antes;
+  • anterior é o que foi recebido com received_at antes da avaliação atual —
+    transaction_date é o relógio de negócio e não move o corte do histórico;
   • rajada e montante (P04, P05, R02, R03...) contam TODA tentativa, até
     as barradas: o invasor insistente não pode sumir depois do 1º 2FA;
   • aparelho conhecido, IP conhecido, par recorrente e mediana contam só

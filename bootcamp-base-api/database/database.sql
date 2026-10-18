@@ -322,14 +322,14 @@ CREATE INDEX pix_transaction_receipt_lease_idx
 -- travar a tabela — e não mexe em mais nada. A mesma pergunta por
 -- documento soma as contas do customer, via account_customer_id_idx.
 CREATE INDEX pix_transaction_source_account_id_idx
-    ON pix_transaction (source_account_id, transaction_date);
+    ON pix_transaction (source_account_id, received_at);
 
 -- Conta de destino: muitos pagadores distintos pro mesmo destino em
 -- janela curta (robô multiplicador, loja falsa, conta laranja). Por conta
 -- aqui; por documento é o JOIN com account → customer — o laranja de
 -- customer, lá em cima.
 CREATE INDEX pix_transaction_destination_account_id_idx
-    ON pix_transaction (destination_account_id, transaction_date);
+    ON pix_transaction (destination_account_id, received_at);
 
 -- Aparelho: quantos Pix por device_id, e aparelho compartilhado (um
 -- aparelho pagando por vários documentos distintos é indício de farm de
@@ -337,7 +337,7 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 -- regra de velocity por IP no catálogo — quando houver, o índice volta
 -- com ela.
 CREATE INDEX pix_transaction_device_id_idx
-    ON pix_transaction (device_id, transaction_date);
+    ON pix_transaction (device_id, received_at);
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta

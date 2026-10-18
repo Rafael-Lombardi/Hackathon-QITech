@@ -137,7 +137,7 @@ Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para ca
 | `key` | o identificador da análise, um UUID gerado aqui (a coluna `pix_transaction_key`). O `id` serial da linha nunca sai |
 | `status` | `approved`, `two_factor_required` ou `rejected` |
 | `metadata.policy_version` | a versão dos pesos e da tabela de decisão que valiam quando o Pix chegou |
-| `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
+| `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-DATA-UNAVAILABLE`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
 | `metadata.reasons` | a frase dessa linha, com os números da evidência |
 | `metadata.scores` | a nota de 0 a 100 do pagador (`payer`) e a do destino (`recipient`) |
 | `metadata.evidence_sufficiency` | quanto histórico sustenta cada nota: `unavailable`, `low`, `medium` ou `high` |
@@ -238,7 +238,12 @@ pytest
 
 A stack precisa estar de pé (seção 1). O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova. A suíte leva uns 12 s.
 
-Todos são de integração: falam HTTP com a API, como um cliente faria, e nenhum importa `src/` nem escreve no banco por fora. Cada teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios), monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
+Todos são de integração. A maioria fala HTTP com a API, como um cliente faria;
+os testes de resiliência também usam controller/repositories reais e sessões
+PostgreSQL para simular falha de infraestrutura e expiração de lease. Cada
+teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios),
+monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O
+que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
 
 ---
 
@@ -261,6 +266,8 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
 8. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
+
+O histórico usa `received_at`, o recebimento do servidor; `transaction_date` é reservado ao relógio de negócio. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. A conclusão do recibo usa `owner_token` em uma atualização condicional: um avaliador que perdeu o lease não pode completar ou marcar como falho o recibo de outro.
 
 Quem fala com o banco, o DICT e o motor é o controller, e só ele. O mapa das pastas, o que cada uma pode e não pode e onde mexer para cada mudança estão em [`docs/como-o-projeto-e-organizado.md`](docs/como-o-projeto-e-organizado.md).
 
@@ -302,7 +309,7 @@ Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--
 | Um processo da API | ~85 a 100 Pix/s |
 | 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
 | Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 187 testes em ~12 s |
+| Suíte de testes | 189 testes em ~12 s |
 | Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
 
 - **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.

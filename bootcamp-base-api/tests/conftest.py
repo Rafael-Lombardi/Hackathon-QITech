@@ -3,6 +3,13 @@ from os import path, environ
 
 root = Path(__file__).resolve().parents[1]
 
+# Os testes de integração também exercitam controller/repository diretamente
+# quando precisam simular falha de infraestrutura ou concorrência de sessão.
+# Mantém o layout src executável sem exigir PYTHONPATH manual.
+import sys
+
+sys.path.insert(0, str(root / "src"))
+
 if not environ.get("APP_ENV") or environ.get("APP_ENV") == "local":
     from dotenv import load_dotenv
 

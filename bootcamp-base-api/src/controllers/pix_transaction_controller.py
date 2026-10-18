@@ -1,7 +1,7 @@
 import json
 import time
 from dataclasses import asdict, replace
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from sqlalchemy.exc import SQLAlchemyError
 
 from antifraud import Analysis, Context, Transaction, evaluate, policy
@@ -93,16 +93,19 @@ class PixTransactionController(BaseController):
             if replayed is not None:
                 return replayed, False
             raise PixTransactionIdConflict(pix_request.external_id)
+        owner_token = receipt.owner_token
         # Make the claim durable before external I/O or risk evaluation.
         self.session.commit()
 
         try:
-            return self._process_claimed(pix_request, received_at, receipt), True
+            return self._process_claimed(pix_request, received_at, receipt, owner_token)
         except Exception as error:
             self.session.rollback()
             failed = self.pix_transaction_repository.get_receipt(pix_request.external_id)
             if failed is not None:
-                self.pix_transaction_repository.mark_receipt_failed(failed, str(error))
+                self.pix_transaction_repository.mark_receipt_failed(
+                    failed, owner_token=owner_token, reason=str(error)
+                )
                 self.session.commit()
             raise
 
@@ -117,7 +120,9 @@ class PixTransactionController(BaseController):
             time.sleep(0.01)
         return None
 
-    def _process_claimed(self, pix_request: PixRequest, received_at: datetime, receipt) -> dict:
+    def _process_claimed(
+        self, pix_request: PixRequest, received_at: datetime, receipt, owner_token: str,
+    ) -> tuple[dict, bool]:
 
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
         # conexão ao pool, o estoque de 15 conexões de banco que o processo
@@ -140,7 +145,7 @@ class PixTransactionController(BaseController):
 
         replayed = self._replay_if_recorded(pix_request)
         if replayed is not None:
-            return replayed
+            return replayed, False
 
         context, risk_evidence, context_snapshot = self._build_context(
             pix_request, payer, recipient, dict_security_statistics, destination_account.id, received_at
@@ -161,7 +166,7 @@ class PixTransactionController(BaseController):
             replayed = self._replay_if_recorded(pix_request)
             if replayed is None:
                 raise PixTransactionIdConflict(pix_request.external_id)
-            return replayed
+            return replayed, False
 
         self.pix_transaction_repository.create_signals(
             pix_transaction_id=pix_transaction.id,
@@ -179,10 +184,18 @@ class PixTransactionController(BaseController):
         )
 
         pix_transaction_dto = self._recorded_analysis(pix_transaction)
-        self.pix_transaction_repository.mark_receipt_completed(receipt, pix_transaction.id, evaluated_at)
+        completed = self.pix_transaction_repository.mark_receipt_completed(
+            receipt, owner_token=owner_token, transaction_id=pix_transaction.id, now=evaluated_at
+        )
+        if not completed:
+            self.session.rollback()
+            replayed = self._wait_for_replay(pix_request)
+            if replayed is not None:
+                return replayed, False
+            raise PixTransactionIdConflict(pix_request.external_id)
         self.session.commit()
 
-        return pix_transaction_dto
+        return pix_transaction_dto, True
 
     def get_by_external_id(self, external_id: str) -> dict:
         """A análise gravada do Pix com este id do payload.
@@ -284,13 +297,11 @@ class PixTransactionController(BaseController):
         da conta que vier.
         """
         transaction_date = pix_request.transaction_date
-        # Histórico e janelas antifraude usam o relógio confiável do servidor.
-        # Em duas requisições concorrentes com o mesmo instante de negócio,
-        # porém, a que adquire o lock primeiro pode ter recebido um timestamp
-        # de teste ligeiramente maior. A folga de um segundo inclui essa
-        # mesma batelada, sem alterar o caminho normal, em que received_at já
-        # é posterior ao instante declarado.
-        history_time = max(received_at, transaction_date + timedelta(seconds=1))
+        # Histórico e janelas usam exclusivamente o recebimento confiável do
+        # servidor. transaction_date é o relógio de negócio do Pix e serve
+        # para hora local, idade e auditoria; nunca pode mover o corte do
+        # histórico para o futuro.
+        history_time = received_at
 
         payer_history = self.pix_history_repository.get_payer_features(
             payer_customer_id=payer.id,

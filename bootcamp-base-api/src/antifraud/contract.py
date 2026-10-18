@@ -226,8 +226,9 @@ class PairHistory:
 class Context:
     """Tudo o que o motor sabe de um Pix.
 
-    Quem monta é o controller: o histórico vem dos repositories, o trust
-    factor do connector do DICT e device_trusted do cadastro autoritativo.
+    Quem monta é o controller: o histórico vem dos repositories, a
+    estatística/evidência de segurança do DICT vem do connector e
+    device_trusted vem do cadastro autoritativo.
     O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem

@@ -350,14 +350,15 @@ class DecisionRule:
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
     # Evidência externa já normalizada pelo controller. Os valores aceitos
-    # são "adverse" (EXT02 ou EXT03) e "confirmed" (EXT03).
+    # são evidência DICT adversa (EXT02 ou EXT03) e confirmada (EXT03).
     payer_external: str | None = None
     recipient_external: str | None = None
 
 
 # Em ordem, vale a primeira linha que casar. Restrição e combinações de
-# rejeição ficam antes de 2FA. Evidência externa adversa inclui EXT02 ou
-# EXT03; ela chega no Context já normalizada pela fonte correspondente.
+# rejeição ficam antes do fallback de 2FA. A evidência DICT adversa inclui
+# EXT02 ou EXT03; ela chega no Context já normalizada pela fonte correspondente
+# e funciona como gate da rejeição, não como pontos no eixo do pagador.
 # Sem essa evidência, notas altas continuam resultando em 2FA, reduzindo
 # falso positivo e mantendo o fallback seguro.
 DECISION_TABLE: tuple[DecisionRule, ...] = (

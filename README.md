@@ -26,7 +26,7 @@ Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (
 
 - abaixo do nome: camada · família · eixo. **Família** é o rótulo do desafio, que sai na resposta (Velocity é ritmo); **grupo de teto**, por onde os pontos somam;
 - **pagador** e **recebedor** são o documento, somando as contas: o laranja — quem cede a conta para receber dinheiro de golpe e repassar — com três contas é um recebedor só;
-- as janelas contam no tempo do negócio (`transaction_date`), até o Pix atual; "hoje" é o dia civil de São Paulo. Rajadas contam qualquer status, para quem insiste depois do 2FA seguir visível;
+- as janelas de histórico contam no recebimento (`received_at`), até o Pix atual; `transaction_date` continua sendo o relógio de negócio para hora local e auditoria. "Hoje" é o dia civil de São Paulo. Rajadas contam qualquer status, para quem insiste depois do 2FA seguir visível;
 - **`unavailable`** quando falta histórico ou fonte: cada sinal aplica sua própria pré-condição; DICT01/02/03 dependem da evidência DICT. Indisponibilidade não significa segurança;
 - os números estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py), e a versão da política (`v0.5.0`) vai gravada em cada análise. `DICT01` é estatística de segurança mockada; `DICT02`/`DICT03` são evidências antifraude DICT suspeita/confirmada na fixture.
 
@@ -112,8 +112,8 @@ A tabela, em ordem ([`DECISION_TABLE`](bootcamp-base-api/src/antifraud/policy.py
 | D-REJ | "Conta destino aberta há 2 dias, com 5 pagadores distintos na última hora e 5 tentativas em 10 min" |
 | D-ATO-1 | "Dispositivo sem Pix aprovado deste pagador, com valor 6,2x a mediana" |
 | D-ATO-2 | "Dispositivo e IP sem Pix aprovado deste pagador, que tem 3 Pix anteriores" |
-| D-PAY | "Risco do pagador em 43 (2FA a partir de 40): muitas tentativas em 5 min (P04), vários destinos inéditos em 10 min (P07) e montante alto na última hora (P05)" |
-| D-RCP | "Risco do destino em 44 (2FA a partir de 40): estatística de segurança DICT desfavorável (DICT01) e conta destino recém-aberta (R01)" |
+| D-PAY | "Risco do pagador em 43 (acima do limiar de 40): muitas tentativas em 5 min (P04), vários destinos inéditos em 10 min (P07) e montante alto na última hora (P05)" |
+| D-RCP | "Risco do destino em 44 (acima do limiar de 40): estatística de segurança DICT desfavorável (DICT01) e conta destino recém-aberta (R01)" |
 | D-OK | "Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)" |
 
 ### Um exemplo resolvido
@@ -230,7 +230,7 @@ Seis tabelas, em [`database.sql`](bootcamp-base-api/database/database.sql), cada
 | `pix_transaction` | um Pix: o payload inteiro (JSONB), as colunas que o motor leu e a decisão explicada. As notas são colunas, para calibrar os pesos com uma consulta; `UNIQUE(external_id)` é a idempotência |
 | `pix_transaction_rule_result` | um sinal avaliado por linha, 22 por Pix, com estado, pontos e evidência: é o `metadata.signals` |
 
-**Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino da RFC v0.3: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `transaction_date`, mais `account(customer_id)`, que leva das contas ao documento.
+**Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino da RFC v0.3: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `received_at`, mais `account(customer_id)`, que leva das contas ao documento.
 
 ## Limites conhecidos
 

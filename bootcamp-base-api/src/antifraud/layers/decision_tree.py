@@ -2,7 +2,7 @@
 histórico.
 
 Cadê a árvore? Cada regra é um galho de dois níveis: tem histórico pra
-responder? Se não tem, unavailable. Se tem, a condição vale? As 14
+responder? Se não tem, unavailable. Se tem, a condição vale? As 15
 rodam sempre, sem atalho de uma pra outra, porque o GET precisa mostrar
 o estado de cada uma. O tronco, que junta os galhos numa decisão, é a
 DECISION_TABLE do policy.py. É `if/else` escrito à mão, e não modelo
