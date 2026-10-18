@@ -1,6 +1,6 @@
 """A política do motor: todo número que ele usa, num arquivo só.
 
-Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.3), não
+Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5), não
 calibragem com dado real; os que vêm do Banco Central dizem de onde
 vieram. A POLICY_VERSION vai gravada em cada análise. Mudou um número
 aqui, muda a versão — senão o motivo gravado ontem passa a ser lido com
@@ -12,9 +12,9 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.3 + a camada 3 (DICT01, com teto próprio). A tabela de decisão
-# é a da RFC, menos o teto de 69 do D-RCP (veja a tabela).
-POLICY_VERSION = "v0.3.2"
+# RFC v0.5 + a camada 3 (DICT01, com teto próprio). Fontes externas e
+# restrições são entradas de Context e não alteram o contrato HTTP.
+POLICY_VERSION = "v0.5.0"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -326,23 +326,40 @@ class DecisionRule:
     all_triggered: tuple[str, ...] = ()
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
+    # Evidência externa já normalizada pelo controller. Os valores aceitos
+    # são "adverse" (EXT02 ou EXT03) e "confirmed" (EXT03).
+    payer_external: str | None = None
+    recipient_external: str | None = None
 
 
-# Em ordem, e vale a primeira que casar. Rejeição só por combinação no
-# destino (D-REJ): o 2FA ajuda quando outra pessoa pode estar usando a
-# conta, e não impede ninguém de mandar dinheiro pra um laranja. Conta
-# nova, horário ou valor sozinhos nunca rejeitam. ATO é account
-# takeover, a tomada de conta: aparelho sem Pix aprovado do pagador com
-# valor fora do padrão (D-ATO-1), ou com IP também sem Pix aprovado
-# (D-ATO-2).
-#
-# D-RCP é >= 40, sem o teto de 69 da RFC. Rejeição só sai da combinação
-# do D-REJ, porque o motivo de uma rejeição precisa caber numa
-# combinação explicável, e o DICT, com até 12 h de atraso, não leva
-# ninguém à rejeição. Com o 69 da RFC, os piores destinos, de 70 a 75,
-# cairiam no D-OK; com >= 40, eles vão pra 2FA.
+# Em ordem, vale a primeira linha que casar. Restrição e combinações de
+# rejeição ficam antes de 2FA. Evidência externa adversa inclui EXT02 ou
+# EXT03; ela chega no Context já normalizada pela fonte correspondente.
+# Sem essa evidência, notas altas continuam resultando em 2FA, reduzindo
+# falso positivo e mantendo o fallback seguro.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
-    DecisionRule("D-REJ", PixStatus.REJECTED, all_triggered=("R01", "R02", "R03")),
+    # Rejeições são avaliadas antes de qualquer friction. A restrição é
+    # uma decisão de fonte, não depende da nota calculada.
+    DecisionRule("D-RESTRICT-SIM", PixStatus.REJECTED),
+    DecisionRule(
+        "D-REJ-ATO", PixStatus.REJECTED,
+        all_triggered=("P03", "P04", "P06", "P07"), min_payer_risk=70,
+    ),
+    DecisionRule(
+        "D-REJ-PAY", PixStatus.REJECTED,
+        all_triggered=("P04", "P06", "P07"), min_payer_risk=70,
+        payer_external="adverse",
+    ),
+    DecisionRule(
+        "D-REJ-RCP", PixStatus.REJECTED,
+        all_triggered=("R02", "R03"), min_recipient_risk=55,
+        recipient_external="adverse",
+    ),
+    DecisionRule(
+        "D-REJ-CROSS", PixStatus.REJECTED,
+        min_payer_risk=40, min_recipient_risk=40,
+        recipient_external="adverse",
+    ),
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),
     DecisionRule("D-ATO-2", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P09")),
     DecisionRule("D-PAY", PixStatus.TWO_FACTOR_REQUIRED, min_payer_risk=40),

@@ -140,6 +140,52 @@ CREATE TABLE device_registry(
 CREATE INDEX device_registry_customer_device_idx
     ON device_registry (customer_id, device_id);
 
+-- Fontes autoritativas seedadas para a política v0.5. Não são histórico de
+-- Pix: representam o snapshot recebido de listas de restrição e inteligência
+-- externa no instante da avaliação. occurrence_id torna replays idempotentes.
+CREATE TABLE risk_restriction(
+    id                              BIGSERIAL PRIMARY KEY,
+    scope                           VARCHAR(30) NOT NULL,
+    customer_id                    BIGINT REFERENCES customer(id),
+    account_id                     BIGINT REFERENCES account(id),
+    active_from                    TIMESTAMPTZ NOT NULL,
+    active_until                   TIMESTAMPTZ,
+    status                          VARCHAR(20) NOT NULL DEFAULT('active'),
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(scope IN ('payer', 'recipient_holder', 'recipient_account')),
+    CHECK((scope = 'recipient_account' AND account_id IS NOT NULL)
+          OR (scope <> 'recipient_account' AND customer_id IS NOT NULL)),
+    CHECK(active_until IS NULL OR active_until > active_from),
+    CHECK(status IN ('active', 'revoked')),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX risk_restriction_customer_idx
+    ON risk_restriction (customer_id, active_from);
+CREATE INDEX risk_restriction_account_idx
+    ON risk_restriction (account_id, active_from);
+
+CREATE TABLE external_risk_assessment(
+    id                              BIGSERIAL PRIMARY KEY,
+    customer_id                    BIGINT NOT NULL REFERENCES customer(id),
+    axis                            VARCHAR(10) NOT NULL,
+    assessment                     VARCHAR(30) NOT NULL,
+    valid_from                     TIMESTAMPTZ NOT NULL,
+    valid_until                    TIMESTAMPTZ,
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(axis IN ('payer', 'recipient')),
+    CHECK(assessment IN ('clear', 'suspicious', 'confirmed_in_mock', 'unavailable')),
+    CHECK(valid_until IS NULL OR valid_until > valid_from),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX external_risk_customer_axis_idx
+    ON external_risk_assessment (customer_id, axis, valid_from);
+
 -- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
 --
 -- Transação e análise moram na mesma tabela de propósito. São 1:1 — o

@@ -2,6 +2,8 @@
 
 A API do motor antifraude Pix: recebe um Pix em `POST /pix/transaction`, decide entre `approved`, `two_factor_required` e `rejected`, grava o Pix com a decisão explicada e devolve a análise. `GET /pix/transaction/{id}` devolve o que foi gravado. É **Python 3.11 + FastAPI**, com **PostgreSQL 16**, rodando em **Docker**, e nasceu do Base Service do bootcamp. Para decidir, ela consulta o DICT, o diretório do Banco Central que liga chave Pix a conta; aqui quem faz o papel dele é um mock, um servidor de mentira que devolve as respostas combinadas com ele (seção 4).
 
+As decisões deste serviço seguem a política `v0.5.0`. A rejeição antiga `D-REJ` foi removida: sinais de contraparte sem inteligência externa adversa produzem aprovação ou `D-RCP` (2FA), conforme a nota. As rejeições v0.5 (`D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP` e `D-REJ-CROSS`) só casam quando suas combinações e evidências externas estiverem presentes.
+
 As regras, o porquê de cada parâmetro e a tabela de decisão estão no [README da raiz](../README.md). Este é o do serviço: como subir, o que cada rota responde, a configuração, o mock, os testes e o caminho de uma requisição.
 
 ---
@@ -100,7 +102,7 @@ Num banco novo, a resposta inteira, com os 19 sinais (um por linha aqui, para ca
   "key": "b1f7f4da-ee18-403d-903d-9cd63c41fa60",
   "status": "approved",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-OK",
     "reasons": ["Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)"],
     "scores": {"payer": 8, "recipient": 0},
@@ -135,7 +137,7 @@ Num banco novo, a resposta inteira, com os 19 sinais (um por linha aqui, para ca
 | `key` | o identificador da análise, um UUID gerado aqui (a coluna `pix_transaction_key`). O `id` serial da linha nunca sai |
 | `status` | `approved`, `two_factor_required` ou `rejected` |
 | `metadata.policy_version` | a versão dos pesos e da tabela de decisão que valiam quando o Pix chegou |
-| `metadata.decision_rule` | a linha da tabela que decidiu: `D-REJ`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
+| `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
 | `metadata.reasons` | a frase dessa linha, com os números da evidência |
 | `metadata.scores` | a nota de 0 a 100 do pagador (`payer`) e a do destino (`recipient`) |
 | `metadata.evidence_sufficiency` | quanto histórico sustenta cada nota: `unavailable`, `low`, `medium` ou `high` |

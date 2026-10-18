@@ -1,4 +1,4 @@
-"""Os cenários de aceitação da RFC v0.3 (§9), pela porta da frente.
+"""Os cenários de aceitação da RFC v0.5, pela porta da frente.
 
 Cada teste monta o histórico com POSTs de verdade — datas escolhidas,
 nada de INSERT —, manda o Pix do cenário e confere a decisão inteira:
@@ -19,9 +19,12 @@ Montante, Perfil...); o grupo de teto é o de src/antifraud/policy.py
 (CAPS) e junta os sinais que olham o mesmo padrão: o payer_velocity, por
 exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 
-A tabela, em ordem, vale a primeira que casar: D-REJ (R01, R02 e R03) →
-D-ATO-1 (P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP
-(destino >= 40) → D-OK.
+A tabela, em ordem, vale a primeira que casar: restrição ativa → rejeições
+combinadas da RFC v0.5 (com evidência externa quando exigida) → D-ATO-1
+(P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP
+(destino >= 40) → D-OK. Os cenários legados desta classe não semeiam
+inteligência externa; por isso, a combinação de R01/R02/R03 não rejeita
+sozinha.
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
 test_concorrencia.py, com os nomes que a RFC deu. As sementes passam pelo
@@ -364,7 +367,7 @@ class TestCenariosRfc:
         assert pix.signal_status("REL01") == "unavailable"
         assert pix.scores == {"payer": 0, "recipient": 20}
 
-    def test_destino_novo_concentrando_pagadores_rejeita(self):
+    def test_destino_novo_concentrando_pagadores_nao_rejeita_sem_inteligencia(self):
         """Cenário 12 — conta de 2 dias recebendo de 5 pagadores em 5 minutos.
 
         Preparo: 4 pagadores novos pagam a conta nos 4 minutos antes de
@@ -378,9 +381,11 @@ class TestCenariosRfc:
             REL01      unavailable: o pagador nunca foi visto
             destino 35, pagador 0
 
-        D-REJ: R01, R02 e R03 juntos são o desenho do laranja. Repare que
-        a 4ª semente já tinha R01, R03 e R04 (destino 35) e foi aprovada:
-        sem a rajada do R02, conta nova com muitos pagadores não rejeita.
+        Sem inteligência externa, R01, R02 e R03 não são suficientes para
+        rejeição na RFC v0.5. Como o teto deixa o destino em 35, o Pix é
+        aprovado. Repare que a 4ª semente já tinha R01, R03 e R04 (destino
+        35) e também foi aprovada: o caso só muda os sinais, não ultrapassa
+        o limiar de fricção.
         """
         mule = new_recipient(opening_date=T0 - timedelta(days=2))
         seed([pix_payload(new_payer(), mule, moment) for moment in minutes_before(T0, 4)])
@@ -388,13 +393,13 @@ class TestCenariosRfc:
         pix = post_pix(pix_payload(new_payer(), mule, T0))
 
         assert pix.http_status == 201
-        assert pix.status == "rejected"
-        assert pix.decision_rule == "D-REJ"
+        assert pix.status == "approved"
+        assert pix.decision_rule == "D-OK"
         assert pix.triggered() == {"R01", "R02", "R03", "R04"}
         assert pix.signal_status("REL01") == "unavailable"
         assert pix.scores == {"payer": 0, "recipient": 35}
 
-    def test_pagador_normal_para_destino_suspeito_rejeita(self):
+    def test_pagador_normal_para_destino_suspeito_pede_2fa_sem_inteligencia(self):
         """Cenário 13 — cliente de sempre mandando para a conta do cenário 12.
 
         Preparo: o pagador tem 3 Pix nos 3 dias anteriores (aparelho e IP
@@ -406,8 +411,11 @@ class TestCenariosRfc:
             REL01 +8             destino inédito para quem tem histórico
             destino 43, pagador 0
 
-        D-REJ. O pagador está limpo, e é por isso que o 2FA não resolveria:
-        ele confirmaria que é ele mesmo e mandaria o dinheiro do mesmo jeito.
+        Sem inteligência externa, a RFC v0.5 não rejeita apenas pelos sinais
+        R01/R02/R03. O risco do destino chega a 43 e a política aplica
+        D-RCP (2FA). O pagador está limpo, e a confirmação adicional é a
+        fricção disponível quando ainda não há evidência suficiente para
+        rejeitar definitivamente.
         """
         payer = new_payer()
         seed_pix(payer, new_recipient(), days_before(T0, 3))
@@ -417,8 +425,8 @@ class TestCenariosRfc:
         pix = post_pix(pix_payload(payer, mule, T0))
 
         assert pix.http_status == 201
-        assert pix.status == "rejected"
-        assert pix.decision_rule == "D-REJ"
+        assert pix.status == "two_factor_required"
+        assert pix.decision_rule == "D-RCP"
         assert pix.triggered() == {"R01", "R02", "R03", "R04", "REL01"}
         assert pix.scores == {"payer": 0, "recipient": 43}
 

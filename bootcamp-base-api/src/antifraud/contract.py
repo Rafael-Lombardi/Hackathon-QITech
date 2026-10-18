@@ -246,6 +246,14 @@ class Context:
     # ocorrer quando a fonte de cadastro estiver indisponível.
     device_trusted: bool | None = None
     device_registry_available: bool = True
+    # Entradas de fontes externas/restrições. Permanecem internas ao motor:
+    # o contrato HTTP continua recebendo somente o Pix normalizado.
+    restriction_active: bool = False
+    restriction_available: bool = True
+    payer_external_adverse: bool = False
+    payer_external_confirmed: bool = False
+    recipient_external_adverse: bool = False
+    recipient_external_confirmed: bool = False
 
 
 @dataclass(frozen=True)

@@ -68,7 +68,7 @@ class TestCamadaDict:
             DICT01 +32   confiança 12 (< 30), no recipient_trust
             pagador 18, destino 12 + 32 = 44
 
-        D-RCP. É o caso que deu ao DICT01 um teto próprio, na v0.3.2:
+        D-RCP. O DICT01 tem teto próprio na política v0.5:
         dividindo o teto de 35 com o R01, este Pix parava em 35 e saía
         aprovado.
         """

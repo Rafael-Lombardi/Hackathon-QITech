@@ -170,7 +170,7 @@ class TestFronteiras:
             6º Pix    R$ 0,01 a mais: R$ 1.000,01 → L02 +10
             amanhã    R$ 500 no mesmo aparelho, agora aprovado ontem → calado
 
-        É o ajuste da v0.3.1 ao L02 da RFC: com "aparelho nunca visto" ao
+        É o ajuste da v0.5 ao L02 da RFC: com "aparelho nunca visto" ao
         pé da letra, a soma do dia seria sempre o próprio Pix.
         """
         payer, recipient = new_payer(), new_recipient()

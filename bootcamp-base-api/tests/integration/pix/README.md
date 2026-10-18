@@ -21,10 +21,11 @@ Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteado
 
 | Arquivo | O que prova |
 |---|---|
-| `test_cenarios_rfc.py` | os cenários de aceitação da RFC v0.3 (§9), com a conta de cada um no docstring |
+| `test_cenarios_rfc.py` | os cenários de aceitação da RFC v0.5, com a conta de cada um no docstring |
 | `test_fronteiras.py` | os dois lados de cada limiar, os tetos e o piso dos grupos, D-PAY e D-RCP em 39 e 40, a pré-condição de 3 Pix aprovados e a suficiência |
 | `test_historico.py` | o que entra no histórico: só Pix aprovado ensina aparelho e mediana, a rajada soma toda tentativa, conta conjunta é um histórico por titular, conta de destino e titular são identidades diferentes, Pix com data posterior não entra |
 | `test_camada_dict.py` | a camada 3: DICT01, o 2FA de conta nova mal avaliada, mock lento, com erro ou torto, e quem é consultado |
+| `test_politica_v05.py` | restrição prioritária e as quatro rejeições demonstrativas da RFC v0.5 com fixtures externas seedadas |
 | `test_contrato.py` | 201, 200, 400, 403, 404 e 409, o corpo da resposta, GET igual ao POST nos mesmos bytes, corpo que nem é JSON, documento com e sem pontuação |
 | `test_concorrencia.py` | POSTs ao mesmo tempo: a trava por pagador, o mesmo id em corrida (200 ou 409, nunca 500) e Pix cruzados de gente nova |
 

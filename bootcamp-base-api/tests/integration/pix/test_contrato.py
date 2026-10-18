@@ -27,7 +27,7 @@ from tests.utils.requisition import ClientRequisition
 # granularidade, pontos quando dispara). É o CATALOG de
 # src/antifraud/policy.py, na mesma ordem. Granularidade é a chave que a
 # regra consultou: a conta de origem, o documento do pagador, o aparelho,
-# a conta de destino, o documento do recebedor, o par... A RFC v0.3 pede
+# a conta de destino, o documento do recebedor, o par... A RFC v0.5 pede
 # que cada sinal diga qual.
 CATALOG = {
     "P01": (1, "Perfil", "payer", "source_account", 10),
@@ -235,8 +235,11 @@ class TestContrato:
 
         metadata = body["metadata"]
         assert set(metadata) == {"policy_version", "decision_rule", "reasons", "scores", "evidence_sufficiency", "signals"}
-        assert metadata["policy_version"] == "v0.3.2"
-        assert metadata["decision_rule"] in {"D-REJ", "D-ATO-1", "D-ATO-2", "D-PAY", "D-RCP", "D-OK"}
+        assert metadata["policy_version"] == "v0.5.0"
+        assert metadata["decision_rule"] in {
+            "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP",
+            "D-REJ-CROSS", "D-ATO-1", "D-ATO-2", "D-PAY", "D-RCP", "D-OK",
+        }
         assert isinstance(metadata["reasons"], list)
         assert metadata["reasons"]
         assert all(isinstance(reason, str) and reason for reason in metadata["reasons"])

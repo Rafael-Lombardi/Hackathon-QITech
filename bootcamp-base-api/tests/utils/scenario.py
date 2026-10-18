@@ -9,11 +9,12 @@ Um cenário é deliberadamente dividido em cinco partes:
 4. ``request``: o Pix sob avaliação;
 5. ``expected``: oráculo independente do cenário.
 
-Na versão atual, ``authoritative`` e ``derived`` são metadados do caso. Eles
-não são gravados como transações: ``history`` é a única fonte de histórico e
-passa pela mesma validação e decisão que uma requisição normal. O resultado
-esperado também não é inserido no banco; ele é comparado com o POST e com o
-GET, provando que a análise foi persistida.
+``authoritative`` é seedado separadamente (device registry, restrições e
+inteligência externa); ``derived`` continua sendo o oráculo documental que
+o sistema deve calcular. Esses dados não são gravados como transações:
+``history`` passa pela mesma validação e decisão que uma requisição normal.
+O resultado esperado também não é inserido no banco; ele é comparado com o
+POST e com o GET, provando que a análise foi persistida.
 """
 
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ import pytest
 
 from tests.utils.pix import PixResponse, get_pix, post_pix, seed
 from tests.utils.device_registry import seed_devices
+from tests.utils.risk_sources import seed_external_risk, seed_restrictions
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,8 @@ class Scenario:
         # Sementes entram pela API: nunca inserimos uma linha de histórico
         # diretamente, para que o caso teste o mesmo caminho de produção.
         seed_devices(self.authoritative.get("devices", []))
+        seed_restrictions(self.authoritative.get("restrictions", []))
+        seed_external_risk(self.authoritative.get("external_risk", []))
         seed(list(self.history), list(statuses), register_devices=False)
         response = post_pix(self.request, auto_register=False)
         if response.http_status != 201:

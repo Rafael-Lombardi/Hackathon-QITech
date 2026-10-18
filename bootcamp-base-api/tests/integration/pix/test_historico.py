@@ -177,7 +177,7 @@ class TestHistorico:
         assert pix.sufficiency["payer"] == "low"
 
     def test_r01_olha_a_conta_e_r03_olha_o_titular(self):
-        """As duas identidades do destino (RFC v0.3): a conta e o titular.
+        """As duas identidades do destino (RFC v0.5): a conta e o titular.
 
         O titular tem uma conta antiga e uma aberta há 2 dias. Três
         pagadores novos pagam ele nos últimos 50 minutos, nas duas contas.
@@ -188,7 +188,8 @@ class TestHistorico:
                                        12 + 20 + 15 = 47, teto do
                                        recipient_network: 35
 
-        Os dois aprovados: sem R02 não há D-REJ, e 35 fica abaixo do D-RCP.
+        Os dois aprovados: sem R02 não há rejeição combinada, e 35 fica
+        abaixo do D-RCP.
         """
         old = new_recipient()
         new = old.with_new_account(opening_date=T0 - timedelta(days=2))

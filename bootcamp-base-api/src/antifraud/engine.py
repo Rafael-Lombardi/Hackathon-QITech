@@ -54,6 +54,9 @@ def evaluate(context: Context) -> Analysis:
         signals.extend(layer.evaluate(context))
     signals.sort(key=lambda signal: _CATALOG_POSITION[signal.code])
 
+    if not context.restriction_available:
+        raise RuntimeError("fonte de restrições indisponível; análise sem veredicto")
+
     if not context.device_registry_available:
         return Analysis(
             status=PixStatus.TWO_FACTOR_REQUIRED,
@@ -70,7 +73,7 @@ def evaluate(context: Context) -> Analysis:
     triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
     payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
     recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
-    rule = _decide(triggered.keys(), payer_risk, recipient_risk)
+    rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
 
     return Analysis(
         status=rule.status,
@@ -108,19 +111,38 @@ def _sufficiency(prior_attempts: int, prior_days: int) -> Sufficiency:
     return Sufficiency.LOW
 
 
-def _decide(triggered: Collection[str], payer_risk: int, recipient_risk: int) -> DecisionRule:
+def _decide(
+    triggered: Collection[str], payer_risk: int, recipient_risk: int, context: Context,
+) -> DecisionRule:
     for rule in policy.DECISION_TABLE:
-        if _matches(rule, triggered, payer_risk, recipient_risk):
+        if rule.name == "D-RESTRICT-SIM" and not context.restriction_active:
+            continue
+        if _matches(rule, triggered, payer_risk, recipient_risk, context):
             return rule
     raise RuntimeError("a DECISION_TABLE precisa terminar numa linha sem condição, como o D-OK")
 
 
-def _matches(rule: DecisionRule, triggered: Collection[str], payer_risk: int, recipient_risk: int) -> bool:
+def _matches(
+    rule: DecisionRule, triggered: Collection[str], payer_risk: int, recipient_risk: int,
+    context: Context,
+) -> bool:
     if any(code not in triggered for code in rule.all_triggered):
         return False
     if rule.min_payer_risk is not None and payer_risk < rule.min_payer_risk:
         return False
     if rule.min_recipient_risk is not None and recipient_risk < rule.min_recipient_risk:
+        return False
+    if rule.payer_external == "adverse" and not (
+        context.payer_external_adverse or context.payer_external_confirmed
+    ):
+        return False
+    if rule.payer_external == "confirmed" and not context.payer_external_confirmed:
+        return False
+    if rule.recipient_external == "adverse" and not (
+        context.recipient_external_adverse or context.recipient_external_confirmed
+    ):
+        return False
+    if rule.recipient_external == "confirmed" and not context.recipient_external_confirmed:
         return False
     return True
 
@@ -132,14 +154,16 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
 
     É uma frase só: os sinais, um a um, já estão em metadata.signals.
     """
-    if rule.name == "D-REJ":
-        age = triggered["R01"].evidence["account_age_days"]
-        payers = triggered["R03"].evidence["distinct_payers_1h"]
-        attempts = triggered["R02"].evidence["attempts_10m"]
-        return (
-            f"Conta destino aberta {_opened(age)}, com {_number(payers)} pagadores distintos "
-            f"na última hora e {_number(attempts)} tentativas em 10 min"
-        )
+    if rule.name == "D-RESTRICT-SIM":
+        return "Restrição ativa para a transação"
+    if rule.name in {"D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP", "D-REJ-CROSS"}:
+        if rule.name == "D-REJ-RCP":
+            return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
+        if rule.name == "D-REJ-CROSS":
+            return (
+                f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com evidência externa adversa"
+            )
+        return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
     if rule.name == "D-ATO-1":
         ratio = triggered["P06"].evidence["ratio"]
         return f"Dispositivo sem Pix aprovado deste pagador, com valor {_number(ratio)}x a mediana"

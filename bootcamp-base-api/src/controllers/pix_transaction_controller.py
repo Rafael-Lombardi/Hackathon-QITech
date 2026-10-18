@@ -15,6 +15,7 @@ from repositories import (
     DeviceRegistryRepository,
     PixHistoryRepository,
     PixTransactionRepository,
+    RiskRepository,
 )
 from utils.document_number import mask_document
 
@@ -37,6 +38,7 @@ class PixTransactionController(BaseController):
         self.pix_transaction_repository = PixTransactionRepository(self.context)
         self.pix_history_repository = PixHistoryRepository(self.context)
         self.device_registry_repository = DeviceRegistryRepository(self.context)
+        self.risk_repository = RiskRepository(self.context)
         self.dict_connector = DictConnector()
 
     def create(self, payload: dict) -> tuple[dict, bool]:
@@ -89,7 +91,9 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
-        analysis = evaluate(self._build_context(pix_request, payer, recipient, trust_factor))
+        analysis = evaluate(
+            self._build_context(pix_request, payer, recipient, trust_factor, destination_account.id)
+        )
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
         # DOIS pagadores. Esse caso o banco resolve: o INSERT ... ON
@@ -199,7 +203,12 @@ class PixTransactionController(BaseController):
         )
 
     def _build_context(
-        self, pix_request: PixRequest, payer: Customer, recipient: Customer, trust_factor: int | None,
+        self,
+        pix_request: PixRequest,
+        payer: Customer,
+        recipient: Customer,
+        trust_factor: int | None,
+        recipient_account_id: int,
     ) -> Context:
         """O Context do motor: o Pix normalizado, o histórico contado e o DICT.
 
@@ -273,6 +282,13 @@ class PixTransactionController(BaseController):
             recipient_account_age_days=self._account_age_days(pix_request.destination_account, transaction_date),
         )
 
+        risk_inputs = self._get_risk_inputs(
+            payer_customer_id=payer.id,
+            recipient_customer_id=recipient.id,
+            recipient_account_id=recipient_account_id,
+            transaction_date=transaction_date,
+        )
+
         return Context(
             transaction=transaction,
             payer=payer_history,
@@ -282,7 +298,63 @@ class PixTransactionController(BaseController):
             trust_factor=trust_factor,
             device_trusted=device_trusted,
             device_registry_available=device_registry_available,
+            restriction_active=risk_inputs["restriction_active"],
+            restriction_available=risk_inputs["restriction_available"],
+            payer_external_adverse=risk_inputs["payer_external_adverse"],
+            payer_external_confirmed=risk_inputs["payer_external_confirmed"],
+            recipient_external_adverse=risk_inputs["recipient_external_adverse"],
+            recipient_external_confirmed=risk_inputs["recipient_external_confirmed"],
         )
+
+    def _get_risk_inputs(
+        self,
+        *,
+        payer_customer_id: int,
+        recipient_customer_id: int,
+        recipient_account_id: int,
+        transaction_date: datetime,
+    ) -> dict[str, bool]:
+        """Lê as fontes seedadas uma vez e congela flags para o motor."""
+        try:
+            restriction = self.risk_repository.active_restriction(
+                payer_customer_id=payer_customer_id,
+                recipient_customer_id=recipient_customer_id,
+                recipient_account_id=recipient_account_id,
+                at=transaction_date,
+            )
+            payer_assessment = self.risk_repository.external_assessment(
+                customer_id=payer_customer_id, axis="payer", at=transaction_date,
+            )
+            recipient_assessment = self.risk_repository.external_assessment(
+                customer_id=recipient_customer_id, axis="recipient", at=transaction_date,
+            )
+        except SQLAlchemyError:
+            return {
+                "restriction_active": False,
+                "restriction_available": False,
+                "payer_external_adverse": False,
+                "payer_external_confirmed": False,
+                "recipient_external_adverse": False,
+                "recipient_external_confirmed": False,
+            }
+
+        def flags(assessment) -> tuple[bool, bool]:
+            if assessment is None:
+                return False, False
+            confirmed = assessment.assessment == "confirmed_in_mock"
+            adverse = confirmed or assessment.assessment == "suspicious"
+            return adverse, confirmed
+
+        payer_adverse, payer_confirmed = flags(payer_assessment)
+        recipient_adverse, recipient_confirmed = flags(recipient_assessment)
+        return {
+            "restriction_active": restriction is not None,
+            "restriction_available": True,
+            "payer_external_adverse": payer_adverse,
+            "payer_external_confirmed": payer_confirmed,
+            "recipient_external_adverse": recipient_adverse,
+            "recipient_external_confirmed": recipient_confirmed,
+        }
 
     def _account_age_days(self, account_data: AccountData, transaction_date: datetime) -> int:
         """A idade da conta no instante do Pix, em dias de 24 h.
