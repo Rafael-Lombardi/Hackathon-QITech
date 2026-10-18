@@ -128,8 +128,8 @@ def _parse_date_time(value: str, path: str) -> datetime:
     "2026-02-31T10:00:00-03:00" chega aqui inteiro, e é aqui que ele para.
 
     400, e não o 422 que o Base Service dava pra data de nascimento
-    impossível: 31 de fevereiro nem é um date-time da RFC 3339, e o format:
-    date-time recusaria esse texto se o pacote rfc3339-validator estivesse
+    impossível: 31 de fevereiro nem é um date-time válido, e o format:
+    date-time recusaria esse texto se um validador externo estivesse
     instalado. É erro de forma, não de mundo.
     """
     try:

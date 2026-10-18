@@ -1,6 +1,6 @@
 """As fronteiras: cada limiar testado dos dois lados, mais os tetos e as notas da tabela.
 
-Um par por limiar (RFC §9): o valor que ainda não dispara e o primeiro
+Um par por limiar: o valor que ainda não dispara e o primeiro
 que dispara. É aqui que um ">" virando ">=" aparece — o cenário inteiro
 ficaria verde, e só a fronteira fica vermelha. Também moram aqui os tetos
 e o piso dos grupos, as notas 39/40 do D-PAY e do D-RCP, a pré-condição
@@ -50,7 +50,7 @@ class TestFronteiras:
 
         A conta nasce no banco com a abertura da primeira aparição (aqui,
         2020) e não muda depois. Quando ela volta com outra abertura — há 2
-        dias —, o P01 olha a do payload: a RFC fala na "data de abertura
+        dias —, o P01 olha a do payload: a política usa a "data de abertura
         informada", e é o que o _account_age_days de
         src/controllers/pix_transaction_controller.py faz.
         """
@@ -68,7 +68,7 @@ class TestFronteiras:
         """Abertura depois do Pix é dado inconsistente, e a conta conta como nova: idade 0, P01 +10.
 
         Tratar como nova é o lado conservador, sem inventar um 400 que a
-        RFC não prevê (_account_age_days, em
+        contrato não prevê (_account_age_days, em
         src/controllers/pix_transaction_controller.py).
         """
         payer = new_payer(opening_date=T0 + timedelta(days=1))
@@ -170,7 +170,7 @@ class TestFronteiras:
             6º Pix    R$ 0,01 a mais: R$ 1.000,01 → L02 +10
             amanhã    R$ 500 no mesmo aparelho, agora aprovado ontem → calado
 
-        É o ajuste da v0.5 ao L02 da RFC: com "aparelho nunca visto" ao
+        É o ajuste da v0.5 ao L02: com "aparelho nunca visto" ao
         pé da letra, a soma do dia seria sempre o próprio Pix.
         """
         payer, recipient = new_payer(), new_recipient()

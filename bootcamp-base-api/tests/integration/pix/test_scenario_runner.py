@@ -1,7 +1,7 @@
 """Smoke test do formato declarativo de cenários.
 
 Este caso é pequeno de propósito: prova o runner e documenta o contrato de
-armazenamento sem duplicar a bateria de cenários da RFC.
+armazenamento sem duplicar a bateria de cenários de aceitação.
 """
 
 from tests.utils.clock import T0

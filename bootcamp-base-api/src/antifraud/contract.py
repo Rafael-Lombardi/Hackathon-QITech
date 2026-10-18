@@ -153,7 +153,7 @@ class PayerHistory:
     # só visto. Um 2FA que ninguém confirmou não pode ensinar o motor que
     # o aparelho é do cliente, senão a segunda tentativa do invasor passa
     # limpa. Nas evidências, device_seen_before e ip_seen_before (os
-    # nomes do exemplo da RFC) querem dizer isto.
+    # nomes do exemplo do contrato) querem dizer isto.
     device_known: bool
     ip_known: bool
     attempts_5m: int

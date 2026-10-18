@@ -530,9 +530,9 @@ class PixTransactionController(BaseController):
         """A idade da conta no instante do Pix, em dias de 24 h.
 
         A abertura é a do PAYLOAD, e não a gravada na primeira aparição da
-        conta: o P01 da RFC olha "só a data de abertura informada". Conta
+        conta: o P01 olha "só a data de abertura informada". Conta
         aberta depois do Pix é dado inconsistente, e vira 0 — tratar como
-        conta nova é o lado conservador, sem inventar um 400 que a RFC não
+        conta nova é o lado conservador, sem inventar um 400 que o contrato não
         prevê.
         """
         return max((transaction_date - account_data.opening_date).days, 0)

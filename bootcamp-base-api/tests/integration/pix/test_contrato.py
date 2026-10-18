@@ -6,7 +6,7 @@ sem token e 409 quando o mesmo id volta com outro conteúdo. GET
 /pix/transaction/{id} devolve a análise gravada, ou 404. O corpo de uma
 análise é {key, status, metadata}, o mesmo no POST e no GET.
 
-Aqui moram dois testes do cenário 15 da RFC (reenvio e 409); os de
+Aqui moram dois testes do cenário de reenvio (reenvio e 409); os de
 concorrência estão em test_concorrencia.py.
 """
 
@@ -27,7 +27,7 @@ from tests.utils.requisition import ClientRequisition
 # granularidade, pontos quando dispara). É o CATALOG de
 # src/antifraud/policy.py, na mesma ordem. Granularidade é a chave que a
 # regra consultou: a conta de origem, o documento do pagador, o aparelho,
-# a conta de destino, o documento do recebedor, o par... A RFC v0.5 pede
+# a conta de destino, o documento do recebedor, o par... A política v0.5 pede
 # que cada sinal diga qual.
 CATALOG = {
     "P01": (1, "Perfil", "payer", "source_account", 10),

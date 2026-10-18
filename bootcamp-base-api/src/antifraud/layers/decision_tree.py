@@ -76,8 +76,8 @@ def _recipient_is_new(context: Context) -> bool:
 def _l02_new_device_over_limit(context: Context) -> Signal:
     if context.device_trusted is None:
         return policy.unavailable("L02")
-    # A RFC escreve "P03 disparado e (valor > R$ 200 ou soma do dia >
-    # R$ 1.000)". Com o P03 da RFC ao pé da letra (aparelho sem registro
+    # A política usa "P03 disparado e (valor > R$ 200 ou soma do dia >
+    # R$ 1.000)". Com o P03 ao pé da letra (aparelho sem registro
     # nenhum com o pagador), a soma do dia seria sempre o próprio Pix, e
     # a segunda metade nunca decidiria nada. Aqui aparelho novo é o que
     # não tinha Pix aprovado antes de hoje: o limite do Banco Central pra

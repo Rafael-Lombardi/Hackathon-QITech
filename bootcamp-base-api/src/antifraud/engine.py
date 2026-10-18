@@ -30,7 +30,7 @@ from antifraud.policy import DecisionRule
 # da tabela de decisão. Desligar uma camada é apagar a linha dela, e as
 # outras não percebem, porque nenhuma lê o sinal da outra. A ordem
 # também não muda a resposta (os sinais saem na ordem do catálogo); ela
-# segue a da RFC só pra leitura.
+# segue a do contrato só pra leitura.
 LAYERS: tuple[Layer, ...] = (
     InitialChecksLayer(),
     DecisionTreeLayer(),

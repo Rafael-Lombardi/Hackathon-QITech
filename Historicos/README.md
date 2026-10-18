@@ -2,7 +2,7 @@
 
 Este diretório contém `gerador_de_historicos.py`, um gerador de dados sintéticos para exercitar o motor antifraude. Ele cria um arquivo JSON por cliente e distribui transações aprovadas, com solicitação de 2FA e reprovadas em proporções configuráveis.
 
-Os cenários são heurísticos e inspirados no catálogo da RFC v0.3. Eles ajudam a testar regras e sequências, mas não são dados reais nem uma política antifraude calibrada.
+Os cenários são heurísticos e inspirados no catálogo de regras do projeto. Eles ajudam a testar regras e sequências, mas não são dados reais nem uma política antifraude calibrada.
 
 ## Requisitos
 

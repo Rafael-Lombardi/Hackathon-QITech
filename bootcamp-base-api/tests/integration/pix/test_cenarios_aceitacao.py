@@ -1,4 +1,4 @@
-"""Os cenários de aceitação da RFC v0.5, pela porta da frente.
+"""Os cenários de aceitação da política antifraude, pela porta da frente.
 
 Cada teste monta o histórico com POSTs de verdade — datas escolhidas,
 nada de INSERT —, manda o Pix do cenário e confere a decisão inteira:
@@ -20,14 +20,14 @@ Montante, Perfil...); o grupo de teto é o de src/antifraud/policy.py
 exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 
 A tabela, em ordem, vale a primeira que casar: restrição ativa → rejeições
-combinadas da RFC v0.5 (com evidência DICT quando exigida) → D-ATO-1
+combinadas da política (com evidência DICT quando exigida) → D-ATO-1
 (P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP
 (destino >= 40) → D-OK. Os cenários legados desta classe não semeiam
 evidência DICT; por isso, a combinação de R01/R02/R03 não rejeita
 sozinha.
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
-test_concorrencia.py, com os nomes que a RFC deu. As sementes passam pelo
+test_concorrencia.py, com os nomes do catálogo de aceitação. As sementes passam pelo
 seed (tests/utils/pix.py), que derruba o teste se alguma não voltar
 approved. Todos rodam com o DICT na confiança padrão (70): o DICT01 fica
 calado aqui, e a camada 3 tem arquivo próprio.
@@ -47,7 +47,7 @@ HISTORICAL_SIGNALS = {
 }
 
 
-class TestCenariosRfc:
+class TestCenariosAceitacao:
     def test_primeira_observacao_normal_aprova(self):
         """Cenário 01 — o primeiro Pix na base: contas maduras, R$ 150, às 14h.
 
@@ -58,7 +58,7 @@ class TestCenariosRfc:
         padrão (70), e o DICT01 fica calado.
 
         Pagador 0, destino 0, suficiência unavailable nos dois eixos: D-OK.
-        Primeira observação não é culpa nem atestado (RFC §14).
+        Primeira observação não é culpa nem atestado.
         """
         payer, recipient = new_payer(), new_recipient()
 
@@ -194,7 +194,7 @@ class TestCenariosRfc:
             pagador 18 + 18 + 10 = 46; destino 8
 
         O D-ATO-1 casa antes do D-PAY: P03 e P06 juntos é a cara da tomada
-        de conta. É o exemplo da RFC §3, número a número. Suficiência:
+        de conta. É o exemplo de primeira conta, número a número. Suficiência:
         pagador medium (10 Pix em 10 dias), destino unavailable (nunca
         recebeu).
         """
@@ -382,7 +382,7 @@ class TestCenariosRfc:
             destino 35, pagador 0
 
         Sem evidência DICT, R01, R02 e R03 não são suficientes para
-        rejeição na RFC v0.5. Como o teto deixa o destino em 35, o Pix é
+        rejeição na política v0.5. Como o teto deixa o destino em 35, o Pix é
         aprovado. Repare que a 4ª semente já tinha R01, R03 e R04 (destino
         35) e também foi aprovada: o caso só muda os sinais, não ultrapassa
         o limiar de fricção.
@@ -411,7 +411,7 @@ class TestCenariosRfc:
             REL01 +8             destino inédito para quem tem histórico
             destino 43, pagador 0
 
-        Sem evidência DICT, a RFC v0.5 não rejeita apenas pelos sinais
+        Sem evidência DICT, a política v0.5 não rejeita apenas pelos sinais
         R01/R02/R03. O risco do destino chega a 43 e a política aplica
         D-RCP (2FA). O pagador está limpo, e a confirmação adicional é a
         fricção disponível quando ainda não há evidência suficiente para

@@ -79,7 +79,7 @@
       "pattern": "^[^\\u0000\\uD800-\\uDFFF]+$(?!\\n)"
     },
     "date_time": {
-      "$comment": "Data e hora COM fuso: sem ele, 22h15 seria 22h15 de lugar nenhum e a regra noturna erraria por 3 horas. É regex, e não format: date-time, porque esse format só é conferido com o pacote rfc3339-validator, que não está instalado — sem ele, passa qualquer texto. Aceita T ou espaço entre data e hora e até 9 casas de fração (o .NET manda 7; Go e Java, até 9), que o fromisoformat lê e corta em 6. Ano de 1900 a 2999: nas pontas do calendário do Python (ano 1 e ano 9999) a conversão de fuso estoura, e o banco grava um instante que o psycopg2 não lê de volta. Fuso até ±14:59: o maior do mundo é +14:00, em Kiribati, e o Postgres recusa acima de ±15:59 com um 500. Mês 13 e 31 de fevereiro têm a forma certa e são recusados no pix_request.py.",
+      "$comment": "Data e hora COM fuso: sem ele, 22h15 seria 22h15 de lugar nenhum e a regra noturna erraria por 3 horas. É regex, e não format: date-time, porque esse format só é conferido por um validador externo — sem ele, passa qualquer texto. Aceita T ou espaço entre data e hora e até 9 casas de fração (o .NET manda 7; Go e Java, até 9), que o fromisoformat lê e corta em 6. Ano de 1900 a 2999: nas pontas do calendário do Python (ano 1 e ano 9999) a conversão de fuso estoura, e o banco grava um instante que o psycopg2 não lê de volta. Fuso até ±14:59: o maior do mundo é +14:00, em Kiribati, e o Postgres recusa acima de ±15:59 com um 500. Mês 13 e 31 de fevereiro têm a forma certa e são recusados no pix_request.py.",
       "type": "string",
       "pattern": "^(19|2[0-9])[0-9]{2}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,9})?(Z|[+-](0[0-9]|1[0-4]):[0-5][0-9])$(?!\\n)"
     },

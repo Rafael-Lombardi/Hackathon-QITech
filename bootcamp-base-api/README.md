@@ -2,7 +2,7 @@
 
 A API do motor antifraude Pix: recebe um Pix em `POST /pix/transaction`, decide entre `approved`, `two_factor_required` e `rejected`, grava o Pix com a decisão explicada e devolve a análise. `GET /pix/transaction/{id}` devolve o que foi gravado. É **Python 3.11 + FastAPI**, com **PostgreSQL 16**, rodando em **Docker**, e nasceu do Base Service do bootcamp. Para decidir, ela consulta o DICT, o diretório do Banco Central que liga chave Pix a conta; aqui quem faz o papel dele é um mock, um servidor de mentira que devolve as respostas combinadas com ele (seção 4).
 
-As decisões deste serviço seguem a política `v0.5.0`, descrita na [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099). Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança.
+As decisões deste serviço seguem a política determinística `v0.5.0`, implementada em `src/antifraud/policy.py`. Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança.
 
 As regras, o porquê de cada parâmetro e a tabela de decisão estão no [README da raiz](../README.md). Este é o do serviço: como subir, o que cada rota responde, a configuração, o mock, os testes e o caminho de uma requisição.
 
@@ -247,7 +247,7 @@ os testes de resiliência também usam controller/repositories reais e sessões
 PostgreSQL para simular falha de infraestrutura e expiração de lease. Cada
 teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios),
 monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O
-que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
+que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um cenário de aceitação, consulte o catálogo de testes desse diretório.
 
 ---
 

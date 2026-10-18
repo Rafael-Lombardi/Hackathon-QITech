@@ -1,4 +1,4 @@
-"""Cenários de rejeição demonstrativa introduzidos pela RFC v0.5."""
+"""Cenários de decisão e rejeição da política antifraude."""
 
 from datetime import timedelta
 
@@ -30,7 +30,7 @@ def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
     return recipient
 
 
-class TestPoliticaRfcV05:
+class TestDecisoes:
     def test_rejeicao_ato_exige_combinacao_completa(self):
         """D-REJ-ATO — tomada de conta com sinais completos.
 

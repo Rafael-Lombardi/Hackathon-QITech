@@ -1,6 +1,6 @@
 """A política do motor: todo número que ele usa, num arquivo só.
 
-Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5), não
+Pesos, limiares, janelas e tetos são hipóteses do time (política v0.5), não
 calibragem com dado real; os que vêm do Banco Central dizem de onde
 vieram. A POLICY_VERSION vai gravada em cada análise. Mudou um número
 aqui, muda a versão — senão o motivo gravado ontem passa a ser lido com
@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.5 + a camada 3 (DICT01, com teto próprio). Fontes externas e
+# Política v0.5 + a camada 3 (DICT01, com teto próprio). Fontes externas e
 # restrições são entradas de Context e não alteram o contrato HTTP.
 POLICY_VERSION = "v0.5.0"
 
@@ -125,8 +125,8 @@ class SignalSpec:
 # Família é a do desafio e sai na resposta; grupo de teto é interno e
 # só existe pra soma (veja CAPS).
 #
-# granularity é a chave da consulta que alimentou o sinal, como a RFC
-# v0.3 pede pra não misturar titular com conta: a conta (source_account,
+# granularity é a chave da consulta que alimentou o sinal, para não misturar
+# titular com conta: a conta (source_account,
 # destination_account), o documento (payer, recipient), o aparelho
 # (device), o par de documentos (pair) ou o próprio Pix (transaction).
 # O R04 cruza a conta destino com o documento recebedor e registra os

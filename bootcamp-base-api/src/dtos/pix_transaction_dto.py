@@ -8,7 +8,7 @@ class PixTransactionDTO:
     O repository entrega um PixTransaction e as linhas de
     pix_transaction_rule_result — o espelho das tabelas, com nome de
     coluna e chave estrangeira. Aqui elas viram o corpo do contrato do
-    desafio, {key, status, metadata}, com os nomes da RFC: a
+    desafio, {key, status, metadata}, com os nomes públicos: a
     pix_transaction_key vira key, payer_risk e recipient_risk viram
     scores, rule_name vira code e rule_result_data vira evidence.
 
@@ -51,7 +51,7 @@ class PixTransactionDTO:
                 "points": rule_result.points,
             }
 
-            # Evidência só quando há o que mostrar, como no exemplo da RFC:
+            # Evidência só quando há o que mostrar, como no exemplo do contrato:
             # not_triggered e unavailable gravam {} e saem sem a chave — o
             # status já diz por quê.
             if rule_result.rule_result_data:

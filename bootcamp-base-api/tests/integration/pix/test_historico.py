@@ -177,7 +177,7 @@ class TestHistorico:
         assert pix.sufficiency["payer"] == "low"
 
     def test_r01_olha_a_conta_e_r03_olha_o_titular(self):
-        """As duas identidades do destino (RFC v0.5): a conta e o titular.
+        """As duas identidades do destino: a conta e o titular.
 
         O titular tem uma conta antiga e uma aberta há 2 dias. Três
         pagadores novos pagam ele nos últimos 50 minutos, nas duas contas.

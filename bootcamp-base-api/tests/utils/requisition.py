@@ -44,7 +44,7 @@ class ClientRequisition:
         if headers is None:
             headers = dict()
 
-        # RFC clock injection: tests control the server receipt timestamp via
+        # Test clock injection: tests control the server receipt timestamp via
         # an internal-only header; production ignores it outside local/test.
         if method.upper() == "POST" and isinstance(payload, dict):
             transaction_date = payload.get("transaction_date")

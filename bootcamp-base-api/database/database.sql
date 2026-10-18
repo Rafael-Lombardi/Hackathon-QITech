@@ -53,7 +53,7 @@ INSERT INTO pix_signal_status (enumerator) VALUES
 --
 -- É também a linha que o controller trava: SELECT ... FOR NO KEY UPDATE
 -- no customer do pagador, depois dos upserts e na mesma transação do
--- INSERT do Pix — a estante da RFC da biblioteca: ninguém conta os livros
+-- INSERT do Pix — a estante da biblioteca: ninguém conta os livros
 -- sem segurar a estante. A trava é no customer, e não na conta de origem,
 -- porque as regras do pagador contam pelo documento, somando as contas:
 -- dois Pix do mesmo CPF por contas diferentes também passam um de cada
@@ -205,7 +205,7 @@ CREATE INDEX external_risk_customer_axis_idx
 --
 -- status_id é o veredicto; as sete colunas logo abaixo dele são como ele
 -- foi tomado. Duas notas de risco, 0 a 100, uma pro pagador e uma pro
--- destino — a RFC chama cada uma de eixo (payer_risk, recipient_risk).
+-- destino — cada uma funciona como um eixo (payer_risk, recipient_risk).
 -- Quanto histórico havia pra sustentar cada nota (payer_sufficiency,
 -- recipient_sufficiency: unavailable, low, medium, high) — sem histórico
 -- a nota é baixa por falta de dado, e é isso que a coluna diz, pra
@@ -342,23 +342,23 @@ CREATE INDEX pix_transaction_device_id_idx
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta
--- e é isto que a RFC promete: quais regras rodaram, o que cada uma viu e
+-- e é isto que o contrato promete: quais regras rodaram, o que cada uma viu e
 -- quanto cada uma pesou.
 --
 -- Cada linha é um sinal; o veredicto é um só e mora em pix_transaction.
--- rule_name é o código da regra na tabela da RFC (seção 5: P03, R01,
+-- rule_name é o código da regra no catálogo (P03, R01,
 -- REL02...); signal_status_id é o estado; points é quanto o sinal somou
 -- ao eixo, e pode ser negativo (REL02 é -8). Repare que not_triggered e
 -- unavailable gravam 0 os dois, e rule_result_data vazio ({}): o que os
 -- separa é o status. family é a família que a resposta devolve (Perfil,
--- Velocity, Contraparte...), não o grupo de teto da RFC — somar points
+-- Velocity, Contraparte...), não o grupo de teto — somar points
 -- por Pix não reproduz payer_risk, porque o teto é aplicado no motor.
 --
 -- Do sinal à decisão: soma por grupo de teto (as regras que olham o
 -- mesmo padrão dividem um teto), pra que cinco regras vendo a mesma
 -- rajada não contem cinco vezes; soma por eixo (payer_risk e
 -- recipient_risk, 0 a 100); e a tabela de decisão, linha a linha, até
--- uma bater. Pesos, tetos e a tabela moram no motor e na RFC. O banco
+-- uma bater. Pesos, tetos e a tabela moram no motor e no contrato. O banco
 -- guarda o que cada regra viu (rule_result_data: observado, limite,
 -- janela) e o que disse (status e points) naquela hora, pra que o motivo
 -- de ontem continue legível com os pesos de amanhã.
