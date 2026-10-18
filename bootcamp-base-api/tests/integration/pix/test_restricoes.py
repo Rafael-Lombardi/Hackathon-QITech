@@ -148,21 +148,30 @@ class TestRestricoes:
         assert to_restricted.decision_rule == "D-RESTRICT-SIM"
 
     def test_fonte_de_restricoes_fora_do_ar_e_503_sem_veredito(self, sources_mock):
-        """R3 — a fonte obrigatória falhou: 503 com o erro QIT001005, e o Pix não fica gravado.
+        """R3 — a fonte obrigatória falhou: 503 QIT001005, e o recibo fica failed até o reenvio.
 
         Sem a lista não há como saber se existe restrição, e presumir
         lista vazia deixaria passar justamente quem está bloqueado. A API
-        não decide: 503, erro no formato do Base Service, e o GET do id
-        volta 404 — nada ficou gravado, e o reenvio, quando a fonte
-        voltar, é um Pix novo.
+        não decide: 503, erro no formato do Base Service, e nenhuma
+        análise gravada — o GET do id responde 503 QIT001007 (chegou, e a
+        avaliação falhou), e não 404. Quando a fonte volta, o mesmo Pix
+        reenviado reivindica o recibo e é avaliado: 201 (RFC §8, C2), e o
+        GET passa a devolver a análise.
         """
         payer, recipient = new_payer(), new_recipient()
         sources_mock.restrictions_down(payer.document)
         payload = pix_payload(payer, recipient, T0)
 
         refused = post_pix(payload)
+        failed = get_pix(payload["id"])
+        sources_mock.clear()
+        retried = post_pix(payload)
 
         assert refused.http_status == 503
         assert refused.body["code"] == "QIT001005"
         assert set(refused.body) == ERROR_KEYS
-        assert get_pix(payload["id"]).http_status == 404
+        assert failed.http_status == 503
+        assert failed.body["code"] == "QIT001007"
+        assert retried.http_status == 201
+        assert retried.status == "approved"
+        assert get_pix(payload["id"]).content == retried.content

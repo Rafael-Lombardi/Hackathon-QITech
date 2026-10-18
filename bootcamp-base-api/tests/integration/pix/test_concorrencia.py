@@ -5,7 +5,8 @@ na linha de largada e saem no mesmo instante. O que se prova:
   • dois Pix diferentes do mesmo pagador passam um de cada vez — a trava
     por pagador — e o segundo vê o primeiro no histórico;
   • o mesmo id chegando várias vezes ao mesmo tempo vira UMA análise, e
-    nunca 500: 200 pro mesmo Pix, 409 pra outro conteúdo;
+    nunca 500: 200, ou 409 "em processamento", pro mesmo Pix; 409 de
+    conflito pra outro conteúdo;
   • Pix cruzados de gente nova (A paga B enquanto B paga A) não travam
     um no outro.
 As corridas que dependem de sorte rodam algumas vezes dentro do teste:
@@ -46,10 +47,11 @@ class TestConcorrencia:
         P04 calado) e o segundo vê 4 (4 + 1 = 5, P04 dispara). Exatamente
         um dispara, nas três rodadas.
 
-        Repare na data igual: anterior é transaction_date <= t, e assim
-        qualquer um dos dois que chegue depois vê o outro. Sem a trava, os
-        dois leriam o histórico antes de qualquer um gravar, veriam 3, e
-        nenhum dispararia — a rajada passaria pela fresta.
+        Repare no relógio igual: os dois mandam T0 no header de teste,
+        anterior é received_at <= t, e assim qualquer um dos dois que passe
+        depois pela trava vê o outro. Sem a trava, os dois leriam o
+        histórico antes de qualquer um gravar, veriam 3, e nenhum
+        dispararia — a rajada passaria pela fresta.
         """
         for _ in range(ROUNDS):
             payer, recipient = new_payer(), new_recipient()
@@ -63,32 +65,40 @@ class TestConcorrencia:
             assert counted.signal("P04")["evidence"]["attempts_5m"] == 5
 
     def test_mesmo_pix_ao_mesmo_tempo_vira_uma_analise_so(self):
-        """O mesmo Pix 4 vezes ao mesmo tempo: um 201, três 200, o mesmo corpo.
+        """O mesmo Pix 4 vezes ao mesmo tempo: um 201, e os outros 200 ou 409 "em processamento" — nunca uma segunda análise.
 
-        Do mesmo pagador, a trava põe os quatro em fila, e quem passa
-        depois do primeiro acha o id já gravado: lê a análise de quem
-        ganhou e devolve essa, como num reenvio.
+        Quem reivindica o recibo do id primeiro avalia; quem chega
+        enquanto ele trabalha recebe 409 QIT001006, sem esperar e sem
+        segundo avaliador (RFC §8); quem chega depois de gravada recebe a
+        análise, 200, nos mesmos bytes. Exatamente um 201 em cada rodada,
+        e o reenvio no fim é 200 com o mesmo corpo.
         """
-        payload = pix_payload(new_payer(), new_recipient(), T0)
+        for _ in range(ROUNDS):
+            payload = pix_payload(new_payer(), new_recipient(), T0)
 
-        responses = post_together([payload] * 4)
+            responses = post_together([payload] * 4)
 
-        assert sorted(pix.http_status for pix in responses) == [200, 200, 200, 201]
-        bodies = [pix.body for pix in responses]
-        assert all(body == bodies[0] for body in bodies)
-        assert get_pix(payload["id"]).body == bodies[0]
+            statuses = [pix.http_status for pix in responses]
+            assert statuses.count(201) == 1, statuses
+            assert set(statuses) <= {200, 201, 409}, statuses
+            winner = next(pix for pix in responses if pix.http_status == 201)
+            for pix in responses:
+                if pix.http_status == 200:
+                    assert pix.content == winner.content
+                if pix.http_status == 409:
+                    assert pix.body["code"] == "QIT001006"
+            again = post_pix(payload)
+            assert again.http_status == 200
+            assert again.content == winner.content
 
     def test_mesmo_id_por_dois_pagadores_ao_mesmo_tempo_volta_201_e_409(self):
-        """O mesmo id vindo de dois pagadores ao mesmo tempo: um grava, o outro recebe 409.
+        """O mesmo id vindo de dois pagadores ao mesmo tempo: um grava, o outro recebe 409 de conflito.
 
-        A trava é por pagador, e dois pagadores não esperam um pelo
-        outro: os dois chegam juntos ao INSERT, e quem resolve é o UNIQUE
-        do id. Quem perde não vê 500 — lê a análise de quem ganhou, que
-        tem outro conteúdo, e responde 409. O GET devolve a do 201.
-
-        Customers e contas são criados antes, pelas sementes: sem isso, o
-        primeiro Pix de cada um criaria as linhas, e a criação já poria os
-        dois em fila antes do INSERT — a corrida nem aconteceria.
+        Quem resolve é o recibo do id, antes de qualquer trava: o primeiro
+        a reivindicá-lo avalia, e o segundo encontra um recibo com outro
+        conteúdo — 409 QIT001002, sem 500 e sem espera, esteja o primeiro
+        ainda avaliando ou já gravado. O GET devolve a do 201. As sementes
+        só dão histórico aos dois pagadores.
         """
         for _ in range(ROUNDS):
             first, second, recipient = new_payer(), new_payer(), new_recipient()

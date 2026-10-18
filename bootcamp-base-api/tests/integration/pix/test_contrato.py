@@ -1,13 +1,16 @@
 """O contrato HTTP do Pix: o que entra, o que sai, e as recusas.
 
 POST /pix/transaction responde 201 com a análise nova, 200 no reenvio
-idêntico (a mesma análise, sem contar de novo), 400 fora do schema, 403
-sem token e 409 quando o mesmo id volta com outro conteúdo. GET
-/pix/transaction/{id} devolve a análise gravada, ou 404. O corpo de uma
-análise é {key, status, metadata}, o mesmo no POST e no GET.
+do mesmo Pix (a mesma análise, sem contar de novo — e o mesmo Pix é o
+mesmo conteúdo, não o mesmo texto), 400 fora do schema ou com a data
+fora da tolerância, 403 sem token e 409 quando o mesmo id volta com
+outro conteúdo. GET /pix/transaction/{id} devolve a análise gravada, ou
+404. O corpo de uma análise é {key, status, metadata}, o mesmo no POST e
+no GET.
 
 Aqui moram dois testes do cenário 15 da RFC (reenvio e 409); os de
-concorrência estão em test_concorrencia.py.
+concorrência estão em test_concorrencia.py, e os do recibo — o 409 "em
+processamento" e o 503 da avaliação que falhou — em test_recibo.py.
 """
 
 import copy
@@ -541,13 +544,12 @@ class TestContrato:
         assert again.http_status == 200
         assert again.content == first.content
 
-    def test_reenvio_com_o_documento_noutra_pontuacao_volta_409(self):
-        """A idempotência compara o payload como chegou, e não o normalizado.
+    def test_reenvio_com_o_documento_noutra_pontuacao_volta_200(self):
+        """A idempotência compara o payload canônico, e não o texto que chegou.
 
-        O mesmo Pix com o CPF agora pontuado é, para o motor, o mesmo
-        pagador — mas não é o mesmo payload, e volta 409. A escolha é
-        deliberada: o que fica gravado é o que chegou, e um reenvio que
-        mudou algum valor não é reenvio.
+        O mesmo Pix com o CPF agora pontuado é o mesmo pagador e o mesmo
+        conteúdo (RFC §2): 200, com a análise gravada nos mesmos bytes —
+        a do primeiro envio, que é o payload que fica gravado.
         """
         payer = new_payer()
         payload = pix_payload(payer, new_recipient(), T0)
@@ -555,11 +557,39 @@ class TestContrato:
         formatted["source_account"]["owner"]["document_number"] = format_document(payer.document)
 
         first = post_pix(payload)
-        conflict = post_pix(formatted)
+        again = post_pix(formatted)
 
         assert first.http_status == 201
-        assert conflict.http_status == 409
-        assert conflict.body["code"] == "QIT001002"
+        assert again.http_status == 200
+        assert again.content == first.content
+
+    @pytest.mark.parametrize(
+        "offset, http_status",
+        [
+            (timedelta(days=-91), 400),
+            (timedelta(days=-90), 201),
+            (timedelta(minutes=10), 400),
+            (timedelta(minutes=4), 201),
+        ],
+        ids=["91-dias-atras-volta-400", "90-dias-atras-entra", "10-min-no-futuro-volta-400", "4-min-no-futuro-entra"],
+    )
+    def test_tolerancia_da_data_do_pix(self, offset, http_status):
+        """transaction_date longe do relógio do servidor é 400 (QIT001004), e não veredito.
+
+        O relógio do servidor é T0 (o header de teste), e o Pix diz ter
+        acontecido em T0 + offset: 90 dias pra trás ainda entra, 91 não;
+        4 minutos pra frente entra, 10 não. O 400 chega antes do recibo:
+        o GET do id recusado é 404, como se o Pix nunca tivesse chegado.
+        """
+        payload = pix_payload(new_payer(), new_recipient(), T0 + offset)
+
+        pix = post_pix(payload, received_at=T0)
+
+        assert pix.http_status == http_status, pix.body
+        if http_status == 400:
+            assert pix.body["code"] == "QIT001004"
+            assert set(pix.body) == ERROR_KEYS
+            assert get_pix(payload["id"]).http_status == 404
 
     def test_mesmo_id_payload_diferente_409(self):
         """Cenário 15 — o mesmo id com outro conteúdo: 409, e a análise gravada não muda."""

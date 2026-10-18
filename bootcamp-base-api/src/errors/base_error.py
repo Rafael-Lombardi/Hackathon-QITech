@@ -23,12 +23,16 @@ def error_verification():
 
 
 class QIException(Exception):
-    def __init__(self, title, code, http_status, description, translation) -> None:
+    # headers vai na resposta junto com o corpo do erro: é por aqui que o
+    # 409 de "em processamento" manda o Retry-After. Quase nenhum erro
+    # precisa, daí o padrão vazio.
+    def __init__(self, title, code, http_status, description, translation, headers=None) -> None:
         self.title = title
         self.description = description
         self.translation = translation
         self.code = code
         self.http_status = http_status
+        self.headers = headers
 
 
 class MethodNotAllowed(QIException):

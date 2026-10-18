@@ -3,7 +3,7 @@ import os
 from fastapi import Response, status
 from fastapi.responses import JSONResponse
 
-from constants import SERVICE_NAME
+from constants import APP_ENV, SERVICE_NAME
 
 
 class HealthCheckResource:
@@ -20,7 +20,10 @@ class HealthCheckResource:
     """
 
     async def on_get_home(self) -> JSONResponse:
-        home = {"service": SERVICE_NAME, "id": str(os.getpid())}
+        # environment é como a suíte confere, antes do primeiro teste, que
+        # está falando com uma stack de teste — a única que honra o relógio
+        # por header.
+        home = {"service": SERVICE_NAME, "id": str(os.getpid()), "environment": APP_ENV}
 
         return JSONResponse(content=home, status_code=status.HTTP_200_OK)
 

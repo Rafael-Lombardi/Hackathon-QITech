@@ -16,11 +16,10 @@ from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 # uma marcada como emenda onde mora (catálogo e tabela): o L03, teto por
 # Pix, e três linhas de 2FA por combinação, D-LIMIT, D-SCAM e D-DRAIN.
 # Nenhuma emenda mexe no que a RFC manda; cada uma pede confirmação num
-# caso em que a v0.5 aprovaria. Onde ainda difere da RFC: as janelas de
-# histórico contam por transaction_date, e não pelo relógio do servidor;
-# o teto da rede do destino está em 40, e não em 35; a camada 3 lê a
-# marcação de fraude do DICT, e não ocorrências datadas; e não há a
-# rejeição do pagador por evidência do DICT (D-REJ-PAY).
+# caso em que a v0.5 aprovaria. Onde ainda difere da RFC: o teto da rede
+# do destino está em 40, e não em 35; a camada 3 lê a marcação de fraude
+# do DICT, e não ocorrências datadas; e não há a rejeição do pagador por
+# evidência do DICT (D-REJ-PAY).
 POLICY_VERSION = "v0.6.0"
 
 
@@ -33,10 +32,13 @@ POLICY_VERSION = "v0.6.0"
 # nome do sinal: mudar uma janela é mudar os quatro, e no D-DRAIN também
 # a frase do motivo.
 #
-# Com t = transaction_date do Pix atual, anterior é transaction_date <= t
-# (o Pix atual ainda não foi gravado, e um Pix do mesmo instante conta),
-# e nos últimos X é transaction_date > t - X. Ao lado de cada janela, o
-# campo do Context que ela define.
+# O relógio é o do servidor (RFC §2): com t = evaluated_at do Pix atual,
+# lido depois da trava do pagador, anterior é received_at <= t (o Pix
+# atual ainda não foi gravado, e um Pix recebido no mesmo instante conta
+# — é o que deixa dois Pix do relógio de teste se enxergarem em corrida),
+# e nos últimos X é received_at >= t - X, a janela fechada no começo como
+# a RFC escreve. Ao lado de cada janela, o campo do Context que ela
+# define.
 PAYER_ATTEMPTS_WINDOW = timedelta(minutes=5)  # attempts_5m
 PAYER_AMOUNT_WINDOW = timedelta(hours=1)  # amount_1h
 NEW_DESTINATIONS_WINDOW = timedelta(minutes=10)  # new_destinations_10m
@@ -44,6 +46,19 @@ DEVICE_PAYERS_WINDOW = timedelta(hours=24)  # distinct_payers_24h
 RECIPIENT_ATTEMPTS_WINDOW = timedelta(minutes=10)  # attempts_10m
 RECIPIENT_PAYERS_WINDOW = timedelta(hours=1)  # distinct_payers_1h
 PAIR_ANOMALY_WINDOW = timedelta(days=7)  # recent_anomaly
+
+
+# ────────────────────────────────────────────────────────────────────
+# Tolerância da data do Pix
+# ────────────────────────────────────────────────────────────────────
+# transaction_date é declarada por quem manda, e as janelas contam pelo
+# relógio do servidor. Longe demais dele, a data não descreve um Pix de
+# agora: 90 dias pra trás (a janela mais longa que alguma regra olha) e
+# 5 minutos pra frente (relógio desacertado, e nada além disso). Fora
+# disso é erro contratual, 400, e não veredito (RFC §2 e §5). Quem
+# confere é o controller, antes do recibo.
+TRANSACTION_DATE_MAX_AGE = timedelta(days=90)
+TRANSACTION_DATE_MAX_SKEW = timedelta(minutes=5)
 
 
 # ────────────────────────────────────────────────────────────────────

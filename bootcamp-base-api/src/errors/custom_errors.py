@@ -42,6 +42,33 @@ class PixTransactionIdConflict(QIException):
         super().__init__(title, self.code, http_status, description, translation)
 
 
+class TransactionDateOutOfTolerance(QIException):
+    """A data do Pix está longe demais do relógio do servidor.
+
+    transaction_date é declarada por quem manda, e as janelas de histórico
+    contam pelo relógio do servidor: uma data de meses atrás, ou de
+    amanhã, não é um Pix de agora, e a RFC pede tolerância explícita (§2
+    e §5). 400, erro contratual, e não veredito: nada fica gravado. Os
+    limites estão no policy.py (TRANSACTION_DATE_MAX_AGE e
+    TRANSACTION_DATE_MAX_SKEW), e a descrição diz os dois.
+    """
+
+    code = "QIT001004"
+
+    def __init__(self, transaction_date, max_age_days, max_skew_minutes) -> None:
+        title = "Transaction Date Out Of Tolerance"
+        http_status = 400
+        description = (
+            f"transaction_date {transaction_date} is outside the accepted tolerance: "
+            f"up to {max_age_days} days before and {max_skew_minutes} minutes after the server clock."
+        )
+        translation = (
+            f"A data do Pix está fora da tolerância aceita: até {max_age_days} dias para trás "
+            f"e {max_skew_minutes} minutos para a frente do relógio do servidor."
+        )
+        super().__init__(title, self.code, http_status, description, translation)
+
+
 class DictUnavailable(QIException):
     """O DICT não respondeu, ou respondeu algo que não dá pra usar.
 
@@ -84,4 +111,46 @@ class RestrictionSourceUnavailable(QIException):
         http_status = 503
         description = f"Restrictions could not be obtained, so the Pix was not evaluated: {reason}."
         translation = "Não foi possível consultar as restrições; o Pix não foi avaliado."
+        super().__init__(title, self.code, http_status, description, translation)
+
+
+class PixTransactionProcessing(QIException):
+    """Este id está sendo avaliado neste instante, por esta ou por outra requisição.
+
+    409 com Retry-After, e sem nenhum campo de sucesso: o recibo do id
+    está em processing, com o lease vigente, e a RFC manda não iniciar um
+    segundo avaliador (§8) — nem esperar pelo primeiro, que pode levar os
+    prazos das três fontes. Quem chamou tenta de novo em instantes e
+    recebe a análise gravada (200), ou o GET. Vale também pro GET que
+    chega antes de a análise existir.
+    """
+
+    code = "QIT001006"
+
+    def __init__(self, external_id, retry_after_seconds) -> None:
+        title = "Pix Transaction Processing"
+        http_status = 409
+        description = f"Pix transaction with id {external_id} is being evaluated; retry in {retry_after_seconds} second(s)."
+        translation = f"O Pix com id {external_id} está em avaliação; tente de novo em {retry_after_seconds} segundo(s)."
+        super().__init__(
+            title, self.code, http_status, description, translation,
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+
+class PixTransactionEvaluationFailed(QIException):
+    """O id chegou, o recibo existe, e a avaliação falhou antes de gravar a análise.
+
+    O GET não forja sucesso nem diz que o Pix nunca existiu: 503, e o
+    recibo failed continua lá, com o motivo. O mesmo Pix reenviado
+    reivindica o recibo e é avaliado de novo (RFC §8); é o que resolve.
+    """
+
+    code = "QIT001007"
+
+    def __init__(self, external_id) -> None:
+        title = "Pix Transaction Evaluation Failed"
+        http_status = 503
+        description = f"Pix transaction with id {external_id} was received but its evaluation failed; resend it to be evaluated again."
+        translation = f"O Pix com id {external_id} foi recebido, mas a avaliação falhou; reenvie para avaliar de novo."
         super().__init__(title, self.code, http_status, description, translation)

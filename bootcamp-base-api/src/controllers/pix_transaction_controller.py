@@ -1,4 +1,6 @@
-from datetime import datetime, timezone
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 from antifraud import Analysis, Context, DeviceRegistration, Restriction, Transaction, evaluate, policy
 from connectors import DeviceRegistryConnector, DictConnector, RestrictionsConnector
@@ -7,10 +9,42 @@ from connectors.dict_connector import DictSecurityInformation
 from controllers.base_controller import BaseController
 from controllers.pix_request import AccountData, PixRequest, parse_pix_request
 from dtos import PixTransactionDTO
-from errors import DictUnavailable, PixTransactionIdConflict, PixTransactionNotFound
-from models import Account, Customer, PixTransaction
+from errors import (
+    DictUnavailable,
+    PixTransactionEvaluationFailed,
+    PixTransactionIdConflict,
+    PixTransactionNotFound,
+    PixTransactionProcessing,
+    QIException,
+    TransactionDateOutOfTolerance,
+)
+from models import Account, Customer, PixTransaction, ReceiptState
 from repositories import AccountRepository, CustomerRepository, PixHistoryRepository, PixTransactionRepository
 from utils.document_number import mask_document
+
+# Por quanto tempo um recibo em processing é de quem o reivindicou. Mais
+# que a pior avaliação possível (três fontes a 2 s cada, mais os 10 s de
+# teto de um comando no banco) e pouco o bastante pra que o id de um
+# avaliador que morreu volte a ser avaliável logo (RFC §8).
+RECEIPT_LEASE = timedelta(minutes=2)
+
+# O Retry-After do 409 "em processamento": a avaliação leva milissegundos
+# quando as fontes respondem, e segundos quando não.
+PROCESSING_RETRY_AFTER_SECONDS = 1
+
+
+@dataclass(frozen=True)
+class _Claim:
+    """A reivindicação de um recibo: o que o avaliador precisa guardar depois do commit dela.
+
+    São valores soltos, e não o model: depois do commit o SQLAlchemy
+    expira o objeto, e ler um atributo dele abriria outra transação — no
+    meio das consultas às fontes, com a conexão presa.
+    """
+
+    receipt_id: int
+    owner_token: str
+    received_at: datetime
 
 
 class PixTransactionController(BaseController):
@@ -34,46 +68,70 @@ class PixTransactionController(BaseController):
         self.device_registry_connector = DeviceRegistryConnector()
         self.dict_connector = DictConnector()
 
-    def create(self, payload: dict) -> tuple[dict, bool]:
+    def create(self, payload: dict, *, test_received_at: datetime | None = None) -> tuple[dict, bool]:
         """Analisa um Pix novo, ou devolve a análise que ele já tem.
 
         Devolve o corpo da resposta e se a análise nasceu agora: o
-        resource transforma isso em 201 ou 200.
+        resource transforma isso em 201 ou 200. test_received_at é o
+        relógio de teste (controllers/pix_request.py); None é o relógio
+        de verdade.
 
         A ordem é a regra, e cada passo tem um porquê:
 
-          1. converte o payload — data impossível é 400, antes de tudo;
-          2. procura o id: reenvio idêntico devolve a análise gravada, id
-             repetido com outro conteúdo é 409. Sem consultar fonte
-             nenhuma, e sem contar nada de novo no histórico;
+          1. converte o payload — data impossível é 400, antes de tudo — e
+             confere a tolerância de transaction_date contra o relógio:
+             data de meses atrás, ou de amanhã, é 400, e não veredito;
+          2. reivindica o recibo do id, numa transação curta só dele, e
+             commita: é a prova de que o Pix chegou, e sobrevive a tudo
+             que vier depois. É aqui que o reenvio é resolvido — mesmo
+             conteúdo já avaliado devolve a análise gravada, conteúdo
+             diferente é 409, avaliação em curso é 409 "em processamento",
+             sem esperar e sem segundo avaliador;
           3. consulta as três fontes ANTES de travar qualquer coisa: as
-             restrições primeiro, porque sem elas não há veredito (503, e
-             nada gravado), depois o cadastro de aparelhos e o DICT. Cada
-             consulta pode levar os 2 s do prazo, e um pagador travado
-             esse tempo todo seguraria todos os Pix dele;
+             restrições primeiro, porque sem elas não há veredito (503),
+             depois o cadastro de aparelhos e o DICT. Cada consulta pode
+             levar os 2 s do prazo, e um pagador travado esse tempo todo
+             seguraria todos os Pix dele;
           4. trava o pagador — pelo documento, porque as regras do
              pagador contam pelo documento, somando as contas dele — e só
              então cria customers e contas na primeira aparição;
-          5. procura o id de novo: outro POST do mesmo Pix pode ter gravado
-             enquanto este esperava a trava;
-          6. conta o histórico, lê o que as fontes responderam no instante
-             da avaliação, monta o Context e roda o motor;
-          7. grava o Pix e os sinais, e só então commita — a não ser que o
-             mesmo id tenha chegado junto por outro pagador, que a trava
-             não segura, e gravado primeiro: aí este responde como num
-             reenvio, 200 ou 409.
+          5. lê o relógio da avaliação (evaluated_at), já com a trava na
+             mão: todo Pix do pagador commitado antes tem received_at até
+             aqui, e nenhum escapa da janela;
+          6. conta o histórico, lê o que as fontes responderam nesse
+             instante, monta o Context e roda o motor;
+          7. grava o Pix e os sinais e conclui o recibo na mesma
+             transação, com a cerca do owner_token: um avaliador que
+             perdeu o lease desfaz tudo em vez de gravar por cima.
+
+        Qualquer falha depois do recibo o deixa failed, com o motivo, e o
+        erro segue (500, ou o 503 das restrições): o GET diz que o Pix
+        chegou e não foi avaliado, e o reenvio avalia de novo.
         """
         pix_request = parse_pix_request(payload)
+        received_at = test_received_at or datetime.now(timezone.utc)
+        self._check_transaction_date_tolerance(pix_request, received_at)
 
-        replayed = self._replay_if_recorded(pix_request)
-        if replayed is not None:
-            return replayed, False
+        claim = self._claim_receipt(pix_request, received_at)
+        if claim is None:
+            return self._recorded_analysis(self._recorded_pix(pix_request.external_id)), False
 
-        # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
-        # conexão ao pool, o estoque de conexões de banco que o processo
-        # divide entre todas as requisições, pra outra usar enquanto este
-        # Pix espera as fontes: com uma fonte lenta, segurar a conexão na
-        # espera derrubava a vazão pela metade.
+        try:
+            return self._evaluate(pix_request, claim, test_received_at)
+        except Exception as error:
+            self.session.rollback()
+            self.pix_transaction_repository.fail_receipt(
+                claim.receipt_id, owner_token=claim.owner_token, reason=_failure_reason(error),
+            )
+            self.session.commit()
+            raise
+
+    def _evaluate(self, pix_request: PixRequest, claim: _Claim, test_received_at: datetime | None) -> tuple[dict, bool]:
+        # O rollback não desfaz nada — o recibo já foi commitado. Ele
+        # devolve a conexão ao pool, o estoque de conexões de banco que o
+        # processo divide entre todas as requisições, pra outra usar
+        # enquanto este Pix espera as fontes: com uma fonte lenta, segurar
+        # a conexão na espera derrubava a vazão pela metade.
         self.session.rollback()
         restrictions = self.restrictions_connector.list_restrictions(
             payer_document=pix_request.source_account.document_number,
@@ -94,30 +152,30 @@ class PixTransactionController(BaseController):
         source_account = self._get_or_create_account(payer, pix_request.source_account)
         destination_account = self._get_or_create_account(recipient, pix_request.destination_account)
 
-        replayed = self._replay_if_recorded(pix_request)
-        if replayed is not None:
-            return replayed, False
-
-        context = self._build_context(pix_request, payer, recipient, registry_record, restrictions, dict_information)
+        # O relógio da avaliação, lido DEPOIS da trava: o Pix do mesmo
+        # pagador que passou na frente já está commitado, com received_at
+        # até este instante, e entra nas janelas. No relógio de teste, é o
+        # mesmo instante do recibo.
+        evaluated_at = test_received_at or datetime.now(timezone.utc)
+        context = self._build_context(
+            pix_request, payer, recipient, registry_record, restrictions, dict_information, evaluated_at,
+        )
         analysis = evaluate(context)
 
-        # A trava é por pagador, e não segura o mesmo id chegando junto por
-        # DOIS pagadores. Esse caso o banco resolve: o INSERT ... ON
-        # CONFLICT (external_id) DO NOTHING espera o outro commitar, desiste
-        # sem erro e devolve None. Aí a análise do outro já está gravada, e
-        # este responde como num reenvio — 200 ou 409, nunca 500.
-        #
-        # received_at é só o carimbo de chegada, pra auditoria: as janelas
-        # de histórico contam por transaction_date (pix_history_repository).
         pix_transaction = self._create_pix_transaction(
             pix_request, analysis, context, source_account, destination_account,
-            received_at=datetime.now(timezone.utc),
+            received_at=claim.received_at, evaluated_at=evaluated_at,
         )
-        if pix_transaction is None:
-            replayed = self._replay_if_recorded(pix_request)
-            if replayed is None:
-                raise PixTransactionIdConflict(pix_request.external_id)
-            return replayed, False
+        completed = pix_transaction is not None and self.pix_transaction_repository.complete_receipt(
+            claim.receipt_id, owner_token=claim.owner_token, pix_transaction_id=pix_transaction.id,
+            evaluated_at=evaluated_at,
+        )
+        if not completed:
+            # Perdemos a posse do recibo: o lease venceu e outro avaliador
+            # reivindicou o id (ou já gravou a análise dele). O que fizemos
+            # não vale, e a resposta é a do estado atual do recibo.
+            self.session.rollback()
+            return self._answer_from_receipt(pix_request.external_id), False
 
         self.pix_transaction_repository.create_signals(
             pix_transaction_id=pix_transaction.id,
@@ -147,29 +205,94 @@ class PixTransactionController(BaseController):
         pix_transaction = self.pix_transaction_repository.get_by_external_id(external_id=external_id)
 
         if pix_transaction is None:
-            raise PixTransactionNotFound(external_id)
+            return self._answer_from_receipt(external_id)
 
         return self._recorded_analysis(pix_transaction)
 
-    def _replay_if_recorded(self, pix_request: PixRequest) -> dict | None:
-        """A análise já gravada com este id, se houver — ou 409, se o conteúdo mudou.
+    def _check_transaction_date_tolerance(self, pix_request: PixRequest, received_at: datetime) -> None:
+        """400 se transaction_date está longe demais do relógio: os limites estão no policy.py."""
+        earliest = received_at - policy.TRANSACTION_DATE_MAX_AGE
+        latest = received_at + policy.TRANSACTION_DATE_MAX_SKEW
+        if not earliest <= pix_request.transaction_date <= latest:
+            raise TransactionDateOutOfTolerance(
+                pix_request.payload["transaction_date"],
+                policy.TRANSACTION_DATE_MAX_AGE.days,
+                policy.TRANSACTION_DATE_MAX_SKEW.seconds // 60,
+            )
 
-        A comparação é do payload como chegou, dicionário contra
-        dicionário. Chave em outra ordem é o mesmo Pix; o CPF agora com
-        máscara não é — o que fica gravado é o que chegou, e um reenvio
-        que mudou algum valor já é outro pedido.
+    def _claim_receipt(self, pix_request: PixRequest, received_at: datetime) -> _Claim | None:
+        """Reivindica o recibo do id e commita; None quando a análise já existe e é o caso de devolvê-la.
+
+        O INSERT ganha se o id é inédito. Se não é, o recibo é lido com a
+        linha travada, e o estado dele decide (RFC §8): conteúdo diferente
+        é 409 de conflito, seja qual for o estado; completed é o reenvio;
+        processing com lease vigente é 409 "em processamento", sem esperar
+        — não se inicia um segundo avaliador; failed, ou processing com
+        lease vencido, é reivindicado por compare-and-swap. Quem perde o
+        CAS perdeu pra outro reenvio que chegou junto: também "em
+        processamento".
+
+        O commit no fim é o que torna o recibo durável antes de qualquer
+        fonte ou trava; o rollback dos outros caminhos só solta a linha.
         """
-        recorded = self.pix_transaction_repository.get_by_external_id(external_id=pix_request.external_id)
+        payload_hash = pix_request.canonical_hash()
+        owner_token = str(uuid4())
+        lease_until = received_at + RECEIPT_LEASE
 
-        if recorded is None:
-            return None
+        receipt = self.pix_transaction_repository.create_receipt(
+            external_id=pix_request.external_id, payload_hash=payload_hash, received_at=received_at,
+            owner_token=owner_token, lease_until=lease_until,
+        )
+        if receipt is None:
+            receipt = self.pix_transaction_repository.get_receipt(pix_request.external_id, for_update=True)
+            if receipt.payload_hash != payload_hash:
+                self.session.rollback()
+                raise PixTransactionIdConflict(pix_request.external_id)
+            if receipt.state == ReceiptState.COMPLETED:
+                self.session.rollback()
+                self.logger.info(f"Pix {pix_request.external_id} reenviado: devolvendo a análise gravada")
+                return None
+            if receipt.state == ReceiptState.PROCESSING and receipt.lease_until > received_at:
+                self.session.rollback()
+                raise PixTransactionProcessing(pix_request.external_id, PROCESSING_RETRY_AFTER_SECONDS)
+            reclaimed = self.pix_transaction_repository.reclaim_receipt(
+                receipt, owner_token=owner_token, received_at=received_at, lease_until=lease_until,
+            )
+            if not reclaimed:
+                self.session.rollback()
+                raise PixTransactionProcessing(pix_request.external_id, PROCESSING_RETRY_AFTER_SECONDS)
+            self.logger.info(f"Pix {pix_request.external_id} reivindicado de novo: o recibo estava {receipt.state}")
 
-        if recorded.pix_transaction_data != pix_request.payload:
-            raise PixTransactionIdConflict(pix_request.external_id)
+        claim = _Claim(receipt_id=receipt.id, owner_token=owner_token, received_at=received_at)
+        self.session.commit()
+        return claim
 
-        self.logger.info(f"Pix {pix_request.external_id} reenviado: devolvendo a análise gravada")
+    def _answer_from_receipt(self, external_id: str) -> dict:
+        """A resposta de um id que não tem análise gravada: o recibo diz qual.
 
-        return self._recorded_analysis(recorded)
+        completed devolve a análise (um avaliador acabou de gravar);
+        processing é 409 "em processamento"; failed é 503 — o Pix chegou,
+        a avaliação falhou, e o reenvio avalia de novo; sem recibo, 404.
+        Nunca sucesso forjado (RFC §8).
+        """
+        self.session.rollback()
+        receipt = self.pix_transaction_repository.get_receipt(external_id)
+        if receipt is None:
+            raise PixTransactionNotFound(external_id)
+        if receipt.state == ReceiptState.COMPLETED:
+            return self._recorded_analysis(self._recorded_pix(external_id))
+        if receipt.state == ReceiptState.FAILED:
+            raise PixTransactionEvaluationFailed(external_id)
+        raise PixTransactionProcessing(external_id, PROCESSING_RETRY_AFTER_SECONDS)
+
+    def _recorded_pix(self, external_id: str) -> PixTransaction:
+        # Recibo completed sem análise não existe (o CHECK da tabela amarra
+        # os dois): se o SELECT voltar vazio, é defeito nosso, e tem de
+        # aparecer alto, como 500.
+        pix_transaction = self.pix_transaction_repository.get_by_external_id(external_id=external_id)
+        if pix_transaction is None:
+            raise RuntimeError(f"recibo completed sem análise gravada para o id {external_id}")
+        return pix_transaction
 
     def _get_dict_security_information(self, document_number: str) -> DictSecurityInformation | None:
         """A estatística e a marcação de fraude do DICT, ou None se falhou.
@@ -223,22 +346,26 @@ class PixTransactionController(BaseController):
         registry_record: DeviceRegistryRecord,
         restrictions: tuple[Restriction, ...],
         dict_information: DictSecurityInformation | None,
+        evaluated_at: datetime,
     ) -> Context:
         """O Context do motor: o Pix normalizado, o histórico contado e o que as fontes disseram.
 
         O histórico é contado por documento (o customer), com as janelas
-        do policy.py e o relógio do negócio, transaction_date (o porquê
-        está no pix_history_repository.py): o repository conta, o motor
-        decide. E é contado DEPOIS da trava — o Pix do mesmo pagador que
-        chegou junto, e passou na frente, já está gravado e entra na
-        contagem, venha ele da conta que vier. As contas dos dois
-        documentos vão prontas pras consultas do pagador e do par; o
-        porquê está no AccountRepository.ids_of.
+        do policy.py e o relógio do servidor — received_at dos Pix
+        gravados, até o evaluated_at deste (o porquê está no
+        pix_history_repository.py): o repository conta, o motor decide. E
+        é contado DEPOIS da trava — o Pix do mesmo pagador que chegou
+        junto, e passou na frente, já está gravado e entra na contagem,
+        venha ele da conta que vier. As contas dos dois documentos vão
+        prontas pras consultas do pagador e do par; o porquê está no
+        AccountRepository.ids_of.
 
         As fontes foram consultadas antes da trava, e o que elas
         responderam é lido AQUI, no instante da avaliação: o cadastro do
         aparelho tem vigência, a restrição também, e as duas se resolvem
-        contra o mesmo relógio do histórico.
+        contra o mesmo relógio do histórico. transaction_date, a data do
+        payload, fica com o que é do negócio: a hora local do L01 e a
+        idade das contas.
         """
         transaction_date = pix_request.transaction_date
         accounts = self.account_repository.ids_of(customer_ids={payer.id, recipient.id})
@@ -248,27 +375,27 @@ class PixTransactionController(BaseController):
             recipient_customer_id=recipient.id,
             device_id=pix_request.device_id,
             ip=pix_request.ip,
-            at=transaction_date,
+            at=evaluated_at,
             attempts_window=policy.PAYER_ATTEMPTS_WINDOW,
             amount_window=policy.PAYER_AMOUNT_WINDOW,
             new_destinations_window=policy.NEW_DESTINATIONS_WINDOW,
         )
         location_distance_km = self.pix_history_repository.get_location_distance_km(
             payer_customer_id=payer.id,
-            at=transaction_date,
+            at=evaluated_at,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
         )
         device_history = self.pix_history_repository.get_device_features(
             device_id=pix_request.device_id,
             payer_customer_id=payer.id,
-            at=transaction_date,
+            at=evaluated_at,
             payers_window=policy.DEVICE_PAYERS_WINDOW,
         )
         recipient_history = self.pix_history_repository.get_recipient_features(
             recipient_customer_id=recipient.id,
             payer_customer_id=payer.id,
-            at=transaction_date,
+            at=evaluated_at,
             attempts_window=policy.RECIPIENT_ATTEMPTS_WINDOW,
             payers_window=policy.RECIPIENT_PAYERS_WINDOW,
             attempts_cap=policy.HIGH_SUFFICIENCY_MIN_ATTEMPTS,
@@ -277,7 +404,7 @@ class PixTransactionController(BaseController):
         pair_history = self.pix_history_repository.get_pair_features(
             payer_accounts=accounts[payer.id],
             recipient_accounts=accounts[recipient.id],
-            at=transaction_date,
+            at=evaluated_at,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
 
@@ -292,7 +419,7 @@ class PixTransactionController(BaseController):
         )
 
         device_registration = DeviceRegistration(
-            status=registry_record.status_at(transaction_date),
+            status=registry_record.status_at(evaluated_at),
             source=registry_record.provenance,
             previously_observed=payer_history.device_previously_observed,
         )
@@ -305,7 +432,7 @@ class PixTransactionController(BaseController):
                 payer_document=transaction.payer_document,
                 recipient_document=transaction.recipient_document,
                 recipient_account_key=_account_key(pix_request.destination_account),
-            ) and restriction.active_at(transaction_date)
+            ) and restriction.active_at(evaluated_at)
         )
 
         return Context(
@@ -333,7 +460,7 @@ class PixTransactionController(BaseController):
 
     def _create_pix_transaction(
         self, pix_request: PixRequest, analysis: Analysis, context: Context,
-        source_account: Account, destination_account: Account, *, received_at: datetime,
+        source_account: Account, destination_account: Account, *, received_at: datetime, evaluated_at: datetime,
     ) -> PixTransaction | None:
         device_registration = context.device_registration
         return self.pix_transaction_repository.create(
@@ -361,6 +488,7 @@ class PixTransactionController(BaseController):
             device_previously_observed=device_registration.previously_observed,
             restrictions=[_restriction_row(restriction) for restriction in context.restrictions],
             received_at=received_at,
+            evaluated_at=evaluated_at,
         )
 
     def _signal_rows(self, analysis: Analysis) -> list[dict]:
@@ -385,6 +513,19 @@ class PixTransactionController(BaseController):
         rule_results = self.pix_transaction_repository.list_signals(pix_transaction_id=pix_transaction.id)
 
         return PixTransactionDTO.obj_to_dict(pix_transaction, rule_results)
+
+
+def _failure_reason(error: Exception) -> str:
+    """O motivo que vai pro recibo failed: nome da classe e, se o erro é nosso, a descrição dele.
+
+    Só a descrição dos erros nossos, que são escritas sem documento. A
+    mensagem de uma exceção qualquer pode trazer o que não vai pro banco
+    nem pro log — a URL com o CPF, um pedaço do payload —, e dela fica só
+    o nome; o traceback inteiro já está no log.
+    """
+    if isinstance(error, QIException):
+        return f"{type(error).__name__} ({error.code}): {error.description}"
+    return type(error).__name__
 
 
 def _account_key(account_data: AccountData) -> str:

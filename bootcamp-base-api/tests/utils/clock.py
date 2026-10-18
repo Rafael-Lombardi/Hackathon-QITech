@@ -1,9 +1,12 @@
-"""O relógio dos cenários: o tempo do negócio, escolhido pelo teste.
+"""O relógio dos cenários: o tempo escolhido pelo teste.
 
-Toda regra do motor conta em transaction_date — a data que vem no payload
-— e nunca no relógio do servidor. É isso que deixa um teste montar "4 Pix
-nos últimos 5 minutos" ou "10 Pix em 7 dias" sem esperar nada: ele escolhe
-as datas e manda. Nenhum teste da suíte depende de que horas são agora.
+A API conta as janelas de histórico pelo relógio do servidor (RFC §2), e
+a stack de teste deixa cada requisição dizer que horas são, pelo header
+X-Test-Received-At — o post_pix de tests/utils/pix.py manda, por padrão,
+a própria transaction_date do payload. É isso que deixa um teste montar
+"4 Pix nos últimos 5 minutos" ou "10 Pix em 7 dias" sem esperar nada: ele
+escolhe as datas e manda. Nenhum teste da suíte depende de que horas são
+agora.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -75,9 +78,9 @@ def spread_over_days(
 
     per_day=[2, 1, 1] dá dois Pix três dias antes de `end` (9h e 10h), um
     dois dias antes e um na véspera. Uma hora entre os Pix do mesmo dia
-    deixa a rajada (P04, 5 min) e o montante (P05, 1 h) de fora — e repare
-    que a janela de 1 h é aberta no começo: o Pix de exatamente uma hora
-    antes já não conta.
+    deixa a rajada (P04, 5 min) de fora; a janela de 1 h do P05 é fechada
+    no começo, e o Pix de exatamente uma hora antes conta — com os
+    valores pequenos das sementes, longe dos R$ 8.000.
     """
     first_day = at(end, first_hour) - timedelta(days=len(per_day))
     moments = []

@@ -1,8 +1,9 @@
-from fastapi import status as http_status
+from fastapi import Request, status as http_status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from controllers import PixTransactionController
+from controllers.pix_request import parse_received_at
 from utils.schema_handler import SchemaHandler
 
 
@@ -12,8 +13,10 @@ class PixTransactionResource:
     Um método daqui confere o corpo contra o schema, chama o controller e
     devolve o que ele respondeu, com o status certo. Nenhuma regra, nenhum
     SQL: quando um método não couber em cinco linhas, uma regra vazou pra
-    cá. O 400 do schema nasce no decorator; 404 e 409 sobem como
-    QIException e viram resposta em src/errors/handlers.py.
+    cá. O 400 do schema nasce no decorator; 404, 409 e 503 sobem como
+    QIException e viram resposta em src/errors/handlers.py. O único
+    header que o POST lê é o do relógio de teste, e quem o lê é o
+    parse_received_at, ao lado da conversão do payload.
 
     `def`, e não `async def`: o controller espera o DICT (até 2 s) e o
     banco, e as duas esperas bloqueiam. Numa rota async isso travaria o
@@ -27,9 +30,9 @@ class PixTransactionResource:
     """
 
     @SchemaHandler.validate("post_pix_transaction.json")
-    def on_post(self, payload: dict) -> JSONResponse:
+    def on_post(self, payload: dict, request: Request) -> JSONResponse:
         controller = PixTransactionController()
-        pix_transaction, created = controller.create(payload)
+        pix_transaction, created = controller.create(payload, test_received_at=parse_received_at(request.headers))
 
         status_code = http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK
 

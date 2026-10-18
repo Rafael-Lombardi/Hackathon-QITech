@@ -1,18 +1,27 @@
+from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import Context
-from models import PixSignalStatus, PixTransaction, PixTransactionRuleResult, PixTransactionStatus
+from models import (
+    PixSignalStatus,
+    PixTransaction,
+    PixTransactionReceipt,
+    PixTransactionRuleResult,
+    PixTransactionStatus,
+    ReceiptState,
+)
 
 
 class PixTransactionRepository:
-    """O Pix gravado, os sinais dele e os ids das duas tabelas-enum.
+    """O Pix gravado, os sinais dele, o recibo de cada id e os ids das duas tabelas-enum.
 
-    Não dá commit: create e create_signals deixam tudo na transação
-    aberta, e o commit é a última linha do controller.
+    Não dá commit: cada método deixa o que fez na transação aberta, e
+    quem commita é o controller — o recibo numa transação curta só dele,
+    a análise junto com a conclusão do recibo.
     """
 
     # Os ids das tabelas-enum, por enumerator. Vão pra memória na primeira
@@ -36,6 +45,110 @@ class PixTransactionRepository:
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
 
+    def get_receipt(self, external_id: str, *, for_update: bool = False) -> PixTransactionReceipt | None:
+        """O recibo do id, se houver. for_update trava a linha até o fim da transação.
+
+        A trava é pra reivindicação: dois POSTs do mesmo id que acharam o
+        recibo de outro leem e decidem um de cada vez, e não decidem os
+        dois que o lease venceu.
+        """
+        query = select(PixTransactionReceipt).where(PixTransactionReceipt.external_id == external_id)
+        if for_update:
+            query = query.with_for_update()
+        return self.session.scalars(query).one_or_none()
+
+    def create_receipt(
+        self, *, external_id: str, payload_hash: str, received_at: datetime, owner_token: str, lease_until: datetime,
+    ) -> PixTransactionReceipt | None:
+        """Grava o recibo em processing e devolve a linha, ou None se o id já tem recibo.
+
+        É a reivindicação: o INSERT ... ON CONFLICT (external_id) DO
+        NOTHING espera outro INSERT do mesmo id terminar e, se ele
+        commitou, desiste sem erro — e sem o IntegrityError, que iria pro
+        log do Postgres com os valores. Quem recebe None lê o recibo do
+        outro (get_receipt) e decide a partir do estado dele.
+        """
+        return self.session.scalars(
+            insert(PixTransactionReceipt)
+            .values(
+                external_id=external_id,
+                payload_hash=payload_hash,
+                received_at=received_at,
+                state=ReceiptState.PROCESSING.value,
+                owner_token=owner_token,
+                lease_until=lease_until,
+            )
+            .on_conflict_do_nothing(index_elements=[PixTransactionReceipt.external_id])
+            .returning(PixTransactionReceipt)
+        ).one_or_none()
+
+    def reclaim_receipt(
+        self, receipt: PixTransactionReceipt, *, owner_token: str, received_at: datetime, lease_until: datetime,
+    ) -> bool:
+        """Toma pra si um recibo failed, ou processing com o lease vencido: True se conseguiu.
+
+        Compare-and-swap no owner_token: o UPDATE só pega a linha se ela
+        ainda é a que foi lida (mesmo dono, não concluída). Quem perder a
+        corrida recebe False e trata o recibo como de outro. Nunca um
+        segundo recibo pro mesmo id (RFC §8).
+        """
+        result = self.session.execute(
+            update(PixTransactionReceipt)
+            .where(
+                PixTransactionReceipt.id == receipt.id,
+                PixTransactionReceipt.owner_token == receipt.owner_token,
+                PixTransactionReceipt.state != ReceiptState.COMPLETED.value,
+            )
+            .values(
+                state=ReceiptState.PROCESSING.value,
+                owner_token=owner_token,
+                received_at=received_at,
+                lease_until=lease_until,
+                evaluated_at=None,
+                failure_reason=None,
+            )
+        )
+        return result.rowcount == 1
+
+    def complete_receipt(
+        self, receipt_id: int, *, owner_token: str, pix_transaction_id: int, evaluated_at: datetime,
+    ) -> bool:
+        """Marca o recibo como completed, apontando pra análise: True se ainda éramos os donos.
+
+        É a cerca (fencing) do owner_token: um avaliador que perdeu o
+        lease pra outro recebe False aqui e desfaz tudo, em vez de gravar
+        uma segunda análise por cima da do dono atual. Mesma transação do
+        INSERT do Pix: ou os dois ficam, ou nenhum.
+        """
+        result = self.session.execute(
+            update(PixTransactionReceipt)
+            .where(
+                PixTransactionReceipt.id == receipt_id,
+                PixTransactionReceipt.owner_token == owner_token,
+                PixTransactionReceipt.state == ReceiptState.PROCESSING.value,
+            )
+            .values(state=ReceiptState.COMPLETED.value, pix_transaction_id=pix_transaction_id, evaluated_at=evaluated_at)
+        )
+        return result.rowcount == 1
+
+    def fail_receipt(self, receipt_id: int, *, owner_token: str, reason: str) -> bool:
+        """Marca o recibo como failed, com o motivo: True se ainda éramos os donos.
+
+        O motivo chega sanitizado do controller (nome da classe e
+        descrição, nunca documento) e cabe em TEXT; o traceback inteiro
+        fica no log.
+        """
+        result = self.session.execute(
+            update(PixTransactionReceipt)
+            .where(
+                PixTransactionReceipt.id == receipt_id,
+                PixTransactionReceipt.owner_token == owner_token,
+                PixTransactionReceipt.state == ReceiptState.PROCESSING.value,
+            )
+            .values(state=ReceiptState.FAILED.value, failure_reason=reason)
+        )
+        return result.rowcount == 1
+
     def create(self, **fields) -> PixTransaction | None:
         """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.
 
@@ -43,15 +156,15 @@ class PixTransactionRepository:
         pix_transaction_data...); só a pix_transaction_key nasce aqui. O
         INSERT sai agora, sem commit: os sinais precisam do id.
 
-        None é a corrida do mesmo id chegando junto por pagadores
-        diferentes, que a trava (uma por pagador) não serializa: o outro
-        gravou primeiro, e este responde como num reenvio. O ON CONFLICT
-        (external_id) DO NOTHING segura o nosso INSERT até o outro
-        terminar e, se ele commitou, desiste sem erro. Capturar o
-        IntegrityError daria no mesmo, a um preço: o Postgres grava no log
-        dele todo comando que falha, com os valores — o payload e o CPF sem
-        máscara —, e o controller teria de conhecer o nome da constraint.
-        Outra violação, um CHECK por exemplo, continua levantando.
+        Com o recibo na frente, só um avaliador por id chega aqui, e o
+        None não devia acontecer; fica como cinto de segurança. O ON
+        CONFLICT (external_id) DO NOTHING segura o nosso INSERT até outro
+        do mesmo id terminar e, se ele commitou, desiste sem erro.
+        Capturar o IntegrityError daria no mesmo, a um preço: o Postgres
+        grava no log dele todo comando que falha, com os valores — o
+        payload e o CPF sem máscara —, e o controller teria de conhecer o
+        nome da constraint. Outra violação, um CHECK por exemplo, continua
+        levantando.
         """
         return self.session.scalars(
             insert(PixTransaction)

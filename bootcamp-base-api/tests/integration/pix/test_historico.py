@@ -3,8 +3,9 @@
 As regras da camada 2 comparam o Pix com o passado, e quase todo erro de
 antifraude mora na definição de passado. As que o motor usa (o bloco
 "Janelas de histórico" de src/antifraud/policy.py):
-  • anterior é o que foi gravado com transaction_date até a do Pix atual —
-    um Pix datado depois não conta, mesmo que tenha chegado antes;
+  • anterior é o que foi recebido até o instante da avaliação, pelo
+    relógio do servidor (na stack de teste, o que o post_pix manda no
+    header) — nada recebido depois conta, seja qual for a data no payload;
   • rajada e montante (P04, P05, R02, R03...) contam TODA tentativa, até
     as barradas: o invasor insistente não pode sumir depois do 1º 2FA;
   • IP conhecido, par recorrente e mediana contam só Pix aprovados: um
@@ -226,12 +227,14 @@ class TestHistorico:
         assert to_new.status == "two_factor_required"
         assert to_new.decision_rule == "D-RCP"
 
-    def test_pix_com_data_posterior_nao_entra_no_historico(self):
-        """Histórico se conta no tempo do negócio, e nunca com dado do futuro.
+    def test_pix_recebido_depois_nao_entra_no_historico(self):
+        """Histórico se conta pelo relógio do servidor, e nada recebido depois de t é anterior.
 
-        Chegam primeiro 4 Pix datados de T0+1 a T0+4 minutos; depois, um
-        datado de T0. Para ele, nenhum dos 4 é anterior: o pagador está no
-        primeiro Pix da vida — P04 unavailable, suficiência unavailable.
+        Na stack de teste o relógio do servidor é o header que o post_pix
+        manda — a própria transaction_date. Chegam 4 Pix recebidos de T0+1
+        a T0+4 minutos; depois, um recebido em T0. Para ele, nenhum dos 4
+        é anterior: o pagador está no primeiro Pix da vida — P04
+        unavailable, suficiência unavailable.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, [T0 + timedelta(minutes=minutes) for minutes in (1, 2, 3, 4)])

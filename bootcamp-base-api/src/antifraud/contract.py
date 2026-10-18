@@ -192,6 +192,9 @@ class Transaction:
     """
 
     amount: int  # centavos
+    # A data do payload: o tempo do negócio, de onde saem a hora local do
+    # L01 e a idade das contas. O relógio das janelas é outro, o do
+    # servidor, e ele não chega ao motor: o histórico já vem contado.
     transaction_date: datetime  # com fuso
     payer_document: str = field(repr=False)  # só dígitos
     recipient_document: str = field(repr=False)
@@ -228,11 +231,11 @@ class Transaction:
 class PayerHistory:
     """O passado do pagador, pelo documento: todas as contas dele somadas.
 
-    Anterior é o que já estava gravado com transaction_date até a do Pix
-    atual, inclusive. O Pix atual ainda não foi gravado (isso só acontece
-    depois da decisão), e a regra que precisa dele soma o atual uma vez.
-    A exceção são as contagens de distintos, que já chegam contando o
-    atual; o comentário do campo avisa.
+    Anterior é o que já estava gravado com received_at até o instante da
+    avaliação deste Pix, inclusive. O Pix atual ainda não foi gravado
+    (isso só acontece depois da decisão), e a regra que precisa dele soma
+    o atual uma vez. A exceção são as contagens de distintos, que já
+    chegam contando o atual; o comentário do campo avisa.
 
     As contagens de rajada pegam qualquer status, porque a rajada em si
     é o sinal: contar só os aprovados deixaria invisível o invasor que
@@ -326,9 +329,9 @@ class PairHistory:
     """
 
     prior_approved: int
-    # Dias de 24 h entre o primeiro aprovado do par e o Pix atual, como a
-    # idade das contas: (transaction_date - primeiro).days. None sem
-    # nenhum aprovado.
+    # Dias de 24 h entre o primeiro aprovado do par e a avaliação deste
+    # Pix, como a idade das contas: (evaluated_at - primeiro).days. None
+    # sem nenhum aprovado.
     first_approved_days_ago: int | None
     # rejected ou two_factor_required no par, nos últimos 7 dias
     recent_anomaly: bool

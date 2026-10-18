@@ -5,6 +5,13 @@ sempre explícita; post_pix e get_pix chamam as duas rotas já com o
 INTERNAL-TOKEN, e post_raw manda bytes crus, pros testes do corpo que
 nem chega a ser JSON; seed e seed_pix mandam o histórico do cenário, Pix
 a Pix, conferindo que cada semente terminou como o cenário precisa.
+
+O post_pix manda também o relógio: a API conta as janelas pelo relógio
+do servidor, e a stack de teste deixa cada requisição dizer que horas
+são, pelo header X-Test-Received-At. Por padrão vai a própria
+transaction_date do payload — o Pix "chega" na hora em que diz ter
+acontecido —, e é isso que deixa o histórico de um cenário ser montado
+com as datas que o teste escolhe.
 """
 
 from datetime import datetime
@@ -17,6 +24,10 @@ from tests.utils import INTERNAL_TOKEN
 from tests.utils.clock import T0, iso
 from tests.utils.identities import Payer, Recipient
 from tests.utils.requisition import ClientRequisition
+
+# O header do relógio de teste, que só a stack de teste (APP_ENV=test)
+# honra. O conftest confere isso antes do primeiro teste.
+TEST_CLOCK_HEADER = "X-Test-Received-At"
 
 # R$ 50. Valor pequeno por padrão: longe do L01 (R$ 1.000 à noite), do
 # L02 (R$ 200 em aparelho novo) e do P06 (só a partir de R$ 1.000).
@@ -86,10 +97,11 @@ class PixResponse:
     verdade, e não o JSON já lido.
     """
 
-    def __init__(self, http_status: int, body, content: bytes = b"") -> None:
+    def __init__(self, http_status: int, body, content: bytes = b"", headers=None) -> None:
         self.http_status = http_status
         self.body = body
         self.content = content
+        self.headers = headers or {}
 
     @property
     def status(self) -> str:
@@ -140,9 +152,19 @@ class PixResponse:
         return f"PixResponse(http_status={self.http_status}, body={self.body!r})"
 
 
-def post_pix(payload: dict, token: str | None = INTERNAL_TOKEN) -> PixResponse:
-    """POST /pix/transaction. token=None manda sem o header."""
-    response = ClientRequisition.send("POST", "/pix/transaction", payload=payload, headers=_token_header(token))
+def post_pix(payload: dict, token: str | None = INTERNAL_TOKEN, *, received_at: datetime | None = None) -> PixResponse:
+    """POST /pix/transaction. token=None manda sem o header.
+
+    received_at é o relógio do servidor pra esta requisição; por padrão,
+    a transaction_date do payload. Payload sem data, ou com uma data que
+    nem é data (os casos de contrato), vai sem o relógio: o 400 tem de
+    ser do payload.
+    """
+    headers = _token_header(token)
+    clock = received_at or _parseable_date(payload.get("transaction_date"))
+    if clock is not None:
+        headers[TEST_CLOCK_HEADER] = clock if isinstance(clock, str) else iso(clock)
+    response = ClientRequisition.send("POST", "/pix/transaction", payload=payload, headers=headers)
     return _pix_response(response)
 
 
@@ -204,8 +226,18 @@ def seed_pix(
     return seed(payloads, expect)
 
 
+def _parseable_date(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return value
+
+
 def _pix_response(response) -> PixResponse:
-    return PixResponse(response.response_status, response.response_json, response.response_content)
+    return PixResponse(response.response_status, response.response_json, response.response_content, response.response.headers)
 
 
 def _token_header(token: str | None) -> dict:

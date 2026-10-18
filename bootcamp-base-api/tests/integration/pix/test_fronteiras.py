@@ -325,11 +325,11 @@ class TestFronteiras:
         assert pix.signal_status("P04") == expected
         assert pix.status == "approved"
 
-    def test_p04_janela_nao_conta_o_pix_de_exatamente_5_min_atras(self):
-        """A janela de 5 min é aberta no começo: (t - 5 min, t].
+    def test_p04_janela_conta_o_pix_de_exatamente_5_min_atras(self):
+        """A janela de 5 min é fechada no começo, [t - 5 min, t], como a RFC escreve.
 
-        Preparo: Pix há 5, 3, 2 e 1 minuto. O de 5 minutos atrás fica de
-        fora, e o atual é a 4ª tentativa, não a 5ª: P04 calado.
+        Preparo: Pix há 5, 3, 2 e 1 minuto. O de 5 minutos atrás ainda
+        está na janela, e o atual é a 5ª tentativa: P04 dispara.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, minutes_ago(T0, 5, 3, 2, 1))
@@ -337,7 +337,8 @@ class TestFronteiras:
         pix = post_pix(pix_payload(payer, recipient, T0))
 
         assert pix.http_status == 201
-        assert pix.signal_status("P04") == "not_triggered"
+        assert pix.signal_status("P04") == "triggered"
+        assert pix.signal("P04")["evidence"]["attempts_5m"] == 5
 
     @pytest.mark.parametrize(
         "amount, expected, payer_score",

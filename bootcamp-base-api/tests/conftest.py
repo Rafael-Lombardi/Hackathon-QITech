@@ -75,6 +75,7 @@ def _pending() -> list[str]:
     probe_restrictions = f"/restrictions?payer={PROBE_DOCUMENT}&recipient_holder={PROBE_DOCUMENT}&recipient_account=0:0:0"
     checks = [
         ("API", "GET", f"{api_base_url()}/health_check", _no_content),
+        ("stack de teste", "GET", f"{api_base_url()}/", _test_environment),
         ("mock das fontes", "PUT", f"{mock_base_url()}/mockserver/status", _ok),
         ("expectativa padrão do DICT", "GET", f"{mock_base_url()}{security_statistics_path(PROBE_DOCUMENT)}", _high_statistics),
         ("expectativa padrão das restrições", "GET", f"{mock_base_url()}{probe_restrictions}", _no_restrictions),
@@ -94,6 +95,19 @@ def _pending() -> list[str]:
 
 def _no_content(response) -> str | None:
     return None if response.status_code == 204 else f"HTTP {response.status_code}, esperava 204"
+
+
+def _test_environment(response) -> str | None:
+    # Só a stack de teste honra o relógio por header, e a suíte inteira
+    # conta com ele: contra outra stack, todo cenário de janela mediria o
+    # relógio de verdade.
+    try:
+        environment = response.json().get("environment")
+    except (ValueError, AttributeError):
+        environment = None
+    if response.status_code == 200 and environment == "test":
+        return None
+    return f"environment {environment!r}. Suba a stack de teste: APP_ENV=test docker compose up -d --build --wait"
 
 
 def _ok(response) -> str | None:

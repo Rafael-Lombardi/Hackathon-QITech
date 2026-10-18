@@ -1,18 +1,21 @@
--- O antifraude Pix, em seis tabelas, as de contrato e as de histórico:
+-- O antifraude Pix, em sete tabelas, as de contrato e as de histórico:
 --   pix_transaction_status       os três veredictos do contrato.
 --   pix_signal_status            os três estados de um sinal.
 --   customer                     quem paga ou recebe: um por CPF ou CNPJ (o
 --                                owner do payload).
 --   account                      uma conta de um customer, em qualquer banco.
---   pix_transaction              uma linha por Pix: payload + decisão
---                                explicada, com FK pra conta de origem e
---                                de destino.
+--   pix_transaction              uma linha por Pix avaliado: payload +
+--                                decisão explicada, com FK pra conta de
+--                                origem e de destino.
 --   pix_transaction_rule_result  uma linha por sinal por Pix: a lista de
 --                                regras que a resposta devolve em
 --                                metadata.signals.
+--   pix_transaction_receipt      um recibo por id recebido, antes e
+--                                independente da avaliação: em
+--                                processamento, concluído ou falhado.
 -- Os índices são um por pergunta de regra (conta de origem, conta de
 -- destino, aparelho, o par origem–destino), todos terminando em
--- transaction_date, mais um em account(customer_id) pra ir das contas ao
+-- received_at, mais um em account(customer_id) pra ir das contas ao
 -- documento.
 --
 -- O cadastro de aparelhos do banco, as restrições e o DICT não têm
@@ -203,10 +206,14 @@ CREATE INDEX account_customer_id_idx
 --   fonte as descreveu, sem o documento. Quase sempre '[]'; quando não
 --   é, a decisão foi D-RESTRICT-SIM, e a lista é a prova.
 --
--- • received_at é quando o Pix chegou aqui, pelo relógio do servidor.
---   Fica só pra auditoria: as janelas de histórico contam por
---   transaction_date, e o comentário dos índices, logo abaixo, diz por
---   quê.
+-- • received_at é quando o Pix chegou aqui, e evaluated_at é quando foi
+--   avaliado — logo depois da trava do pagador —, os dois pelo relógio
+--   do servidor, em UTC (na stack de teste, pelo relógio que o teste
+--   manda no header X-Test-Received-At). As janelas de histórico contam
+--   em received_at, com t = evaluated_at do Pix atual; o comentário dos
+--   índices, logo abaixo, diz por quê. transaction_date, a data do
+--   payload, continua sendo o tempo do negócio: a hora local do L01 e a
+--   idade das contas saem dela, e só isso.
 CREATE TABLE pix_transaction(
     id                              BIGSERIAL PRIMARY KEY,
     pix_transaction_key             CHAR(36) NOT NULL,
@@ -234,6 +241,7 @@ CREATE TABLE pix_transaction(
     device_previously_observed      BOOLEAN NOT NULL,
     restrictions                    JSONB NOT NULL DEFAULT('[]'::jsonb),
     received_at                     TIMESTAMPTZ NOT NULL,
+    evaluated_at                    TIMESTAMPTZ NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
@@ -254,12 +262,15 @@ CREATE TABLE pix_transaction(
 );
 
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
--- em transaction_date porque a pergunta é sempre "deste X, numa janela
--- de tempo". A janela conta em transaction_date, não em received_at nem
--- em created_at: histórico se conta no tempo do negócio — a data vem do
--- sistema do banco, e dez Pix de dez dias mandados hoje são dez dias, e
--- não uma rajada —, é o que deixa quem testa mandar a data no payload, e
--- um Pix que chegar atrasado continua no lugar certo.
+-- em received_at porque a pergunta é sempre "deste X, numa janela de
+-- tempo". A janela conta em received_at, o relógio do servidor, e não em
+-- transaction_date: a data do payload é declarada por quem manda, e quem
+-- manda pode errar ou mentir — dez Pix datados de dez dias atrás que
+-- chegam no mesmo minuto SÃO uma rajada, e uma data no futuro não pode
+-- esconder um Pix do histórico de ninguém (RFC §2: contagens móveis usam
+-- tempo controlado pelo servidor). O preço é que um cenário não se monta
+-- só com datas no payload: a stack de teste (APP_ENV=test) aceita o
+-- relógio por header, e é assim que a suíte reproduz qualquer janela.
 --
 -- Conta de origem: a consulta do pagador, que lê o histórico inteiro do
 -- documento — rajadas, montantes, mediana, dias ativos, aparelho e IP
@@ -271,7 +282,7 @@ CREATE TABLE pix_transaction(
 -- mesma pergunta por documento soma as contas do customer: as consultas
 -- recebem a lista de contas pronta (AccountRepository.ids_of).
 CREATE INDEX pix_transaction_source_account_id_idx
-    ON pix_transaction (source_account_id, transaction_date)
+    ON pix_transaction (source_account_id, received_at)
     INCLUDE (status_id, amount, device_id, ip, destination_account_id, latitude, longitude,
              device_registration_status);
 
@@ -282,7 +293,7 @@ CREATE INDEX pix_transaction_source_account_id_idx
 -- que a consulta do recebedor lê pra contar os pagadores da janela: com
 -- ela no índice, essa consulta também não volta ao heap.
 CREATE INDEX pix_transaction_destination_account_id_idx
-    ON pix_transaction (destination_account_id, transaction_date)
+    ON pix_transaction (destination_account_id, received_at)
     INCLUDE (source_account_id);
 
 -- O par: o que este pagador já mandou pra este recebedor (REL01, REL02).
@@ -291,7 +302,7 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 -- páginas num pagador de 5 mil Pix. Com ele, e com as contas dos dois
 -- lados como lista, é uma descida no índice: 19 páginas.
 CREATE INDEX pix_transaction_pair_idx
-    ON pix_transaction (source_account_id, destination_account_id, transaction_date);
+    ON pix_transaction (source_account_id, destination_account_id, received_at);
 
 -- Aparelho: quantos Pix por device_id, e aparelho compartilhado (um
 -- aparelho pagando por vários documentos distintos é indício de farm de
@@ -299,7 +310,7 @@ CREATE INDEX pix_transaction_pair_idx
 -- regra de velocity por IP no catálogo — quando houver, o índice volta
 -- com ela.
 CREATE INDEX pix_transaction_device_id_idx
-    ON pix_transaction (device_id, transaction_date);
+    ON pix_transaction (device_id, received_at);
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta
@@ -355,4 +366,49 @@ CREATE TABLE pix_transaction_rule_result(
     CHECK(family <> ''),
     CHECK(points BETWEEN -100 AND 100),
     CHECK(jsonb_typeof(rule_result_data) = 'object')
+);
+
+-- O recibo de cada id recebido, separado da análise de propósito. O Pix
+-- só vira linha de pix_transaction quando a avaliação termina; até lá —
+-- e se ela falhar — a única prova de que o id chegou é esta. Nasce numa
+-- transação curta, antes de consultar fonte ou travar pagador, e por
+-- isso sobrevive a qualquer falha da avaliação: um 500 no meio deixa o
+-- recibo failed com o motivo, e o GET responde "chegou e falhou" em vez
+-- de "nunca vi" (RFC §2 e §8).
+--
+-- É também o que impede dois avaliadores do mesmo id. O UNIQUE em
+-- external_id dá a reivindicação: quem consegue inserir é dono, e quem
+-- não consegue lê o recibo do outro. payload_hash é o sha256 do payload
+-- na forma canônica (documentos só dígitos, IP canônico, datas em UTC):
+-- hash diferente no mesmo id é 409 de conflito; igual, com o recibo
+-- completed, é o reenvio idempotente (200). Em processing com lease
+-- vigente, 409 "em processamento", sem esperar; failed, ou processing
+-- com lease vencido (o avaliador morreu), pode ser reivindicado de novo
+-- — por compare-and-swap no owner_token, nunca por um segundo recibo.
+-- O mesmo owner_token é a cerca na hora de concluir: o UPDATE que marca
+-- completed exige o token de quem reivindicou, e um avaliador atrasado,
+-- que perdeu o lease pra outro, desfaz tudo em vez de gravar por cima.
+-- Só o completed aponta pra análise (o CHECK garante), e só
+-- pix_transaction entra nas contagens de histórico: recibo não é
+-- tentativa.
+--
+-- Sem índice além do UNIQUE: toda leitura é pelo external_id, e a tabela
+-- cresce uma linha por id, como pix_transaction.
+CREATE TABLE pix_transaction_receipt(
+    id                              BIGSERIAL PRIMARY KEY,
+    external_id                     VARCHAR(255) NOT NULL,
+    payload_hash                    CHAR(64) NOT NULL,
+    received_at                     TIMESTAMPTZ NOT NULL,
+    state                           VARCHAR(10) NOT NULL,
+    owner_token                     CHAR(36) NOT NULL,
+    lease_until                     TIMESTAMPTZ NOT NULL,
+    evaluated_at                    TIMESTAMPTZ,
+    failure_reason                  TEXT,
+    pix_transaction_id              BIGINT REFERENCES pix_transaction(id),
+    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(external_id),
+    CHECK(state IN ('processing', 'completed', 'failed')),
+    CHECK(payload_hash ~ '^[0-9a-f]{64}$'),
+    CHECK((state = 'completed') = (pix_transaction_id IS NOT NULL)),
+    CHECK(state = 'failed' OR failure_reason IS NULL)
 );
