@@ -78,9 +78,9 @@ class PixTransaction(Base):
         CheckConstraint("(latitude IS NULL) = (longitude IS NULL)"),
         CheckConstraint("latitude IS NULL OR latitude BETWEEN -90 AND 90"),
         CheckConstraint("longitude IS NULL OR longitude BETWEEN -180 AND 180"),
-        Index("pix_transaction_source_account_id_idx", "source_account_id", "received_at"),
-        Index("pix_transaction_destination_account_id_idx", "destination_account_id", "received_at"),
-        Index("pix_transaction_device_id_idx", "device_id", "received_at"),
+        Index("pix_transaction_source_account_id_idx", "source_account_id", "transaction_date"),
+        Index("pix_transaction_destination_account_id_idx", "destination_account_id", "transaction_date"),
+        Index("pix_transaction_device_id_idx", "device_id", "transaction_date"),
     )
 
     status = relationship("PixTransactionStatus", foreign_keys=[status_id])

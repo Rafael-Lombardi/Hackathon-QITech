@@ -31,7 +31,7 @@ class PixTransactionController(BaseController):
         self.pix_history_repository = PixHistoryRepository(self.context)
         self.dict_connector = DictConnector()
 
-    def create(self, payload: dict, *, test_received_at: datetime | None = None) -> tuple[dict, bool]:
+    def create(self, payload: dict) -> tuple[dict, bool]:
         """Analisa um Pix novo, ou devolve a análise que ele já tem.
 
         Devolve o corpo da resposta e se a análise nasceu agora: o
@@ -63,8 +63,6 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
-        received_at = test_received_at or datetime.now(timezone.utc)
-
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
         # conexão ao pool, o estoque de conexões de banco que o processo
         # divide entre todas as requisições, pra outra usar enquanto este
@@ -86,7 +84,7 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
-        context = self._build_context(pix_request, payer, recipient, dict_information, received_at)
+        context = self._build_context(pix_request, payer, recipient, dict_information)
         analysis = evaluate(context)
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
@@ -94,8 +92,11 @@ class PixTransactionController(BaseController):
         # CONFLICT (external_id) DO NOTHING espera o outro commitar, desiste
         # sem erro e devolve None. Aí a análise do outro já está gravada, e
         # este responde como num reenvio — 200 ou 409, nunca 500.
+        #
+        # received_at é só o carimbo de chegada, pra auditoria: as janelas
+        # de histórico contam por transaction_date (pix_history_repository).
         pix_transaction = self._create_pix_transaction(
-            pix_request, analysis, source_account, destination_account, received_at=received_at,
+            pix_request, analysis, source_account, destination_account, received_at=datetime.now(timezone.utc),
         )
         if pix_transaction is None:
             replayed = self._replay_if_recorded(pix_request)
@@ -206,48 +207,44 @@ class PixTransactionController(BaseController):
         payer: Customer,
         recipient: Customer,
         dict_information: DictSecurityInformation | None,
-        received_at: datetime,
     ) -> Context:
         """O Context do motor: o Pix normalizado, o histórico contado e o DICT.
 
         O histórico é contado por documento (o customer), com as janelas
-        do policy.py: o repository conta, o motor decide. E é contado
-        DEPOIS da trava — o Pix do mesmo pagador que chegou junto, e
-        passou na frente, já está gravado e entra na contagem, venha ele
-        da conta que vier.
+        do policy.py e o relógio do negócio, transaction_date (o porquê
+        está no pix_history_repository.py): o repository conta, o motor
+        decide. E é contado DEPOIS da trava — o Pix do mesmo pagador que
+        chegou junto, e passou na frente, já está gravado e entra na
+        contagem, venha ele da conta que vier.
         """
         transaction_date = pix_request.transaction_date
-        # As janelas cortam pelo recebimento no servidor: a data do payload
-        # serve pra hora local e pra idade das contas, e não move o corte
-        # do histórico.
-        history_time = received_at
 
         payer_history = self.pix_history_repository.get_payer_features(
             payer_customer_id=payer.id,
             recipient_customer_id=recipient.id,
             device_id=pix_request.device_id,
             ip=pix_request.ip,
-            transaction_date=history_time,
+            at=transaction_date,
             attempts_window=policy.PAYER_ATTEMPTS_WINDOW,
             amount_window=policy.PAYER_AMOUNT_WINDOW,
             new_destinations_window=policy.NEW_DESTINATIONS_WINDOW,
         )
         location_distance_km = self.pix_history_repository.get_location_distance_km(
             payer_customer_id=payer.id,
-            transaction_date=history_time,
+            at=transaction_date,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
         )
         device_history = self.pix_history_repository.get_device_features(
             device_id=pix_request.device_id,
             payer_customer_id=payer.id,
-            transaction_date=history_time,
+            at=transaction_date,
             payers_window=policy.DEVICE_PAYERS_WINDOW,
         )
         recipient_history = self.pix_history_repository.get_recipient_features(
             recipient_customer_id=recipient.id,
             payer_customer_id=payer.id,
-            transaction_date=history_time,
+            at=transaction_date,
             attempts_window=policy.RECIPIENT_ATTEMPTS_WINDOW,
             payers_window=policy.RECIPIENT_PAYERS_WINDOW,
             attempts_cap=policy.HIGH_SUFFICIENCY_MIN_ATTEMPTS,
@@ -256,7 +253,7 @@ class PixTransactionController(BaseController):
         pair_history = self.pix_history_repository.get_pair_features(
             payer_customer_id=payer.id,
             recipient_customer_id=recipient.id,
-            transaction_date=history_time,
+            at=transaction_date,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
 

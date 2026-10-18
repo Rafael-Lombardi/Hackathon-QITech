@@ -46,8 +46,8 @@ class TestConcorrencia:
         P04 calado) e o segundo vê 4 (4 + 1 = 5, P04 dispara). Exatamente
         um dispara, nas três rodadas.
 
-        Repare no relógio de recebimento ordenado: o segundo que adquire a
-        trava vê o primeiro por received_at. Sem a trava, os
+        Repare na data igual: anterior é transaction_date <= t, e assim
+        qualquer um dos dois que chegue depois vê o outro. Sem a trava, os
         dois leriam o histórico antes de qualquer um gravar, veriam 3, e
         nenhum dispararia — a rajada passaria pela fresta.
         """

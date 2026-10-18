@@ -1,7 +1,4 @@
-from datetime import datetime, timezone
-from os import environ
-
-from fastapi import Request, status as http_status
+from fastapi import status as http_status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
@@ -50,17 +47,9 @@ class PixTransactionResource:
     """
 
     @SchemaHandler.validate("post_pix_transaction.json")
-    def on_post(self, payload: dict, request: Request) -> JSONResponse:
+    def on_post(self, payload: dict) -> JSONResponse:
         controller = PixTransactionController()
-        test_received_at = None
-        if environ.get("APP_ENV", "local") in {"local", "test"}:
-            raw_clock = request.headers.get("X-Test-Received-At")
-            if raw_clock:
-                try:
-                    test_received_at = datetime.fromisoformat(raw_clock).astimezone(timezone.utc)
-                except ValueError:
-                    test_received_at = None
-        pix_transaction, created = controller.create(payload, test_received_at=test_received_at)
+        pix_transaction, created = controller.create(payload)
 
         status_code = http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK
 

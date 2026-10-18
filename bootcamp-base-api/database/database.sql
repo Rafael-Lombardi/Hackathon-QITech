@@ -180,6 +180,11 @@ CREATE INDEX account_customer_id_idx
 --   isso 255. ip em VARCHAR(45) cabe IPv6; INET daria operadores de rede
 --   que nenhuma regra usa. latitude/longitude vêm as duas ou nenhuma, e
 --   dentro da faixa: fora dela o erro seria do tipo, e viraria 500.
+--
+-- • received_at é quando o Pix chegou aqui, pelo relógio do servidor.
+--   Fica só pra auditoria: as janelas de histórico contam por
+--   transaction_date, e o comentário dos índices, logo abaixo, diz por
+--   quê.
 CREATE TABLE pix_transaction(
     id                              BIGSERIAL PRIMARY KEY,
     pix_transaction_key             CHAR(36) NOT NULL,
@@ -222,9 +227,11 @@ CREATE TABLE pix_transaction(
 
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
 -- em transaction_date porque a pergunta é sempre "deste X, numa janela
--- de tempo". A janela conta em transaction_date, não em created_at:
--- histórico se conta no tempo do negócio, é o que deixa o teste mandar a
--- data no payload, e um Pix que chegar atrasado continua no lugar certo.
+-- de tempo". A janela conta em transaction_date, não em received_at nem
+-- em created_at: histórico se conta no tempo do negócio — a data vem do
+-- sistema do banco, e dez Pix de dez dias mandados hoje são dez dias, e
+-- não uma rajada —, é o que deixa quem testa mandar a data no payload, e
+-- um Pix que chegar atrasado continua no lugar certo.
 --
 -- Conta de origem: quantos Pix e quanto dinheiro em 1 min, 10 min, 1 h,
 -- 24 h; valor e horário habituais; aparelho ou destino que esta conta
@@ -234,14 +241,14 @@ CREATE TABLE pix_transaction(
 -- travar a tabela — e não mexe em mais nada. A mesma pergunta por
 -- documento soma as contas do customer, via account_customer_id_idx.
 CREATE INDEX pix_transaction_source_account_id_idx
-    ON pix_transaction (source_account_id, received_at);
+    ON pix_transaction (source_account_id, transaction_date);
 
 -- Conta de destino: muitos pagadores distintos pro mesmo destino em
 -- janela curta (robô multiplicador, loja falsa, conta laranja). Por conta
 -- aqui; por documento é o JOIN com account → customer — o laranja de
 -- customer, lá em cima.
 CREATE INDEX pix_transaction_destination_account_id_idx
-    ON pix_transaction (destination_account_id, received_at);
+    ON pix_transaction (destination_account_id, transaction_date);
 
 -- Aparelho: quantos Pix por device_id, e aparelho compartilhado (um
 -- aparelho pagando por vários documentos distintos é indício de farm de
@@ -249,7 +256,7 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 -- regra de velocity por IP no catálogo — quando houver, o índice volta
 -- com ela.
 CREATE INDEX pix_transaction_device_id_idx
-    ON pix_transaction (device_id, received_at);
+    ON pix_transaction (device_id, transaction_date);
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta

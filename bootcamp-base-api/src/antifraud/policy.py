@@ -26,10 +26,10 @@ POLICY_VERSION = "v0.5.0"
 # nome do sinal: mudar uma janela é mudar os quatro, e no D-REJ também a
 # frase do motivo.
 #
-# Com t = received_at do Pix atual, anterior é received_at < t (o Pix atual
-# ainda não foi gravado), e nos últimos X é received_at > t - X AND
-# received_at < t. Ao lado de cada
-# janela, o campo do Context que ela define.
+# Com t = transaction_date do Pix atual, anterior é transaction_date <= t
+# (o Pix atual ainda não foi gravado, e um Pix do mesmo instante conta),
+# e nos últimos X é transaction_date > t - X. Ao lado de cada janela, o
+# campo do Context que ela define.
 PAYER_ATTEMPTS_WINDOW = timedelta(minutes=5)  # attempts_5m
 PAYER_AMOUNT_WINDOW = timedelta(hours=1)  # amount_1h
 NEW_DESTINATIONS_WINDOW = timedelta(minutes=10)  # new_destinations_10m
