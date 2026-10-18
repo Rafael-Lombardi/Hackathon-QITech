@@ -1,13 +1,26 @@
 import json
+from os import environ
+
 from requests import request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from os import environ
 
 
 API_OFFLINE = (
     "Não consegui falar com a API em {base_url}.\n"
-    "Ela precisa estar de pé pros testes rodarem. Suba com:  docker compose up"
+    "Ela precisa estar de pé pros testes rodarem. Suba com:  docker compose up -d --build --wait"
 )
+
+# Prazo de cada requisição do teste. Sem ele, uma API travada — uma trava
+# de banco que nunca solta, por exemplo — penduraria a suíte inteira em
+# silêncio; com ele, o teste cai com nome. 30 s é folga de sobra: o Pix
+# mais lento da suíte espera os 2 s do DICT lento.
+REQUEST_TIMEOUT = 30
+
+
+def api_base_url() -> str:
+    api_host = environ.get("SERVER_LOCALHOST", "0.0.0.0")
+    api_port = environ.get("API_PORT", "3000")
+    return f"http://{api_host}:{api_port}"
 
 
 class ClientRequisition:
@@ -21,15 +34,13 @@ class ClientRequisition:
         cert=None,
         query_params=None,
         verify=True,
+        timeout=REQUEST_TIMEOUT,
     ):
 
         if headers is None:
             headers = dict()
 
-        api_host = environ.get("SERVER_LOCALHOST", "0.0.0.0")
-        api_port = environ.get("API_PORT", "3000")
-        base_url = f"http://{api_host}:{api_port}"
-
+        base_url = api_base_url()
         url = f"{base_url}{endpoint}"
 
         try:
@@ -42,6 +53,7 @@ class ClientRequisition:
                 cert=cert,
                 verify=verify,
                 params=query_params,
+                timeout=timeout,
             )
         except RequestsConnectionError:
             raise RuntimeError(API_OFFLINE.format(base_url=base_url)) from None
@@ -74,10 +86,12 @@ class BaseConnectorResponse:
         self.response_content = response.content
         self.response_status = response.status_code
 
+        # O 204 do health check não tem corpo, e um proxy no meio do
+        # caminho pode responder HTML. Corpo que não é JSON vira None, e
+        # quem esperava JSON descobre isso no assert, com o status na mão.
         self.response_json = None
-        try:
-            self.response_json = json.loads(self.response_content)
-        except Exception as ex:
-            print(ex)
-            ...
-            # logger warning
+        if self.response_content:
+            try:
+                self.response_json = json.loads(self.response_content)
+            except ValueError:
+                pass
