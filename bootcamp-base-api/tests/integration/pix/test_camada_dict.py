@@ -61,18 +61,21 @@ class TestCamadaDict:
         """Conta nova pagando conta nova que o DICT avalia mal: 2FA já no primeiro Pix.
 
         Um cliente novo, de conta aberta ontem, manda R$ 1 milhão às 3h
-        pra uma conta aberta ontem, com confiança 12 no DICT. Sem histórico,
-        só a camada 1 e o DICT têm o que dizer:
+        pra uma conta aberta ontem, com estatística 12 no DICT. Sem
+        histórico, só a camada 1, o teto por Pix e o DICT têm o que dizer:
 
             P01 +10      conta pagadora com 1 dia
             L01 +8       3h, acima de R$ 1.000
+            L03 +15      R$ 1 milhão de quem nunca teve Pix aprovado (teto R$ 5.000)
             R01 +12      conta de destino com 1 dia
             DICT01 +32   estatística 12 (< 30), com teto próprio
-            pagador 18, destino 12 + 32 = 44
+            pagador 33, destino 12 + 32 = 44
 
-        D-RCP. O DICT01 tem teto próprio na política v0.5:
-        dividindo o teto de 35 com o R01, este Pix parava em 35 e saía
-        aprovado.
+        2FA pelo D-LIMIT, a linha do teto, que vem antes da do destino. O
+        destino sozinho também pediria (44 >= 40, D-RCP), e é esse o
+        ponto do teto próprio do DICT01: a nota do DICT é o que o sistema
+        Pix inteiro viu do destino, e não divide teto com a rede que só
+        nós vemos.
         """
         payer = new_payer(opening_date=T0 - timedelta(days=1))
         recipient = new_recipient(opening_date=T0 - timedelta(days=1))
@@ -81,10 +84,10 @@ class TestCamadaDict:
         pix = post_pix(pix_payload(payer, recipient, at(T0, 3), amount=100_000_000))
 
         assert pix.http_status == 201
-        assert pix.triggered() == {"P01", "L01", "R01", "DICT01"}
-        assert pix.scores == {"payer": 18, "recipient": 44}
+        assert pix.triggered() == {"P01", "L01", "L03", "R01", "DICT01"}
+        assert pix.scores == {"payer": 33, "recipient": 44}
         assert pix.status == "two_factor_required"
-        assert pix.decision_rule == "D-RCP"
+        assert pix.decision_rule == "D-LIMIT"
 
     def test_relacao_recorrente_segura_o_2fa_da_conta_nova_com_dict_baixo(self, dict_mock):
         """Quem já paga este titular há 10 dias não leva 2FA quando ele abre conta nova mal avaliada.
@@ -136,7 +139,7 @@ class TestCamadaDict:
         assert pix.http_status == 201
         assert pix.triggered() == {triggered}
         assert pix.signal(triggered)["evidence"] == {"fraud_marker": fraud_marker}
-        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "DICT01", "DICT02", "DICT03"} - {triggered}
+        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L03", "DICT01", "DICT02", "DICT03"} - {triggered}
         assert pix.scores == {"payer": 0, "recipient": points}
         assert pix.status == "approved"
 

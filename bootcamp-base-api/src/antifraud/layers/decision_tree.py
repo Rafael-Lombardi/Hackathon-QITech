@@ -2,7 +2,7 @@
 histórico.
 
 Cadê a árvore? Cada regra é um galho de dois níveis: tem histórico pra
-responder? Se não tem, unavailable. Se tem, a condição vale? As 15
+responder? Se não tem, unavailable. Se tem, a condição vale? Todas
 rodam sempre, sem atalho de uma pra outra, porque o GET precisa mostrar
 o estado de cada uma. O tronco, que junta os galhos numa decisão, é a
 DECISION_TABLE do policy.py. É `if/else` escrito à mão, e não modelo
@@ -23,6 +23,7 @@ class DecisionTreeLayer:
     def evaluate(self, context: Context) -> list[Signal]:
         return [
             _l02_new_device_over_limit(context),
+            _l03_amount_cap(context),
             _g01_unusual_location(context),
             _p03_unknown_device(context),
             _p04_many_attempts(context),
@@ -97,6 +98,24 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
             "device_seen_before_today": False,
         })
     return policy.not_triggered("L02")
+
+
+def _l03_amount_cap(context: Context) -> Signal:
+    # Nunca unavailable: o teto vale desde o primeiro Pix, e é justamente
+    # no primeiro que ele é mais baixo — com 0 aprovados na base, R$ 5.000;
+    # com algum, R$ 50.000. O porquê dos dois números está no policy.py.
+    transaction = context.transaction
+    if transaction.payer_document == transaction.recipient_document:
+        return policy.not_triggered("L03")
+    approved_count = context.payer.approved_count
+    cap = policy.PIX_AMOUNT_CAP if approved_count > 0 else policy.COLD_START_AMOUNT_CAP
+    if transaction.amount >= cap:
+        return policy.triggered("L03", {
+            "amount": transaction.amount,
+            "cap": cap,
+            "payer_approved_count": approved_count,
+        })
+    return policy.not_triggered("L03")
 
 
 def _p03_unknown_device(context: Context) -> Signal:

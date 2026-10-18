@@ -146,6 +146,20 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
         return f"Dispositivo e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
     if rule.name == "D-PAY":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
+    if rule.name == "D-LIMIT":
+        evidence = triggered["L03"].evidence
+        # Os valores da evidência estão em centavos; a frase sai em reais.
+        reason = f"Valor de R$ {_number(evidence['amount'] / 100)} alcança o teto por Pix de R$ {_number(evidence['cap'] / 100)}"
+        if evidence["payer_approved_count"] == 0:
+            reason += " de quem nunca teve Pix aprovado"
+        return reason
+    if rule.name == "D-SCAM":
+        ratio = triggered["P06"].evidence["ratio"]
+        return f"Valor {_number(ratio)}x a mediana para um destino que o pagador nunca pagou"
+    if rule.name == "D-DRAIN":
+        attempts = triggered["P04"].evidence["attempts_5m"]
+        destinations = triggered["P07"].evidence["new_destinations_10m"]
+        return f"{_number(attempts)} tentativas em 5 min e {_number(destinations)} destinos inéditos em 10 min"
     if rule.name == "D-RCP":
         return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
     if rule.name == "D-OK":

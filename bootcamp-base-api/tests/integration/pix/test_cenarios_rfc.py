@@ -22,8 +22,10 @@ exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 A tabela, em ordem, vale a primeira que casar: as rejeições — D-REJ-ATO
 (P03, P04, P06 e P07 com pagador >= 70), D-REJ-RCP e D-REJ-CROSS, que
 pedem marcação de fraude do destino no DICT — → D-ATO-1 (P03 e P06) →
-D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP (destino >= 40) →
-D-OK. As rejeições têm arquivo próprio (test_rejeicoes.py).
+D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-LIMIT (L03) → D-SCAM
+(P06 e REL01, sem REL03) → D-DRAIN (P04 e P07) → D-RCP (destino >= 40)
+→ D-OK. As rejeições têm arquivo próprio (test_rejeicoes.py), e as três
+linhas de combinação, as fronteiras (test_fronteiras.py).
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
 test_concorrencia.py, com os nomes que a RFC deu. As sementes passam pelo
@@ -51,12 +53,13 @@ class TestCenariosRfc:
     def test_primeira_observacao_normal_aprova(self):
         """Cenário 01 — o primeiro Pix na base: contas maduras, R$ 150, às 14h.
 
-        Sem histórico, só a camada 1 tem o que olhar, e ela não acha nada:
-        contas abertas há anos, de dia, valor baixo, documentos diferentes.
-        Os 15 sinais históricos saem unavailable — "não sei", e não "está
-        tudo bem" — e nenhum vira ponto. O DICT responde o padrão
-        (estatística 70, sem marcação de fraude), e a camada 3 inteira
-        fica calada.
+        Sem histórico, só a camada 1 e o teto por Pix têm o que olhar, e
+        não acham nada: contas abertas há anos, de dia, R$ 150 (longe dos
+        R$ 5.000 do teto de quem nunca teve Pix aprovado), documentos
+        diferentes. Os 15 sinais históricos saem unavailable — "não sei",
+        e não "está tudo bem" — e nenhum vira ponto. O DICT responde o
+        padrão (estatística 70, sem marcação de fraude), e a camada 3
+        inteira fica calada.
 
         Pagador 0, destino 0, suficiência unavailable nos dois eixos: D-OK.
         Primeira observação não é culpa nem atestado (RFC §14).
@@ -71,10 +74,10 @@ class TestCenariosRfc:
         assert pix.scores == {"payer": 0, "recipient": 0}
         assert pix.sufficiency == {"payer": "unavailable", "recipient": "unavailable"}
         assert pix.triggered() == set()
-        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "DICT01", "DICT02", "DICT03"}
+        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L03", "DICT01", "DICT02", "DICT03"}
         assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS
 
-    def test_primeiro_pix_noturno_alto_aprova_com_l01(self):
+    def test_primeiro_pix_noturno_alto_pede_confirmacao_pelo_teto(self):
         """Cenário 02 — o primeiro Pix na base, R$ 5.000 às 3h da manhã.
 
         L01 +8: 3h está na janela noturna do Banco Central (20h às 6h) e
@@ -83,18 +86,24 @@ class TestCenariosRfc:
         sinais históricos seguem unavailable — o P05, que veria o
         montante, ainda não tem com o que comparar.
 
-        Pagador 8, destino 0: D-OK. Não se rejeita só por horário ou valor.
+        Quem pede confirmação é o L03 +15: R$ 5.000 é o teto por Pix de
+        quem nunca teve Pix aprovado nesta base, como a conta recém-aberta
+        tem limite inicial baixo. Pagador 23, destino 0, e a linha que
+        casa é a do teto: D-LIMIT, 2FA — nunca rejeição. Horário e valor,
+        sozinhos, não barram ninguém; o primeiro Pix alto de quem nunca
+        vimos confirma antes de sair.
         """
         payer, recipient = new_payer(), new_recipient()
 
         pix = post_pix(pix_payload(payer, recipient, at(T0, 3), amount=500000))
 
         assert pix.http_status == 201
-        assert pix.status == "approved"
-        assert pix.decision_rule == "D-OK"
-        assert pix.triggered() == {"L01"}
+        assert pix.status == "two_factor_required"
+        assert pix.decision_rule == "D-LIMIT"
+        assert pix.triggered() == {"L01", "L03"}
         assert pix.signal("L01")["points"] == 8
-        assert pix.scores == {"payer": 8, "recipient": 0}
+        assert pix.signal("L03")["evidence"] == {"amount": 500000, "cap": 500000, "payer_approved_count": 0}
+        assert pix.scores == {"payer": 23, "recipient": 0}
         assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS
 
     def test_destino_novo_isolado_aprova(self):
@@ -368,7 +377,7 @@ class TestCenariosRfc:
         assert pix.signal_status("REL01") == "unavailable"
         assert pix.scores == {"payer": 0, "recipient": 20}
 
-    def test_destino_novo_concentrando_pagadores_nao_rejeita_sem_inteligencia(self):
+    def test_destino_novo_concentrando_pagadores_pede_2fa(self):
         """Cenário 12 — conta de 2 dias recebendo de 5 pagadores em 5 minutos.
 
         Preparo: 4 pagadores novos pagam a conta nos 4 minutos antes de
@@ -378,29 +387,34 @@ class TestCenariosRfc:
             R02 +16    5 entradas em 10 min, contando a atual
             R03 +20    5 pagadores distintos em 1 h
             R04 +15    conta nova E muitos pagadores
-            12 + 16 + 20 + 15 = 63, teto do recipient_network: 35
+            12 + 16 + 20 + 15 = 63, teto do recipient_network: 40
             REL01      unavailable: o pagador nunca foi visto
-            destino 35, pagador 0
+            destino 40, pagador 0
 
-        Sem evidência DICT, R01, R02 e R03 não são suficientes para
-        rejeição na RFC v0.5. Como o teto deixa o destino em 35, o Pix é
-        aprovado. Repare que a 4ª semente já tinha R01, R03 e R04 (destino
-        35) e também foi aprovada: o caso só muda os sinais, não ultrapassa
-        o limiar de fricção.
+        D-RCP: a conta nova concentrando pagadores chega ao teto da rede e
+        pede 2FA sozinha — é o retrato do laranja recém-aberto, e o 5º
+        pagador confirma antes de mandar, mesmo sem histórico nenhum.
+        Rejeitar de vez fica pra quando o DICT marcou o destino
+        (test_rejeicoes.py). Repare que a 4ª semente já tinha R01, R03 e
+        R04 (12 + 20 + 15 = 47 → 40) e também pediu 2FA: a rajada do R02
+        só muda os sinais, o teto já estava batido.
         """
         mule = new_recipient(opening_date=T0 - timedelta(days=2))
-        seed([pix_payload(new_payer(), mule, moment) for moment in minutes_before(T0, 4)])
+        seed(
+            [pix_payload(new_payer(), mule, moment) for moment in minutes_before(T0, 4)],
+            expect=["approved", "approved", "approved", "two_factor_required"],
+        )
 
         pix = post_pix(pix_payload(new_payer(), mule, T0))
 
         assert pix.http_status == 201
-        assert pix.status == "approved"
-        assert pix.decision_rule == "D-OK"
+        assert pix.status == "two_factor_required"
+        assert pix.decision_rule == "D-RCP"
         assert pix.triggered() == {"R01", "R02", "R03", "R04"}
         assert pix.signal_status("REL01") == "unavailable"
-        assert pix.scores == {"payer": 0, "recipient": 35}
+        assert pix.scores == {"payer": 0, "recipient": 40}
 
-    def test_pagador_normal_para_destino_suspeito_pede_2fa_sem_inteligencia(self):
+    def test_pagador_normal_para_destino_suspeito_pede_2fa(self):
         """Cenário 13 — cliente de sempre mandando para a conta do cenário 12.
 
         Preparo: o pagador tem 3 Pix nos 3 dias anteriores (aparelho e IP
@@ -408,20 +422,22 @@ class TestCenariosRfc:
         pagadores novos nos 4 minutos antes de T0. Pix: o cliente paga a
         conta.
 
-            R01, R02, R03, R04   como no 12: recipient_network no teto, 35
+            R01, R02, R03, R04   como no 12: recipient_network no teto, 40
             REL01 +8             destino inédito para quem tem histórico
-            destino 43, pagador 0
+            destino 48, pagador 0
 
-        Sem evidência DICT, a RFC v0.5 não rejeita apenas pelos sinais
-        R01/R02/R03. O risco do destino chega a 43 e a política aplica
-        D-RCP (2FA). O pagador está limpo, e a confirmação adicional é a
-        fricção disponível quando ainda não há evidência suficiente para
-        rejeitar definitivamente.
+        D-RCP, 2FA. O pagador está limpo, e é por isso que a decisão é
+        confirmar, e não rejeitar: sem o DICT marcando o destino, a rede
+        que só nós vemos pede a confirmação dele — se for golpe, é a
+        chance de ele desistir; se não for, custa um toque.
         """
         payer = new_payer()
         seed_pix(payer, new_recipient(), days_before(T0, 3))
         mule = new_recipient(opening_date=T0 - timedelta(days=2))
-        seed([pix_payload(new_payer(), mule, moment) for moment in minutes_before(T0, 4)])
+        seed(
+            [pix_payload(new_payer(), mule, moment) for moment in minutes_before(T0, 4)],
+            expect=["approved", "approved", "approved", "two_factor_required"],
+        )
 
         pix = post_pix(pix_payload(payer, mule, T0))
 
@@ -429,7 +445,7 @@ class TestCenariosRfc:
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-RCP"
         assert pix.triggered() == {"R01", "R02", "R03", "R04", "REL01"}
-        assert pix.scores == {"payer": 0, "recipient": 43}
+        assert pix.scores == {"payer": 0, "recipient": 48}
 
     def test_sem_geolocalizacao_aprova(self):
         """Cenário 14 — o Pix de sempre, sem geolocation.

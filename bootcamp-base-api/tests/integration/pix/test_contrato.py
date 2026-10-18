@@ -37,6 +37,7 @@ CATALOG = {
     "R01": (1, "Contraparte", "recipient", "destination_account", 12),
     "REL03": (1, "Contraparte", "recipient", "pair", -5),
     "L02": (2, "Limite", "payer", "payer", 10),
+    "L03": (2, "Limite", "payer", "payer", 15),
     "G01": (2, "Localização", "payer", "payer", 6),
     "P03": (2, "Perfil", "payer", "payer", 18),
     "P04": (2, "Velocity", "payer", "payer", 20),
@@ -244,9 +245,10 @@ class TestContrato:
 
         metadata = body["metadata"]
         assert set(metadata) == {"policy_version", "decision_rule", "reasons", "scores", "evidence_sufficiency", "signals"}
-        assert metadata["policy_version"] == "v0.5.0"
+        assert metadata["policy_version"] == "v0.6.0"
         assert metadata["decision_rule"] in {
-            "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2", "D-PAY", "D-RCP", "D-OK",
+            "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2",
+            "D-PAY", "D-LIMIT", "D-SCAM", "D-DRAIN", "D-RCP", "D-OK",
         }
         assert isinstance(metadata["reasons"], list)
         assert metadata["reasons"]

@@ -222,6 +222,78 @@ class TestFronteiras:
         assert pix.status == status
 
     @pytest.mark.parametrize(
+        "amount, expected, payer_score, status, decision_rule",
+        [(499999, "not_triggered", 0, "approved", "D-OK"), (500000, "triggered", 15, "two_factor_required", "D-LIMIT")],
+        ids=["4999-reais-e-99-nao-dispara", "5000-reais-dispara"],
+    )
+    def test_fronteira_l03_teto_de_quem_nunca_teve_pix_aprovado(self, amount, expected, payer_score, status, decision_rule):
+        """L03: quem nunca teve Pix aprovado nesta base tem teto de R$ 5.000 por Pix — e o teto já conta.
+
+        O primeiro Pix de um cliente novo, às 14h, pra uma conta antiga:
+        R$ 4.999,99 passa sem sinal nenhum; R$ 5.000 dispara o L03 (+15),
+        e a linha do teto pede 2FA seja qual for a nota — D-LIMIT. É o
+        limite inicial baixo da conta recém-aberta, aqui pra quem a base
+        ainda não viu aprovar nada.
+        """
+        pix = post_pix(pix_payload(new_payer(), new_recipient(), T0, amount=amount))
+
+        assert pix.http_status == 201
+        assert pix.signal_status("L03") == expected
+        assert pix.scores["payer"] == payer_score
+        assert pix.status == status
+        assert pix.decision_rule == decision_rule
+
+    @pytest.mark.parametrize(
+        "amount, expected, payer_score, status, decision_rule",
+        [(4999999, "not_triggered", 15, "approved", "D-OK"), (5000000, "triggered", 30, "two_factor_required", "D-LIMIT")],
+        ids=["49999-reais-e-99-nao-dispara", "50000-reais-dispara"],
+    )
+    def test_fronteira_l03_teto_por_pix(self, amount, expected, payer_score, status, decision_rule):
+        """L03: com Pix aprovado na base, o teto por Pix é R$ 50.000.
+
+        Preparo: 3 Pix nos 3 dias anteriores. Pix: R$ 49.999,99 ou
+        R$ 50.000, pro destino de sempre. O P05 dispara nos dois lados
+        (+15: mais de R$ 8.000 em 1 h); o L03 só no segundo (+15, no grupo
+        dele): pagador 15 ou 30, e a linha do teto decide antes da nota.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        seed_pix(payer, recipient, days_before(T0, 3))
+
+        pix = post_pix(pix_payload(payer, recipient, T0, amount=amount))
+
+        assert pix.http_status == 201
+        assert pix.signal_status("L03") == expected
+        assert pix.signal_status("P05") == "triggered"
+        assert pix.scores["payer"] == payer_score
+        assert pix.status == status
+        assert pix.decision_rule == decision_rule
+
+    def test_l03_nao_olha_pix_para_o_proprio_titular(self):
+        """Pra si mesmo não há teto: R$ 50.000 pra outra conta do mesmo CPF passa sem L03.
+
+        Preparo: 3 Pix nos 3 dias anteriores, pra terceiros. Pix:
+        R$ 50.000 pra uma conta do próprio pagador, noutro banco.
+
+            P05 +15     mais de R$ 8.000 em 1 h
+            REL01 +8    destino inédito (o dele mesmo)
+            REL03 -5    mesmo titular
+            pagador 15; destino 3
+
+        D-OK. O teto existe pra segurar dinheiro saindo pra terceiro.
+        """
+        payer = new_payer()
+        seed_pix(payer, new_recipient(), days_before(T0, 3))
+        own_account = new_recipient(document=payer.document)
+
+        pix = post_pix(pix_payload(payer, own_account, T0, amount=5000000))
+
+        assert pix.http_status == 201
+        assert pix.signal_status("L03") == "not_triggered"
+        assert pix.triggered() == {"P05", "REL01", "REL03"}
+        assert pix.scores == {"payer": 15, "recipient": 3}
+        assert pix.status == "approved"
+
+    @pytest.mark.parametrize(
         "earlier_minutes, expected",
         [((3, 2, 1), "not_triggered"), ((4, 3, 2, 1), "triggered")],
         ids=["4a-tentativa-nao-dispara", "5a-tentativa-dispara"],
@@ -595,10 +667,10 @@ class TestFronteiras:
     def test_fronteira_d_rcp_39_aprova(self, dict_mock):
         """O D-RCP pede destino >= 40. Com 39, aprova.
 
-        O destino soma três grupos: o recipient_network (R01 12, R02 16,
-        R03 20, R04 15; teto 35), a estatística DICT (DICT01 32; teto 32) e
-        a relation (REL01 8, REL02 -8, REL03 -5; de -10 a 8). Perto dos 40
-        dá pra chegar a 35, 36, 38, 39, 40, 42, 43 e 44. O 39 é este:
+        O destino soma quatro grupos: o recipient_network (R01 12, R02 16,
+        R03 20, R04 15; teto 40), a estatística DICT (DICT01 32; teto 32),
+        as marcações do DICT (DICT02 20, DICT03 25; teto 25) e a relation
+        (REL01 8, REL02 -8, REL03 -5; de -10 a 8). O 39 é este:
 
         Um cliente novo manda R$ 50 pra uma conta DELE, noutro banco, aberta
         há 2 dias, e o DICT dá confiança 12 pro documento dele.
@@ -647,6 +719,86 @@ class TestFronteiras:
         assert pix.scores == {"payer": 0, "recipient": 40}
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-RCP"
+
+    @pytest.mark.parametrize(
+        "destination, status, decision_rule, triggered, recipient_score",
+        [
+            ("inedito", "two_factor_required", "D-SCAM", {"P06", "REL01"}, 8),
+            ("habitual", "approved", "D-OK", {"P06", "REL02"}, 0),
+            ("proprio", "approved", "D-OK", {"P06", "REL01", "REL03"}, 3),
+        ],
+        ids=["destino-inedito-pede-2fa", "destino-habitual-aprova", "propria-conta-aprova"],
+    )
+    def test_d_scam_valor_atipico_para_destino_inedito(self, destination, status, decision_rule, triggered, recipient_score):
+        """D-SCAM: valor muito acima do padrão pra um destino que o pagador nunca pagou pede 2FA, mesmo com a nota baixa.
+
+        É a falsa central, o falso parente e o sequestro relâmpago: o
+        cliente, do próprio aparelho, manda um valor que nunca mandou pra
+        alguém que nunca pagou. Preparo: 10 Pix de R$ 400 pro destino de
+        sempre, em 7 dias (mediana R$ 400). Pix: R$ 3.500, 8,75x a mediana.
+
+            destino inédito    P06 +18, REL01 +8: pagador 18, destino 8 → D-SCAM
+            destino habitual   P06 +18, REL02 -8: pagador 18, destino 0 → D-OK
+            conta própria      P06 +18, REL01 +8, REL03 -5: destino 3 → D-OK
+
+        Com 18 pontos o D-PAY não casa; é a combinação que decide. A
+        autotransferência fica de fora (REL03): pra si mesmo, destino
+        inédito não é inédito.
+        """
+        payer, usual = new_payer(), new_recipient()
+        seed_pix(payer, usual, spread_over_days(TEN_OVER_SEVEN_DAYS), amount=40000)
+        recipients = {"inedito": new_recipient(), "habitual": usual, "proprio": new_recipient(document=payer.document)}
+
+        pix = post_pix(pix_payload(payer, recipients[destination], T0, amount=350000))
+
+        assert pix.http_status == 201
+        assert pix.triggered() == triggered
+        assert pix.scores == {"payer": 18, "recipient": recipient_score}
+        assert pix.status == status
+        assert pix.decision_rule == decision_rule
+        if decision_rule == "D-SCAM":
+            assert pix.reasons == ["Valor 8,75x a mediana para um destino que o pagador nunca pagou"]
+
+    @pytest.mark.parametrize(
+        "same_destination, status, decision_rule, triggered, scores",
+        [
+            (False, "two_factor_required", "D-DRAIN", {"P04", "P07", "REL01"}, {"payer": 38, "recipient": 8}),
+            (True, "approved", "D-OK", {"P04", "R02"}, {"payer": 20, "recipient": 16}),
+        ],
+        ids=["destinos-ineditos-pede-2fa", "mesmo-destino-aprova"],
+    )
+    def test_d_drain_rajada_para_destinos_ineditos(self, same_destination, status, decision_rule, triggered, scores):
+        """D-DRAIN: 5 tentativas em 5 min com 3 ou mais destinos inéditos pede 2FA antes de a nota chegar aos 40.
+
+        É o dreno da conta tomada em parcelas pequenas. Preparo: 3 Pix nos
+        3 dias anteriores, pro destino de sempre. Nos 4 minutos antes de
+        T0, 4 Pix de R$ 50. Pix: o 5º.
+
+            destinos inéditos    P04 +20, P07 +18, REL01 +8: pagador 38,
+                                 destino 8 → D-DRAIN (38 < 40: o D-PAY não
+                                 casa, a combinação casa)
+            o destino de sempre  P04 +20 e, do lado do destino, R02 +16 (5
+                                 entradas em 10 min): pagador 20, destino
+                                 16 → D-OK. Rapidez pro mesmo destino não
+                                 é dreno.
+        """
+        payer, usual = new_payer(), new_recipient()
+        seed_pix(payer, usual, days_before(T0, 3))
+
+        def destination():
+            return usual if same_destination else new_recipient()
+
+        seed([pix_payload(payer, destination(), moment) for moment in minutes_before(T0, 4)])
+
+        pix = post_pix(pix_payload(payer, destination(), T0))
+
+        assert pix.http_status == 201
+        assert pix.triggered() == triggered
+        assert pix.scores == scores
+        assert pix.status == status
+        assert pix.decision_rule == decision_rule
+        if decision_rule == "D-DRAIN":
+            assert pix.reasons == ["5 tentativas em 5 min e 5 destinos inéditos em 10 min"]
 
     def test_suficiencia_sobe_de_unavailable_a_medium(self):
         """Suficiência, os primeiros degraus: 0 Pix, unavailable; 1 a 5, low; 6 em 2 dias ou mais, medium.

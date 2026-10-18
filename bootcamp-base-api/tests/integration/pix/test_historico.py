@@ -182,13 +182,13 @@ class TestHistorico:
         pagadores novos pagam ele nos últimos 50 minutos, nas duas contas.
 
             4º pagador, conta ANTIGA   R03 +20 (4 pagadores no titular),
-                                       R01 calado: destino 20
+                                       R01 calado: destino 20, aprovado
             5º pagador, conta NOVA     R03 +20, R01 +12, R04 +15
                                        12 + 20 + 15 = 47, teto do
-                                       recipient_network: 35
+                                       recipient_network: 40 → D-RCP, 2FA
 
-        Os dois aprovados: sem R02 não há rejeição combinada, e 35 fica
-        abaixo do D-RCP.
+        O mesmo titular, a mesma hora: o que muda a decisão é a conta,
+        porque é a conta nova concentrando pagadores que bate no teto.
         """
         old = new_recipient()
         new = old.with_new_account(opening_date=T0 - timedelta(days=2))
@@ -203,10 +203,12 @@ class TestHistorico:
         assert to_old.http_status == 201
         assert to_old.triggered() == {"R03"}
         assert to_old.scores["recipient"] == 20
+        assert to_old.status == "approved"
         assert to_new.http_status == 201
         assert to_new.triggered() == {"R01", "R03", "R04"}
-        assert to_new.scores["recipient"] == 35
-        assert to_old.status == to_new.status == "approved"
+        assert to_new.scores["recipient"] == 40
+        assert to_new.status == "two_factor_required"
+        assert to_new.decision_rule == "D-RCP"
 
     def test_pix_com_data_posterior_nao_entra_no_historico(self):
         """Histórico se conta no tempo do negócio, e nunca com dado do futuro.

@@ -109,7 +109,7 @@ class TestRejeicoes:
 
     @pytest.mark.parametrize(
         "fraud_marker, marker_signal, recipient_score",
-        [("suspicious", "DICT02", 95), ("confirmed", "DICT03", 100)],
+        [("suspicious", "DICT02", 96), ("confirmed", "DICT03", 100)],
         ids=["suspeita", "confirmada"],
     )
     def test_rejeicao_do_destino_pede_marcacao_de_fraude_no_dict(self, dict_mock, fraud_marker, marker_signal, recipient_score):
@@ -121,11 +121,12 @@ class TestRejeicoes:
 
             R02 +16      5 entradas em 10 min
             R03 +20      5 pagadores em 1 h
-                         16 + 20 = 36, teto do recipient_network: 35
+                         16 + 20 = 36, abaixo do teto da rede (40)
             DICT01 +32   estatística 12 (< 30)
             DICT02 +20   marcação suspeita (ou DICT03 +25, confirmada)
             REL01 +8     destino inédito para quem tem histórico
-            destino 35 + 32 + 20 + 8 = 95 (suspeita) ou 100 (confirmada)
+            destino 36 + 32 + 20 + 8 = 96 (suspeita) ou 101 → 100
+                         (confirmada: a nota para em 100)
 
         Rejeitado: R02 e R03 juntos, destino >= 55 e a marcação. Sem a
         marcação, a mesma rede fica em 2FA — o teste seguinte.
@@ -143,7 +144,7 @@ class TestRejeicoes:
 
     @pytest.mark.parametrize(
         "dict_down, recipient_score, marker_status",
-        [(False, 75, "not_triggered"), (True, 43, "unavailable")],
+        [(False, 76, "not_triggered"), (True, 44, "unavailable")],
         ids=["sem-marcacao", "dict-fora-do-ar"],
     )
     def test_rede_do_destino_sem_marcacao_fica_em_2fa(self, dict_mock, dict_down, recipient_score, marker_status):
@@ -153,8 +154,8 @@ class TestRejeicoes:
         sem marcação (DICT02 e DICT03 calados) ou fora do ar, com erro 500
         (a camada 3 inteira unavailable).
 
-            sem marcação   35 (rede) + 32 (DICT01) + 8 (REL01) = 75
-            fora do ar     35 + 8 = 43
+            sem marcação   36 (rede) + 32 (DICT01) + 8 (REL01) = 76
+            fora do ar     36 + 8 = 44
 
         D-RCP nos dois: a rede passa dos 40, mas rejeição de destino só
         com o DICT dizendo que ele é fraude — e falta de resposta não é

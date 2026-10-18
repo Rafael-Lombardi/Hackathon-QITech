@@ -1,10 +1,10 @@
 """A política do motor: todo número que ele usa, num arquivo só.
 
-Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5), não
-calibragem com dado real; os que vêm do Banco Central dizem de onde
-vieram. A POLICY_VERSION vai gravada em cada análise. Mudou um número
-aqui, muda a versão — senão o motivo gravado ontem passa a ser lido com
-os pesos de hoje.
+Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5, com
+os ajustes da v0.6.0 listados abaixo), não calibragem com dado real; os
+que vêm do Banco Central dizem de onde vieram. A POLICY_VERSION vai
+gravada em cada análise. Mudou um número aqui, muda a versão — senão o
+motivo gravado ontem passa a ser lido com os pesos de hoje.
 """
 
 from dataclasses import dataclass
@@ -12,9 +12,19 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.5: a camada 3 do DICT com a estatística de segurança (DICT01,
-# teto próprio) e as marcações de fraude (DICT02 e DICT03).
-POLICY_VERSION = "v0.5.0"
+# v0.6.0, o que mudou da v0.5.0:
+#   • aparelho e IP conhecidos voltam a ser os dos Pix aprovados do
+#     pagador (L02, P03, P09, P10), sem cadastro de aparelhos; a camada 3
+#     lê a marcação de fraude do próprio DICT (DICT02, DICT03);
+#   • as janelas de histórico contam por transaction_date, o tempo do
+#     negócio, e não pelo relógio do servidor;
+#   • o teto da rede do destino sobe de 35 pra 40: conta nova
+#     concentrando pagadores passa a pedir 2FA sozinha;
+#   • L03, o teto por Pix (R$ 50.000; R$ 5.000 pra quem nunca teve Pix
+#     aprovado), e três linhas novas de 2FA: D-LIMIT, D-SCAM e D-DRAIN;
+#   • saem D-RESTRICT-SIM e D-REJ-PAY, que dependiam de fontes que só
+#     existiam semeadas.
+POLICY_VERSION = "v0.6.0"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -59,6 +69,15 @@ NIGHT_AMOUNT_LIMIT = 100000
 # cadastrado, R$ 200 por Pix e R$ 1.000 por dia.
 NEW_DEVICE_PIX_LIMIT = 20000
 NEW_DEVICE_DAY_LIMIT = 100000
+
+# L03. "Passou do teto?" é a primeira pergunta do desafio, e todo banco
+# aplica um teto por Pix. R$ 50.000 é o nosso; quem nunca teve Pix
+# aprovado nesta base tem R$ 5.000, como a conta recém-aberta tem limite
+# inicial baixo até mostrar a que veio. O teto conta a partir do próprio
+# valor (>=): é o primeiro valor que não passa sem confirmação. Pra si
+# mesmo não há teto: o L03 só olha Pix pra terceiro.
+PIX_AMOUNT_CAP = 5_000_000
+COLD_START_AMOUNT_CAP = 500_000
 
 # L02, P03, P09 e P10 comparam aparelho e IP com os dos Pix aprovados,
 # e ficam unavailable enquanto o pagador não tiver 3 Pix aprovados:
@@ -159,6 +178,12 @@ CATALOG: dict[str, SignalSpec] = {
         granularity="payer",
         cap_group="limit", points=10,
     ),
+    "L03": SignalSpec(
+        name="Valor acima do teto por Pix",
+        layer=2, family="Limite", axis=Axis.PAYER,
+        granularity="payer",
+        cap_group="amount_cap", points=15,
+    ),
     "G01": SignalSpec(
         name="Localização distante do padrão",
         layer=2, family="Localização", axis=Axis.PAYER,
@@ -250,15 +275,15 @@ CATALOG: dict[str, SignalSpec] = {
     # porque o DICT real atualiza com até 12 h de atraso. Com qualquer
     # outro indício do destino, pede 2FA: R01 dá 44, REL01 dá 40, e R02
     # ou R03 pegam também a conta já aquecida, de 7 dias ou mais, que
-    # recebe rajada com nota baixa. O destino chega a 75.
+    # recebe rajada com nota baixa.
     #
     # Contar a conta nova duas vezes, no R01 e na nota, é de propósito:
     # conta recém-aberta com nota ruim é o retrato do laranja. Dividindo
-    # os 35 da rede com R01 a R04, ela parava em 35, e o primeiro Pix de
-    # um cliente pra ela saía aprovado. O preço é a conta recém-aberta
-    # honesta, com nota baixa só por ser nova: ela pede 2FA de todo
-    # pagador, menos o próprio titular (REL03) e quem já tem relação
-    # recorrente com ele (REL02).
+    # o teto da rede com R01 a R04, a nota do DICT sumiria justo na conta
+    # que já encosta nele, e a rajada na conta mal avaliada não somaria
+    # nada. O preço é a conta recém-aberta honesta, com nota baixa só por
+    # ser nova: ela pede 2FA de todo pagador, menos o próprio titular
+    # (REL03) e quem já tem relação recorrente com ele (REL02).
     "DICT01": SignalSpec(
         name="Estatística de segurança DICT desfavorável",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
@@ -300,22 +325,31 @@ def signal_spec(code: str) -> SignalSpec:
 # relation é o único que desce: histórico bom desconta até 10 pontos, e
 # nunca mais que isso — relação antiga não apaga sinal grave.
 #
-# payer_account e dict_security_statistics têm um sinal só, e o teto é o próprio
-# peso: não dividem teto com ninguém. Mudou o peso, muda o teto.
+# payer_account, amount_cap e dict_security_statistics têm um sinal só, e
+# o teto é o próprio peso: não dividem teto com ninguém. Mudou o peso,
+# muda o teto.
+#
+# recipient_network em 40: a conta nova concentrando pagadores (R01 +
+# R02 + R03 + R04 = 63, ou 47 sem a rajada do R02) chega ao teto e pede
+# 2FA sozinha, pelo D-RCP; a loja madura em rajada (R02 + R03 = 36)
+# continua passando. Rejeitar de vez fica pra quando o DICT marcou o
+# destino.
 CAPS: dict[str, tuple[int, int]] = {
     "limit": (0, 15),
+    "amount_cap": (0, 15),
     "payer_account": (0, 10),
     "payer_velocity": (0, 25),
     "payer_behavior": (0, 45),
-    "recipient_network": (0, 35),
+    "recipient_network": (0, 40),
     "dict_security_statistics": (0, 32),
     "dict_security": (0, 25),
     "relation": (-10, 8),
 }
 
 # A nota de um eixo é a soma dos grupos dele, presa entre 0 e 100. Com
-# os tetos acima o pagador chega no máximo a 95, e o destino a 75. Não é
-# probabilidade: 70 pontos não são 70% de chance de fraude.
+# os tetos acima o pagador somaria até 110 e o destino até 105, e os
+# dois param em 100. Não é probabilidade: 70 pontos não são 70% de
+# chance de fraude.
 MIN_RISK = 0
 MAX_RISK = 100
 
@@ -385,6 +419,19 @@ DECISION_TABLE: tuple[DecisionRule, ...] = (
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),
     DecisionRule("D-ATO-2", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P09")),
     DecisionRule("D-PAY", PixStatus.TWO_FACTOR_REQUIRED, min_payer_risk=40),
+    # Passou do teto por Pix: confirmação, seja qual for a nota.
+    DecisionRule("D-LIMIT", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("L03",)),
+    # Valor atípico pra um destino que o pagador nunca pagou, do próprio
+    # aparelho: a falsa central, o falso parente, o sequestro relâmpago —
+    # os golpes em que a vítima mesma manda. A autotransferência (REL03)
+    # fica de fora: pra si mesmo, destino inédito não é inédito.
+    DecisionRule(
+        "D-SCAM", PixStatus.TWO_FACTOR_REQUIRED,
+        all_triggered=("P06", "REL01"), none_triggered=("REL03",),
+    ),
+    # Rajada pra destinos inéditos: o dreno da conta tomada em parcelas
+    # pequenas, antes de a nota chegar aos 40.
+    DecisionRule("D-DRAIN", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P04", "P07")),
     DecisionRule("D-RCP", PixStatus.TWO_FACTOR_REQUIRED, min_recipient_risk=40),
     DecisionRule("D-OK", PixStatus.APPROVED),
 )
