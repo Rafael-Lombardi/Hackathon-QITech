@@ -19,7 +19,6 @@ from uuid import uuid4
 from tests.utils.clock import MATURE_OPENING_DATE
 
 _random = SystemRandom()
-_DEFAULT_DEVICES: set[str] = set()
 
 
 def new_cpf() -> str:
@@ -68,14 +67,6 @@ def only_digits(document: str) -> str:
 
 def new_device() -> str:
     return f"dvc-{uuid4().hex[:16]}"
-
-
-def remember_default_device(device_id: str) -> None:
-    _DEFAULT_DEVICES.add(device_id)
-
-
-def is_default_device(device_id: str) -> bool:
-    return device_id in _DEFAULT_DEVICES
 
 
 def new_ip() -> str:

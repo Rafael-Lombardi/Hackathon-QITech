@@ -15,8 +15,7 @@ import pytest
 
 from tests.utils import INTERNAL_TOKEN
 from tests.utils.clock import T0, iso
-from tests.utils.device_registry import seed_devices
-from tests.utils.identities import Payer, Recipient, is_default_device
+from tests.utils.identities import Payer, Recipient
 from tests.utils.requisition import ClientRequisition
 
 # R$ 50. Valor pequeno por padrão: longe do L01 (R$ 1.000 à noite), do
@@ -53,10 +52,6 @@ def pix_payload(
         "channel": channel,
         "ip": ip or payer.ip,
     }
-    if device_id is None:
-        from tests.utils.identities import remember_default_device
-
-        remember_default_device(payer.device_id)
     if geolocation is not None:
         source["geolocation"] = dict(geolocation)
 
@@ -145,36 +140,10 @@ class PixResponse:
         return f"PixResponse(http_status={self.http_status}, body={self.body!r})"
 
 
-def post_pix(
-    payload: dict,
-    token: str | None = INTERNAL_TOKEN,
-    *,
-    auto_register: bool = True,
-) -> PixResponse:
+def post_pix(payload: dict, token: str | None = INTERNAL_TOKEN) -> PixResponse:
     """POST /pix/transaction. token=None manda sem o header."""
-    if _can_seed_device(payload) and auto_register and is_default_device(payload["source"]["device_id"]):
-        seed_devices([{
-            "payer_document": payload["source_account"]["owner"]["document_number"].replace(".", "").replace("-", "").replace("/", ""),
-            "device_id": payload["source"]["device_id"],
-            "registered_at": payload["transaction_date"],
-        }])
     response = ClientRequisition.send("POST", "/pix/transaction", payload=payload, headers=_token_header(token))
     return _pix_response(response)
-
-
-def _can_seed_device(payload: dict) -> bool:
-    if not isinstance(payload, dict) or "source" not in payload or "source_account" not in payload:
-        return False
-    document = payload["source_account"].get("owner", {}).get("document_number", "")
-    document = document.replace(".", "").replace("-", "").replace("/", "")
-    if len(document) not in (11, 14) or not document.isdigit():
-        return False
-    try:
-        moment = datetime.fromisoformat(payload.get("transaction_date", ""))
-    except (TypeError, ValueError):
-        return False
-    offset = moment.utcoffset()
-    return offset is not None and abs(offset.total_seconds()) <= 14 * 3600
 
 
 def post_raw(data, content_type: str | None = "application/json") -> PixResponse:
@@ -197,12 +166,7 @@ def get_pix(pix_id: str, token: str | None = INTERNAL_TOKEN) -> PixResponse:
     return _pix_response(response)
 
 
-def seed(
-    payloads: list[dict],
-    expect: str | list[str] = "approved",
-    *,
-    register_devices: bool = True,
-) -> list[PixResponse]:
+def seed(payloads: list[dict], expect: str | list[str] = "approved") -> list[PixResponse]:
     """Manda o histórico do cenário, um Pix por vez, na ordem da lista.
 
     Semente não é atalho: ela passa pelo motor como qualquer Pix, e o que
@@ -212,31 +176,15 @@ def seed(
     teste seguinte mediria outra coisa sem avisar. Por isso cada uma é
     conferida aqui, e a primeira que destoa derruba o teste dizendo qual.
 
-    `expect` é um status para todas ou uma lista, um por semente. Por
-    compatibilidade com os cenários legados, seeds aprovados também criam
-    explicitamente o cadastro autoritativo do aparelho; cenários novos usam
-    ``register_devices=False`` e declaram ``authoritative.devices``.
+    `expect` é um status para todas ou uma lista, um por semente.
     """
     if isinstance(expect, str):
         expect = [expect] * len(payloads)
     assert len(expect) == len(payloads), "seed: um status esperado por semente"
 
-    if register_devices:
-        from tests.utils.device_registry import seed_devices
-
-        seed_devices([
-            {
-                "payer_document": payload["source_account"]["owner"]["document_number"].replace(".", "").replace("-", "").replace("/", ""),
-                "device_id": payload["source"]["device_id"],
-                "registered_at": payload["transaction_date"],
-            }
-            for payload, status in zip(payloads, expect)
-            if status == "approved" and is_default_device(payload["source"]["device_id"])
-        ])
-
     responses = []
     for position, (payload, expected) in enumerate(zip(payloads, expect), start=1):
-        response = post_pix(payload, auto_register=(expected == "approved"))
+        response = post_pix(payload)
         status = response.body.get("status") if isinstance(response.body, dict) else None
         if response.http_status != 201 or status != expected:
             pytest.fail(_broken_seed(position, len(payloads), payload, response, expected))

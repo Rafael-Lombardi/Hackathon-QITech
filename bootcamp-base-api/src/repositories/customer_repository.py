@@ -8,7 +8,7 @@ from models import Customer
 
 
 class CustomerRepository:
-    """O customer de cada documento, e a linha que o controller trava.
+    """O customer de cada documento, e a trava do pagador.
 
     Não dá commit — quem diz que o trabalho terminou é o controller — e
     não decide regra nenhuma.
@@ -59,46 +59,30 @@ class CustomerRepository:
 
         return self.session.scalars(by_document).one()
 
-    def lock_for_pix(self, *, customer_id: int) -> None:
-        """Trava o customer do pagador até o fim da transação: SELECT ... FOR NO KEY UPDATE.
+    def lock_for_pix_document(self, *, document_number: str) -> None:
+        """Trava o pagador até o fim da transação: um advisory lock pelo documento.
 
         Dois Pix do mesmo pagador chegando juntos passam um de cada vez,
         mesmo saindo de contas diferentes: o segundo espera aqui o commit
         (ou o rollback) do primeiro e, quando segue, já enxerga o Pix que o
-        primeiro gravou.
+        primeiro gravou. É por isso que o controller chama isto ANTES de
+        contar o histórico — e antes dos upserts.
 
-        Repare no NO KEY: com um FOR UPDATE comum, a conta nova de um
-        customer travado esperaria a trava, e dois Pix cruzados que abrem
-        conta dariam deadlock. O mecanismo — o FOR KEY SHARE que o INSERT
-        de account tira no customer — está no comentário de customer, no
-        database.sql.
+        Pelo documento, e não pela linha do customer, porque a linha só
+        existe depois do get_or_create: dois primeiros Pix do mesmo
+        documento atravessariam essa janela juntos, cada um contando um
+        histórico vazio. E pelo pagador só: travar também o recebedor
+        poria todos os pagadores de uma loja em fila única.
+
+        O hashtextextended reduz o documento a 64 bits; dois documentos no
+        mesmo hash só esperariam um pelo outro à toa. O lock é transacional
+        (xact): some sozinho no commit ou no rollback, sem deixar estado no
+        banco.
 
         Só funciona em READ COMMITTED, o padrão. Em REPEATABLE READ o
         segundo espera e mesmo assim lê o histórico de antes da espera.
         """
         self.session.execute(
-            select(Customer.id).where(Customer.id == customer_id).with_for_update(key_share=True)
-        ).scalar_one()
-
-    def lock_for_pix_document(self, *, document_number: str) -> None:
-        """Serializa o pagador antes de criar customer/conta e contar histórico.
-
-        O lock da linha do customer só existe depois do get-or-create. Dois
-        Pix inéditos do mesmo documento podiam atravessar essa janela juntos.
-        O advisory lock é transacional e não cria estado permanente no banco.
-        """
-        self.session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:document, 0))"),
             {"document": document_number},
         )
-
-    def lock_for_pix_many(self, *, customer_ids: tuple[int, ...]) -> None:
-        """Lock payer and recipient in deterministic order for concurrency."""
-        ids = sorted(set(customer_ids))
-        if ids:
-            self.session.execute(
-                select(Customer.id)
-                .where(Customer.id.in_(ids))
-                .order_by(Customer.id)
-                .with_for_update(key_share=True)
-            ).all()

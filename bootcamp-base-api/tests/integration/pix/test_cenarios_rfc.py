@@ -19,18 +19,18 @@ Montante, Perfil...); o grupo de teto é o de src/antifraud/policy.py
 (CAPS) e junta os sinais que olham o mesmo padrão: o payer_velocity, por
 exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 
-A tabela, em ordem, vale a primeira que casar: restrição ativa → rejeições
-combinadas da RFC v0.5 (com evidência DICT quando exigida) → D-ATO-1
-(P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP
-(destino >= 40) → D-OK. Os cenários legados desta classe não semeiam
-evidência DICT; por isso, a combinação de R01/R02/R03 não rejeita
-sozinha.
+A tabela, em ordem, vale a primeira que casar: as rejeições — D-REJ-ATO
+(P03, P04, P06 e P07 com pagador >= 70), D-REJ-RCP e D-REJ-CROSS, que
+pedem marcação de fraude do destino no DICT — → D-ATO-1 (P03 e P06) →
+D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP (destino >= 40) →
+D-OK. As rejeições têm arquivo próprio (test_rejeicoes.py).
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
 test_concorrencia.py, com os nomes que a RFC deu. As sementes passam pelo
 seed (tests/utils/pix.py), que derruba o teste se alguma não voltar
-approved. Todos rodam com o DICT na confiança padrão (70): o DICT01 fica
-calado aqui, e a camada 3 tem arquivo próprio.
+approved. Todos rodam com o DICT no padrão (estatística 70, sem marcação
+de fraude): a camada 3 fica calada aqui, e tem arquivo próprio — e é por
+isso que R01, R02 e R03 juntos não rejeitam nestes cenários.
 """
 
 from datetime import timedelta
@@ -53,9 +53,10 @@ class TestCenariosRfc:
 
         Sem histórico, só a camada 1 tem o que olhar, e ela não acha nada:
         contas abertas há anos, de dia, valor baixo, documentos diferentes.
-        Os 14 sinais históricos saem unavailable — "não sei", e não "está
-        tudo bem" — e nenhum vira ponto. O DICT responde a confiança
-        padrão (70), e o DICT01 fica calado.
+        Os 15 sinais históricos saem unavailable — "não sei", e não "está
+        tudo bem" — e nenhum vira ponto. O DICT responde o padrão
+        (estatística 70, sem marcação de fraude), e a camada 3 inteira
+        fica calada.
 
         Pagador 0, destino 0, suficiência unavailable nos dois eixos: D-OK.
         Primeira observação não é culpa nem atestado (RFC §14).
@@ -70,8 +71,8 @@ class TestCenariosRfc:
         assert pix.scores == {"payer": 0, "recipient": 0}
         assert pix.sufficiency == {"payer": "unavailable", "recipient": "unavailable"}
         assert pix.triggered() == set()
-        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L02", "P03", "DICT01"}
-        assert pix.signals_with("unavailable") == (HISTORICAL_SIGNALS - {"L02", "P03"}) | {"DICT02", "DICT03"}
+        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "DICT01", "DICT02", "DICT03"}
+        assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS
 
     def test_primeiro_pix_noturno_alto_aprova_com_l01(self):
         """Cenário 02 — o primeiro Pix na base, R$ 5.000 às 3h da manhã.
@@ -94,7 +95,7 @@ class TestCenariosRfc:
         assert pix.triggered() == {"L01"}
         assert pix.signal("L01")["points"] == 8
         assert pix.scores == {"payer": 8, "recipient": 0}
-        assert pix.signals_with("unavailable") == (HISTORICAL_SIGNALS - {"L02", "P03"}) | {"DICT02", "DICT03"}
+        assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS
 
     def test_destino_novo_isolado_aprova(self):
         """Cenário 03 — R$ 350 para uma conta aberta há 2 dias, de um pagador regular.
@@ -209,7 +210,7 @@ class TestCenariosRfc:
         assert pix.triggered() == {"P03", "P06", "L02", "REL01"}
         assert pix.scores == {"payer": 46, "recipient": 8}
         assert pix.sufficiency == {"payer": "medium", "recipient": "unavailable"}
-        assert pix.signal("P03")["evidence"]["device_registered"] is False
+        assert pix.signal("P03")["evidence"]["payer_prior_tx"] == 10
         assert pix.signal("P03")["evidence"]["device_seen_before"] is False
         assert pix.signal("P06")["evidence"]["median_amount"] == 100000
         assert pix.signal("P06")["evidence"]["ratio"] == 6.2

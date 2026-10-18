@@ -1,10 +1,12 @@
-"""Camada 3: a estatística de segurança do destino, pelo mock do DICT.
+"""Camada 3: a estatística de segurança e a marcação de fraude do destino, pelo mock do DICT.
 
-A API consulta GET /security-statistics/{documento do recebedor} antes de decidir.
-Confiança abaixo de 30 dispara o DICT01 (+32, eixo do destino, no grupo
-estatística DICT, com teto próprio). Mock lento demais, com erro ou
-respondendo torto vira DICT01 unavailable — e o Pix sai decidido pelas
-outras duas camadas, sem ponto e sem desconto.
+A API consulta GET /security-statistics/{documento do recebedor} antes de
+decidir, e a resposta traz as duas coisas. Estatística abaixo de 30
+dispara o DICT01 (+32, eixo do destino, com teto próprio); marcação de
+fraude suspeita dispara o DICT02 (+20) e confirmada o DICT03 (+25), no
+grupo dict_security. Mock lento demais, com erro ou respondendo torto
+vira a camada 3 inteira unavailable — e o Pix sai decidido pelas outras
+duas camadas, sem ponto e sem desconto.
 
 Cada teste escreve o roteiro do recebedor dele no mock pela fixture
 dict_mock (tests/conftest.py), que apaga o roteiro quando o teste acaba,
@@ -65,7 +67,7 @@ class TestCamadaDict:
             P01 +10      conta pagadora com 1 dia
             L01 +8       3h, acima de R$ 1.000
             R01 +12      conta de destino com 1 dia
-        DICT01 +32   estatística 12 (< 30), no grupo DICT
+            DICT01 +32   estatística 12 (< 30), com teto próprio
             pagador 18, destino 12 + 32 = 44
 
         D-RCP. O DICT01 tem teto próprio na política v0.5:
@@ -111,6 +113,53 @@ class TestCamadaDict:
         assert pix.scores["recipient"] == 36
         assert pix.status == "approved"
         assert pix.decision_rule == "D-OK"
+
+    @pytest.mark.parametrize(
+        "fraud_marker, triggered, points",
+        [("suspicious", "DICT02", 20), ("confirmed", "DICT03", 25)],
+        ids=["suspeita-dispara-dict02", "confirmada-dispara-dict03"],
+    )
+    def test_marcacao_de_fraude_vira_dict02_ou_dict03(self, dict_mock, fraud_marker, triggered, points):
+        """A marcação de fraude do destino no DICT: suspeita é DICT02 (+20), confirmada é DICT03 (+25).
+
+        A estatística fica no padrão (70) e o pagador é novo na base: no
+        eixo do destino só a marcação pesa, e o outro sinal do par fica
+        calado — o DICT respondeu, e a marcação é uma só. Sozinha, ela não
+        chega aos 40 do D-RCP: D-OK. O que ela abre é a porteira das
+        rejeições do destino, em test_rejeicoes.py.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        dict_mock.set_security_statistics(recipient.document, 70, fraud_marker=fraud_marker)
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.triggered() == {triggered}
+        assert pix.signal(triggered)["evidence"] == {"fraud_marker": fraud_marker}
+        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "DICT01", "DICT02", "DICT03"} - {triggered}
+        assert pix.scores == {"payer": 0, "recipient": points}
+        assert pix.status == "approved"
+
+    @pytest.mark.parametrize(
+        "fraud_marker",
+        ["none", "fraud", "SUSPICIOUS", 1, True],
+        ids=["none-em-texto", "fora-da-lista", "maiusculas", "numero", "booleano"],
+    )
+    def test_marcacao_fora_do_combinado_vira_dict_indisponivel(self, dict_mock, fraud_marker):
+        """Marcação que não é suspicious, confirmed ou null é resposta fora do combinado: a camada 3 inteira sai unavailable.
+
+        Vale também pra estatística que veio junto — a API não aproveita
+        metade de uma resposta que não entendeu. A estatística 12 no mesmo
+        corpo dispararia o DICT01 se fosse lida. D-OK.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        dict_mock.set_body(recipient.document, {"security_statistics": 12, "fraud_marker": fraud_marker})
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert {pix.signal_status(code) for code in ("DICT01", "DICT02", "DICT03")} == {"unavailable"}
+        assert pix.status == "approved"
 
     def test_mock_lento_vira_unavailable_e_a_decisao_sai(self, dict_mock):
         """O DICT que demora mais que o prazo não segura o Pix.

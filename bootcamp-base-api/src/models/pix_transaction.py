@@ -60,10 +60,8 @@ class PixTransaction(Base):
     ip = Column(String(45), nullable=False)
     latitude = Column(Numeric(9, 6))
     longitude = Column(Numeric(9, 6))
-    created_at = Column(DateTime, nullable=False, server_default=func.now())
     received_at = Column(DateTime(timezone=True), nullable=False)
-    evaluated_at = Column(DateTime(timezone=True), nullable=False)
-    evaluation_context = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, nullable=False, server_default=func.now())
 
     __table_args__ = (
         UniqueConstraint("pix_transaction_key"),

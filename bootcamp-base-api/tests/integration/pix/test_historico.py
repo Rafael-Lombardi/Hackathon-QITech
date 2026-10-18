@@ -29,10 +29,11 @@ class TestHistorico:
     def test_2fa_nao_confirmado_nao_ensina_o_aparelho(self):
         """Aparelho conhecido é aparelho com Pix APROVADO, e um 2FA não conta.
 
-        Preparo: 3 Pix nos 3 dias anteriores. Às 14h, um Pix de aparelho e
-        IP novos: D-ATO-2, 2FA. Às 14h10, o mesmo aparelho e o mesmo IP
-        tentam de novo — e continuam sem Pix aprovado, porque o 2FA nunca
-        foi confirmado: P03, P09 e P10 de novo, D-ATO-2 de novo.
+        Preparo: 3 Pix nos 3 dias anteriores. Às 14h, um Pix de R$ 50 de
+        aparelho e IP novos: P03 +18, P09 +6, P10 +12 — D-ATO-2, 2FA. Às
+        14h10, o mesmo aparelho e o mesmo IP tentam de novo — e continuam
+        sem Pix aprovado, porque o 2FA nunca foi confirmado: os mesmos três
+        sinais, e só eles (R$ 50 fica abaixo do L02), D-ATO-2 de novo.
 
         Se qualquer tentativa ensinasse o aparelho, a segunda do invasor
         passaria limpa.
@@ -49,7 +50,7 @@ class TestHistorico:
         assert second.http_status == 201
         assert second.status == "two_factor_required"
         assert second.decision_rule == "D-ATO-2"
-        assert second.triggered() >= {"P03", "P09", "P10"}
+        assert second.triggered() == {"P03", "P09", "P10"}
         assert second.signal("P03")["evidence"]["device_seen_before"] is False
 
     def test_cliente_novo_com_3_pix_em_2fa_nao_cai_no_d_ato_2(self, dict_mock):
@@ -76,12 +77,10 @@ class TestHistorico:
         dict_mock.set_security_statistics(fresh.document, 12)
         seed_pix(payer, fresh, days_before(T0, 3), expect="two_factor_required")
 
-        pix = post_pix(pix_payload(payer, fresh, T0), auto_register=False)
+        pix = post_pix(pix_payload(payer, fresh, T0))
 
         assert pix.http_status == 201
-        assert pix.signal_status("P03") == "triggered"
-        assert pix.signal_status("L02") == "not_triggered"
-        assert {pix.signal_status(code) for code in ("P09", "P10")} == {"unavailable"}
+        assert {pix.signal_status(code) for code in ACCESS_SIGNALS} == {"unavailable"}
         assert pix.scores["recipient"] == 52
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-RCP"

@@ -74,20 +74,21 @@ def _recipient_is_new(context: Context) -> bool:
 
 
 def _l02_new_device_over_limit(context: Context) -> Signal:
-    if context.device_trusted is None:
+    if _short_access_history(context):
         return policy.unavailable("L02")
     # A RFC escreve "P03 disparado e (valor > R$ 200 ou soma do dia >
-    # R$ 1.000)". Com o P03 da RFC ao pé da letra (aparelho sem registro
-    # nenhum com o pagador), a soma do dia seria sempre o próprio Pix, e
-    # a segunda metade nunca decidiria nada. Aqui aparelho novo é o que
-    # não tinha Pix aprovado antes de hoje: o limite do Banco Central pra
-    # dispositivo não cadastrado é diário, e assim o segundo e o terceiro
-    # Pix do dia no aparelho novo também entram na soma.
+    # R$ 1.000)". Com o P03 ao pé da letra (aparelho sem Pix aprovado do
+    # pagador), a soma do dia seria sempre o próprio Pix, e a segunda
+    # metade nunca decidiria nada. Aqui aparelho novo é o que não tinha
+    # Pix aprovado antes de HOJE, e a soma é a de hoje neste aparelho, de
+    # qualquer status: o limite do Banco Central pra dispositivo não
+    # cadastrado é diário, e assim o segundo e o terceiro Pix do dia no
+    # aparelho novo também entram na soma.
     payer = context.payer
     amount = context.transaction.amount
-    day_amount = payer.unregistered_device_day_amount + amount
+    day_amount = payer.device_day_amount + amount
     over_limit = amount > policy.NEW_DEVICE_PIX_LIMIT or day_amount > policy.NEW_DEVICE_DAY_LIMIT
-    if context.device_trusted is False and over_limit:
+    if not payer.device_known_before_today and over_limit:
         return policy.triggered("L02", {
             "amount": amount,
             "amount_threshold": policy.NEW_DEVICE_PIX_LIMIT,
@@ -99,10 +100,11 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
 
 
 def _p03_unknown_device(context: Context) -> Signal:
-    if context.device_trusted is None:
+    if _short_access_history(context):
         return policy.unavailable("P03")
-    if not context.device_trusted:
-        return policy.triggered("P03", {"device_registered": False, "device_seen_before": False})
+    payer = context.payer
+    if not payer.device_known:
+        return policy.triggered("P03", {"payer_prior_tx": payer.prior_attempts, "device_seen_before": False})
     return policy.not_triggered("P03")
 
 

@@ -9,8 +9,9 @@ class Customer(Base):
     Nasce na primeira vez que o documento aparece num payload, pelo
     CustomerRepository.get_or_create, e não muda depois. As regras por
     pessoa do motor agrupam aqui, somando todas as contas do documento, e
-    é por isso que o customer do pagador é a linha que o controller trava
-    (CustomerRepository.lock_for_pix; o porquê está no database.sql).
+    é por isso que a trava do controller é pelo documento do pagador
+    (CustomerRepository.lock_for_pix_document; o porquê está no
+    database.sql).
     """
 
     __tablename__ = "customer"

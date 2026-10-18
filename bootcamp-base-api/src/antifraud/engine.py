@@ -14,23 +14,23 @@ from antifraud.contract import (
     Axis,
     Context,
     EvidenceValue,
+    FraudMarker,
     Layer,
-    PixStatus,
     Signal,
     SignalStatus,
     Sufficiency,
 )
-from antifraud.layers import DecisionTreeLayer, DictSecurityLayer, InitialChecksLayer, DictSecurityStatisticsLayer
+from antifraud.layers import DecisionTreeLayer, DictSecurityLayer, DictSecurityStatisticsLayer, InitialChecksLayer
 from antifraud.policy import DecisionRule
 
 # As camadas, na ordem em que rodam, uma por linha — como as cascas de
 # middleware do app.py. A semelhança para aí: nenhuma camada interrompe
 # a seguinte, do jeito que o 403 do token interrompe a requisição. As
-# as camadas rodam sempre, a resposta mostra os 22 sinais, e rejeição só sai
-# da tabela de decisão. Desligar uma camada é apagar a linha dela, e as
-# outras não percebem, porque nenhuma lê o sinal da outra. A ordem
-# também não muda a resposta (os sinais saem na ordem do catálogo); ela
-# segue a da RFC só pra leitura.
+# camadas rodam sempre, a resposta mostra todos os sinais do catálogo, e
+# rejeição só sai da tabela de decisão. Desligar uma camada é apagar a
+# linha dela, e as outras não percebem, porque nenhuma lê o sinal da
+# outra. A ordem também não muda a resposta (os sinais saem na ordem do
+# catálogo); ela segue a da RFC só pra leitura.
 LAYERS: tuple[Layer, ...] = (
     InitialChecksLayer(),
     DecisionTreeLayer(),
@@ -41,6 +41,9 @@ LAYERS: tuple[Layer, ...] = (
 # Quantos sinais a frase do D-PAY e do D-RCP cita, do mais pesado pro
 # mais leve. Os outros continuam em metadata.signals.
 _REASON_MAX_SIGNALS = 3
+
+# As marcações do DICT que abrem a porteira das rejeições do destino.
+_ADVERSE_MARKERS = (FraudMarker.SUSPICIOUS, FraudMarker.CONFIRMED)
 
 _CATALOG_POSITION = {code: position for position, code in enumerate(policy.CATALOG)}
 
@@ -55,29 +58,10 @@ def evaluate(context: Context) -> Analysis:
         signals.extend(layer.evaluate(context))
     signals.sort(key=lambda signal: _CATALOG_POSITION[signal.code])
 
-    if not context.restriction_available:
-        raise RuntimeError("fonte de restrições indisponível; análise sem veredicto")
-
     triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
     payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
     recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
     rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
-
-    # Indisponibilidade só é fallback: não pode apagar restrição ou
-    # rejeição comprovável por outras fontes. Sinais dependentes do cadastro
-    # continuam unavailable e impedem as regras que exigem esses sinais.
-    if not context.device_registry_available and rule.name == "D-OK":
-        return Analysis(
-            status=PixStatus.TWO_FACTOR_REQUIRED,
-            decision_rule="D-DATA-UNAVAILABLE",
-            reasons=("Cadastro de dispositivos indisponível; 2FA obrigatório",),
-            payer_risk=payer_risk,
-            recipient_risk=recipient_risk,
-            payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
-            recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
-            policy_version=policy.POLICY_VERSION,
-            signals=tuple(signals),
-        )
 
     return Analysis(
         status=rule.status,
@@ -119,8 +103,6 @@ def _decide(
     triggered: Collection[str], payer_risk: int, recipient_risk: int, context: Context,
 ) -> DecisionRule:
     for rule in policy.DECISION_TABLE:
-        if rule.name == "D-RESTRICT-SIM" and not context.restriction_active:
-            continue
         if _matches(rule, triggered, payer_risk, recipient_risk, context):
             return rule
     raise RuntimeError("a DECISION_TABLE precisa terminar numa linha sem condição, como o D-OK")
@@ -132,21 +114,13 @@ def _matches(
 ) -> bool:
     if any(code not in triggered for code in rule.all_triggered):
         return False
+    if any(code in triggered for code in rule.none_triggered):
+        return False
     if rule.min_payer_risk is not None and payer_risk < rule.min_payer_risk:
         return False
     if rule.min_recipient_risk is not None and recipient_risk < rule.min_recipient_risk:
         return False
-    if rule.payer_external == "adverse" and not (
-        context.payer_external_adverse or context.payer_external_confirmed
-    ):
-        return False
-    if rule.payer_external == "confirmed" and not context.payer_external_confirmed:
-        return False
-    if rule.recipient_external == "adverse" and not (
-        context.recipient_external_adverse or context.recipient_external_confirmed
-    ):
-        return False
-    if rule.recipient_external == "confirmed" and not context.recipient_external_confirmed:
+    if rule.requires_recipient_adverse and context.dict_fraud_marker not in _ADVERSE_MARKERS:
         return False
     return True
 
@@ -158,24 +132,17 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
 
     É uma frase só: os sinais, um a um, já estão em metadata.signals.
     """
-    if rule.name == "D-RESTRICT-SIM":
-        return "Restrição ativa para a transação"
-    if rule.name in {"D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP", "D-REJ-CROSS"}:
-        if rule.name == "D-REJ-RCP":
-            return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
-        if rule.name == "D-REJ-CROSS":
-            return (
-                f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com evidência DICT adversa"
-            )
+    if rule.name == "D-REJ-ATO":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
+    if rule.name == "D-REJ-RCP":
+        return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
+    if rule.name == "D-REJ-CROSS":
+        return f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com marcação de fraude no DICT"
     if rule.name == "D-ATO-1":
         ratio = triggered["P06"].evidence["ratio"]
         return f"Dispositivo sem Pix aprovado deste pagador, com valor {_number(ratio)}x a mediana"
     if rule.name == "D-ATO-2":
-        evidence = triggered["P03"].evidence
-        prior = evidence.get("payer_prior_tx")
-        if prior is None:
-            return "Dispositivo não cadastrado e IP sem Pix aprovado deste pagador"
+        prior = triggered["P03"].evidence["payer_prior_tx"]
         return f"Dispositivo e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
     if rule.name == "D-PAY":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
@@ -220,14 +187,6 @@ def _join(items: list[str]) -> str:
     if len(items) < 2:
         return "".join(items)
     return f"{', '.join(items[:-1])} e {items[-1]}"
-
-
-def _opened(days: EvidenceValue) -> str:
-    if days == 0:
-        return "hoje"
-    if days == 1:
-        return "há 1 dia"
-    return f"há {_number(days)} dias"
 
 
 def _number(value: EvidenceValue) -> str:

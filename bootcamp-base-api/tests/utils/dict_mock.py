@@ -1,10 +1,12 @@
 """O roteiro do mock do DICT: o que ele responde, por documento, e o que ele recebeu.
 
 O DICT é o diretório do Banco Central; aqui é um MockServer que responde
-GET /security-statistics/{documento} com {"security_statistics": 70} para qualquer
-documento. Cada teste que trata da camada 3 escreve o roteiro do
-recebedor DELE — confiança baixa, resposta lenta, erro — e depois
-pergunta ao mock se a API ligou, para quem e quantas vezes.
+GET /security-statistics/{documento} com {"security_statistics": 70,
+"fraud_marker": null} para qualquer documento: a estatística de
+segurança e a marcação de fraude, numa resposta só. Cada teste que trata
+da camada 3 escreve o roteiro do recebedor DELE — estatística baixa,
+marcação de fraude, resposta lenta, erro — e depois pergunta ao mock se
+a API ligou, para quem e quantas vezes.
 
 O teste não cria o DictMock: pede a fixture dict_mock, de
 tests/conftest.py, que apaga no fim tudo o que o teste combinou.
@@ -58,9 +60,17 @@ class DictMock:
     def __init__(self) -> None:
         self._created: list[str] = []
 
-    def set_security_statistics(self, document: str, statistics) -> None:
-        """O DICT responde 200 com esta estatística para o documento."""
-        self._expect(document, {"statusCode": 200, "headers": _JSON, "body": {"security_statistics": statistics}})
+    def set_security_statistics(self, document: str, statistics, fraud_marker: str | None = None) -> None:
+        """O DICT responde 200 com esta estatística para o documento — e com a marcação, se houver.
+
+        fraud_marker é "suspicious", "confirmed" ou None (sem marcação, que
+        o DICT escreve como null).
+        """
+        self._expect(document, {
+            "statusCode": 200,
+            "headers": _JSON,
+            "body": {"security_statistics": statistics, "fraud_marker": fraud_marker},
+        })
 
     def set_delay(self, document: str, seconds: int, statistics: int = 0) -> None:
         """A resposta vem, mas só depois de `seconds` segundos.

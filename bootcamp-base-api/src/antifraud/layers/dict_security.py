@@ -1,20 +1,32 @@
-"""Evidência antifraude do DICT, separada de score interno do banco."""
+"""Camada 3 — as marcações de fraude do DICT: DICT02 e DICT03.
+
+O DICT guarda, além das estatísticas, as marcações de fraude que os
+participantes registram contra uma chave ou um documento (Manual
+Operacional do DICT, cap. 10 e 18): a suspeita, aberta por quem
+notificou, e a confirmada. Elas vêm na mesma consulta que traz a
+estatística do DICT01, e o controller entrega as duas no Context.
+
+Sem resposta do DICT, os dois sinais saem unavailable. Resposta sem
+marcação é not_triggered: aí o DICT olhou e não tinha nada contra o
+documento, e isso é informação, não falta dela.
+"""
 
 from antifraud import policy
-from antifraud.contract import Context, Signal
+from antifraud.contract import Context, FraudMarker, Signal
 
 
 class DictSecurityLayer:
-    """Mapeia marcações DICT simuladas em sinais auditáveis."""
-
     def evaluate(self, context: Context) -> list[Signal]:
-        assessment = context.recipient_dict_security_assessment
-        if assessment is None:
+        marker = context.dict_fraud_marker
+        if marker is None:
             return [policy.unavailable("DICT02"), policy.unavailable("DICT03")]
-        if assessment == "suspicious":
-            return [policy.triggered("DICT02", {"assessment": assessment}), policy.not_triggered("DICT03")]
-        if assessment == "confirmed_in_mock":
-            return [policy.not_triggered("DICT02"), policy.triggered("DICT03", {"assessment": assessment})]
-        if assessment == "unavailable":
-            return [policy.unavailable("DICT02"), policy.unavailable("DICT03")]
-        return [policy.not_triggered("DICT02"), policy.not_triggered("DICT03")]
+        return [
+            _marker_signal("DICT02", marker, FraudMarker.SUSPICIOUS),
+            _marker_signal("DICT03", marker, FraudMarker.CONFIRMED),
+        ]
+
+
+def _marker_signal(code: str, marker: FraudMarker, expected: FraudMarker) -> Signal:
+    if marker is expected:
+        return policy.triggered(code, {"fraud_marker": marker.value})
+    return policy.not_triggered(code)

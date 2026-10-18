@@ -12,8 +12,8 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.5 + a camada 3 (DICT01, com teto próprio). Fontes externas e
-# restrições são entradas de Context e não alteram o contrato HTTP.
+# RFC v0.5: a camada 3 do DICT com a estatística de segurança (DICT01,
+# teto próprio) e as marcações de fraude (DICT02 e DICT03).
 POLICY_VERSION = "v0.5.0"
 
 
@@ -271,7 +271,7 @@ CATALOG: dict[str, SignalSpec] = {
         granularity="recipient", cap_group="dict_security", points=20,
     ),
     "DICT03": SignalSpec(
-        name="Marcação de fraude confirmada na fixture DICT",
+        name="Marcação de fraude confirmada no DICT",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient", cap_group="dict_security", points=25,
     ),
@@ -339,50 +339,48 @@ MEDIUM_SUFFICIENCY_MIN_DAYS = 2
 class DecisionRule:
     """Uma linha da tabela de decisão.
 
-    Casa quando todos os sinais de all_triggered dispararam e as notas
-    mínimas, se houver, foram atingidas. Linha sem condição nenhuma casa
+    Casa quando todos os sinais de all_triggered dispararam, nenhum dos
+    de none_triggered disparou, as notas mínimas, se houver, foram
+    atingidas e, se a linha pede, o DICT tem marcação de fraude contra o
+    recebedor (suspeita ou confirmada). Linha sem condição nenhuma casa
     sempre.
     """
 
     name: str
     status: PixStatus
     all_triggered: tuple[str, ...] = ()
+    none_triggered: tuple[str, ...] = ()
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
-    # Evidência externa já normalizada pelo controller. Os valores aceitos
-    # são evidência DICT adversa (EXT02 ou EXT03) e confirmada (EXT03).
-    payer_external: str | None = None
-    recipient_external: str | None = None
+    requires_recipient_adverse: bool = False
 
 
-# Em ordem, vale a primeira linha que casar. Restrição e combinações de
-# rejeição ficam antes do fallback de 2FA. A evidência DICT adversa inclui
-# EXT02 ou EXT03; ela chega no Context já normalizada pela fonte correspondente
-# e funciona como gate da rejeição, não como pontos no eixo do pagador.
-# Sem essa evidência, notas altas continuam resultando em 2FA, reduzindo
-# falso positivo e mantendo o fallback seguro.
+# Em ordem, vale a primeira linha que casar. As rejeições vêm antes de
+# qualquer 2FA, e duas delas pedem a marcação de fraude do recebedor no
+# DICT: a marcação é a porteira da rejeição, e não ponto — os pontos dela
+# já estão no DICT02 e no DICT03. Sem marcação, nota alta continua dando
+# 2FA. É o lado que segura o falso positivo: rejeitar de vez fica pra
+# quem o sistema Pix inteiro já marcou, ou pra tomada de conta com todos
+# os sinais juntos.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
-    # Rejeições são avaliadas antes de qualquer friction. A restrição é
-    # uma decisão de fonte, não depende da nota calculada.
-    DecisionRule("D-RESTRICT-SIM", PixStatus.REJECTED),
+    # Aparelho novo, rajada, valor atípico e destinos inéditos ao mesmo
+    # tempo, com o pagador em 70 ou mais: é o dreno da conta tomada, e a
+    # única rejeição que não precisa do DICT.
     DecisionRule(
         "D-REJ-ATO", PixStatus.REJECTED,
         all_triggered=("P03", "P04", "P06", "P07"), min_payer_risk=70,
     ),
-    DecisionRule(
-        "D-REJ-PAY", PixStatus.REJECTED,
-        all_triggered=("P04", "P06", "P07"), min_payer_risk=70,
-        payer_external="adverse",
-    ),
+    # Destino marcado no DICT recebendo rajada de muita gente.
     DecisionRule(
         "D-REJ-RCP", PixStatus.REJECTED,
         all_triggered=("R02", "R03"), min_recipient_risk=55,
-        recipient_external="adverse",
+        requires_recipient_adverse=True,
     ),
+    # Destino marcado no DICT com os dois eixos já no limiar do 2FA.
     DecisionRule(
         "D-REJ-CROSS", PixStatus.REJECTED,
         min_payer_risk=40, min_recipient_risk=40,
-        recipient_external="adverse",
+        requires_recipient_adverse=True,
     ),
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),
     DecisionRule("D-ATO-2", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P09")),

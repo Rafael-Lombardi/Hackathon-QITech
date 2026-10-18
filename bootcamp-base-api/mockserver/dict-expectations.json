@@ -9,7 +9,8 @@
     "httpResponse": {
       "statusCode": 200,
       "body": {
-        "security_statistics": 70
+        "security_statistics": 70,
+        "fraud_marker": null
       }
     }
   },
@@ -23,7 +24,23 @@
     "httpResponse": {
       "statusCode": 200,
       "body": {
-        "security_statistics": 12
+        "security_statistics": 12,
+        "fraud_marker": "confirmed"
+      }
+    }
+  },
+  {
+    "id": "security-statistics-77777777777",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/77777777777"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 70,
+        "fraud_marker": "suspicious"
       }
     }
   },

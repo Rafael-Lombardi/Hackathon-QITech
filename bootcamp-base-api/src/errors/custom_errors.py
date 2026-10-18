@@ -47,9 +47,9 @@ class DictUnavailable(QIException):
 
     O DICT é o diretório de chaves Pix do Banco Central. Erro INTERNO: o
     DictConnector levanta e o controller captura — a camada 3 do motor, a
-    do DICT, vira "unavailable" e a decisão sai assim mesmo. O 503 só
-    aparece se alguém esquecer o except, e aí ao menos diz a verdade: quem
-    caiu foi o DICT.
+    do DICT, vira "unavailable" inteira e a decisão sai assim mesmo. O 503
+    só aparece se alguém esquecer o except, e aí ao menos diz a verdade:
+    quem caiu foi o DICT.
 
     reason vai parar no log. Se precisar citar o documento consultado,
     passe pelo mask_document antes.
@@ -60,6 +60,6 @@ class DictUnavailable(QIException):
     def __init__(self, reason) -> None:
         title = "DICT Unavailable"
         http_status = 503
-        description = f"DICT security evidence could not be obtained: {reason}."
-        translation = "Não foi possível consultar a evidência de segurança do DICT."
+        description = f"DICT security information could not be obtained: {reason}."
+        translation = "Não foi possível consultar a informação de segurança do DICT."
         super().__init__(title, self.code, http_status, description, translation)

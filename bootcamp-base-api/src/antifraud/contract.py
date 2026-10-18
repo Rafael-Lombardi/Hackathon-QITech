@@ -70,6 +70,22 @@ class Sufficiency(StrEnum):
     HIGH = "high"
 
 
+class FraudMarker(StrEnum):
+    """A marcação de fraude de um documento no DICT.
+
+    Além das estatísticas, o DICT guarda as marcações de fraude que os
+    participantes registram contra uma chave ou um documento (Manual
+    Operacional do DICT, cap. 10 e 18): a suspeita, aberta por quem
+    notificou, e a confirmada. NONE é o DICT dizendo que não há marcação.
+    DICT fora do ar não é marcação nenhuma: aí o Context carrega None, e
+    o DICT02 e o DICT03 saem unavailable.
+    """
+
+    NONE = "none"
+    SUSPICIOUS = "suspicious"
+    CONFIRMED = "confirmed"
+
+
 # O que a regra viu e com que limite comparou. Vai pra rule_result_data
 # e volta em metadata.signals, então só leva tipo que o JSON entende — e
 # nunca documento.
@@ -83,8 +99,10 @@ class Transaction:
 
     Só leva o que alguma regra lê. Aparelho, IP e canal o controller
     grava direto, e pro motor eles chegam já convertidos em histórico
-    (device_known, ip_known, DeviceHistory). Os documentos ficam fora do
-    repr: um log descuidado do Context não pode vazar CPF inteiro.
+    (device_known, ip_known, DeviceHistory); a geolocalização idem, como
+    a distância até os lugares de sempre (location_distance_km). Os
+    documentos ficam fora do repr: um log descuidado do Context não pode
+    vazar CPF inteiro.
     """
 
     amount: int  # centavos
@@ -96,8 +114,8 @@ class Transaction:
     # de todas as contas do titular.
     payer_account_age_days: int
     recipient_account_age_days: int
-    latitude: float | None = None
-    longitude: float | None = None
+    # Quilômetros até o centro habitual mais perto; None sem localização
+    # no Pix ou sem histórico que forme um padrão (o G01 fica unavailable).
     location_distance_km: float | None = None
 
     def __post_init__(self) -> None:
@@ -124,11 +142,11 @@ class Transaction:
 class PayerHistory:
     """O passado do pagador, pelo documento: todas as contas dele somadas.
 
-    Anterior é o que já estava gravado com received_at antes do instante de
-    avaliação do servidor. O Pix atual ainda não foi gravado (isso só acontece depois da
-    decisão), e a regra que precisa dele soma o atual uma vez. A exceção
-    são as contagens de distintos, que já chegam contando o atual; o
-    comentário do campo avisa.
+    Anterior é o que já estava gravado com received_at antes do instante
+    de avaliação do servidor. O Pix atual ainda não foi gravado (isso só
+    acontece depois da decisão), e a regra que precisa dele soma o atual
+    uma vez. A exceção são as contagens de distintos, que já chegam
+    contando o atual; o comentário do campo avisa.
 
     As contagens de rajada pegam qualquer status, porque a rajada em si
     é o sinal: contar só os aprovados deixaria invisível o invasor que
@@ -170,8 +188,6 @@ class PayerHistory:
     # Pix aprovado com este aparelho antes da 0h de hoje, em São Paulo
     device_known_before_today: bool
     device_day_amount: int  # hoje, com este aparelho, qualquer status
-    # Hoje, em todos os aparelhos sem cadastro autoritativo, qualquer status.
-    unregistered_device_day_amount: int = 0
 
 
 @dataclass(frozen=True)
@@ -197,7 +213,7 @@ class RecipientHistory:
     HIGH_SUFFICIENCY_MIN_ATTEMPTS e HIGH_SUFFICIENCY_MIN_DAYS, do
     policy.py. Quem lê os dois é só a suficiência e a pergunta de se o
     recebedor já apareceu. attempts_10m e distinct_payers_1h precisam ser
-    exatos, porque vão pra evidência e pro motivo do D-REJ.
+    exatos, porque vão pra evidência.
     """
 
     prior_attempts: int
@@ -226,10 +242,9 @@ class PairHistory:
 class Context:
     """Tudo o que o motor sabe de um Pix.
 
-    Quem monta é o controller: o histórico vem dos repositories, a
-    estatística/evidência de segurança do DICT vem do connector e
-    device_trusted vem do cadastro autoritativo.
-    O motor só lê.
+    Quem monta é o controller: o histórico vem dos repositories, e a
+    estatística de segurança e a marcação de fraude do recebedor vêm do
+    connector do DICT, numa consulta só. O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem
     exatos da própria definição. Pagador sem Pix anterior
@@ -245,21 +260,10 @@ class Context:
     device: DeviceHistory
     recipient: RecipientHistory
     pair: PairHistory
-    dict_security_statistics: int | None  # mock normalizado; None quando DICT falhou
-    # Cadastro autoritativo, independente de Pix aprovados. None só deve
-    # ocorrer quando a fonte de cadastro estiver indisponível.
-    device_trusted: bool | None = None
-    device_registry_available: bool = True
-    # Entradas de fontes externas/restrições. Permanecem internas ao motor:
-    # o contrato HTTP continua recebendo somente o Pix normalizado.
-    restriction_active: bool = False
-    restriction_available: bool = True
-    payer_external_adverse: bool = False
-    payer_external_confirmed: bool = False
-    recipient_external_adverse: bool = False
-    recipient_external_confirmed: bool = False
-    payer_dict_security_assessment: str | None = None
-    recipient_dict_security_assessment: str | None = None
+    # Os dois vêm da mesma resposta do DICT sobre o recebedor, e os dois
+    # ficam None quando o DICT falhou: a camada 3 inteira sai unavailable.
+    dict_security_statistics: int | None
+    dict_fraud_marker: FraudMarker | None
 
 
 @dataclass(frozen=True)

@@ -19,7 +19,9 @@ import pytest
 
 from tests.utils import INTERNAL_TOKEN
 from tests.utils.clock import T0, at, minutes_before
-from tests.utils.identities import cpf_with_wrong_check_digit, format_document, new_cpf, new_payer, new_recipient
+from tests.utils.identities import (
+    cpf_with_wrong_check_digit, format_document, new_cpf, new_device, new_ip, new_payer, new_recipient,
+)
 from tests.utils.pix import get_pix, pix_payload, post_pix, post_raw, seed, seed_pix
 from tests.utils.requisition import ClientRequisition
 
@@ -65,11 +67,12 @@ MAX_BODY_BYTES = 16 * 1024
 
 
 def challenge_example() -> dict:
-    """O payload de exemplo do desafio, trocando só o id e os dois documentos.
+    """O payload de exemplo do desafio, trocando o id, os documentos, o aparelho e o IP.
 
-    Contas, aparelho e IP ficam como no PDF, e se repetem a cada rodada
-    da suíte. Os documentos não podem: com os do exemplo, a segunda
-    rodada veria o Pix da primeira como histórico do mesmo pagador.
+    As contas ficam como no PDF. Documentos, aparelho e IP não podem se
+    repetir: com os do exemplo, a segunda rodada da suíte veria o Pix da
+    primeira como histórico do mesmo pagador, e o aparelho acumularia um
+    pagador por rodada até o P08 disparar.
     """
     return {
         "id": f"pix-{uuid4().hex}",
@@ -89,9 +92,9 @@ def challenge_example() -> dict:
             "owner": {"document_number": format_document(new_cpf())},
         },
         "source": {
-            "device_id": "dvc-9f2c71a8",
+            "device_id": new_device(),
             "channel": "app",
-            "ip": "198.51.100.23",
+            "ip": new_ip(),
             "geolocation": {"latitude": -23.56, "longitude": -46.65},
         },
     }
@@ -202,19 +205,22 @@ WITHIN_CONTRACT = [
 
 class TestContrato:
     def test_payload_de_exemplo_do_desafio_volta_201(self):
-        """O exemplo do PDF do desafio entra e sai decidido.
+        """O exemplo do PDF do desafio entra e sai aprovado, com a conta do README.
 
-        22h15 em São Paulo com R$ 1.500: o L01 dispara. A conta de destino,
-        aberta em 10/10 às 9h, tem 7 dias e 13 horas no momento do Pix, e
-        o R01 (menos de 7 dias) fica calado. O status não é conferido
-        aqui: o aparelho do exemplo volta a cada rodada da suíte, e o
-        histórico dele cresce — os cenários conferem decisão; este confere
-        que o contrato do desafio é aceito.
+        22h15 em São Paulo com R$ 1.500: o L01 dispara (+8). A conta de
+        destino, aberta em 10/10 às 9h, tem 7 dias e 13 horas no momento
+        do Pix, e o R01 (menos de 7 dias) fica calado. É o primeiro Pix do
+        pagador na base: os sinais de histórico saem unavailable, o DICT
+        responde o padrão (estatística 70, sem marcação), e sobra o L01.
+
+            pagador 8, destino 0: D-OK, aprovado
         """
         pix = post_pix(challenge_example())
 
         assert pix.http_status == 201
-        assert pix.status in PIX_STATUSES
+        assert pix.status == "approved"
+        assert pix.decision_rule == "D-OK"
+        assert pix.scores == {"payer": 8, "recipient": 0}
         assert pix.signal_status("L01") == "triggered"
         assert pix.signal_status("R01") == "not_triggered"
 
@@ -222,9 +228,9 @@ class TestContrato:
         """O corpo da análise tem os três campos do contrato do desafio, e o metadata, os seis dele.
 
         key é o uuid4 da análise; metadata leva a versão da política, a
-        linha da tabela, os motivos, as duas notas, a suficiência e os 19
-        sinais, na ordem do catálogo. Os números são int de verdade — um
-        10.0 no lugar do 10 é o mesmo valor pro Python e outro JSON pro
+        linha da tabela, os motivos, as duas notas, a suficiência e os
+        sinais do catálogo, na ordem dele. Os números são int de verdade —
+        um 10.0 no lugar do 10 é o mesmo valor pro Python e outro JSON pro
         cliente.
         """
         pix = post_pix(pix_payload(new_payer(), new_recipient(), at(T0, 22), amount=150000))
@@ -240,8 +246,7 @@ class TestContrato:
         assert set(metadata) == {"policy_version", "decision_rule", "reasons", "scores", "evidence_sufficiency", "signals"}
         assert metadata["policy_version"] == "v0.5.0"
         assert metadata["decision_rule"] in {
-            "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP",
-            "D-REJ-CROSS", "D-ATO-1", "D-ATO-2", "D-PAY", "D-RCP", "D-OK",
+            "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2", "D-PAY", "D-RCP", "D-OK",
         }
         assert isinstance(metadata["reasons"], list)
         assert metadata["reasons"]

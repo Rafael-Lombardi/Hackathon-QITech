@@ -279,6 +279,7 @@ class PixHistoryRepository:
         if not qualified:
             return None
         return min(_distance_km(latitude, longitude, center["lat"], center["lon"]) for center in qualified)
+
     def get_payer_features(
         self,
         *,
