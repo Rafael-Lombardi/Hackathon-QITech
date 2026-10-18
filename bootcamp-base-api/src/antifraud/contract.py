@@ -244,7 +244,7 @@ class Context:
     device: DeviceHistory
     recipient: RecipientHistory
     pair: PairHistory
-    trust_factor: int | None  # 0 a 100; None quando o DICT falhou
+    dict_security_statistics: int | None  # mock normalizado; None quando DICT falhou
     # Cadastro autoritativo, independente de Pix aprovados. None só deve
     # ocorrer quando a fonte de cadastro estiver indisponível.
     device_trusted: bool | None = None
@@ -257,6 +257,8 @@ class Context:
     payer_external_confirmed: bool = False
     recipient_external_adverse: bool = False
     recipient_external_confirmed: bool = False
+    payer_dict_security_assessment: str | None = None
+    recipient_dict_security_assessment: str | None = None
 
 
 @dataclass(frozen=True)

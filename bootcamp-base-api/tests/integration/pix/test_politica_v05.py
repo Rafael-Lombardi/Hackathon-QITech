@@ -9,7 +9,7 @@ from tests.utils.dict_mock import DictMock
 from tests.utils.identities import new_device, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed, seed_pix
 from tests.utils.device_registry import seed_devices
-from tests.utils.risk_sources import seed_external_risk, seed_restrictions
+from tests.utils.risk_sources import seed_dict_security_evidence, seed_restrictions
 
 
 def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
@@ -20,7 +20,7 @@ def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
         for payer, moment in zip(payers, minutes_before(T0, 4))
     ])
     dict_mock.set_trust(recipient.document, 12)
-    seed_external_risk([{
+    seed_dict_security_evidence([{
         "customer_document": recipient.document,
         "axis": "recipient",
         "assessment": assessment,
@@ -140,7 +140,7 @@ class TestPoliticaRfcV05:
             ],
             expect=["approved", "approved", "approved", "two_factor_required"],
         )
-        seed_external_risk([{
+        seed_dict_security_evidence([{
             "customer_document": payer.document,
             "axis": "payer",
             "assessment": "suspicious",
@@ -215,7 +215,7 @@ class TestPoliticaRfcV05:
 
             R02 +16 + R03 +20 = 36, limitado a 35 (rede)
             DICT01 +32, teto separado = 32
-            recipient = 67
+            recipient = 87 (DICT01 32 + rede 35 + DICT02 20)
 
         O ponto essencial é a evidência externa: sem ela, a mesma rede fica
         em D-RCP/2FA; com ela e recipient >=55, D-REJ-RCP rejeita.
@@ -226,7 +226,8 @@ class TestPoliticaRfcV05:
 
         assert response.status == "rejected"
         assert response.decision_rule == "D-REJ-RCP"
-        assert response.scores["recipient"] == 67
+        assert response.scores["recipient"] == 87
+        assert response.signal_status("DICT02") == "triggered"
 
     @pytest.mark.parametrize("assessment", ["clear", "unavailable"])
     def test_inteligencia_clear_ou_indisponivel_nao_rejeita(self, dict_mock: DictMock, assessment):
@@ -244,6 +245,8 @@ class TestPoliticaRfcV05:
         assert response.status == "two_factor_required"
         assert response.decision_rule == "D-RCP"
         assert response.scores["recipient"] == 67
+        expected_signal_status = "not_triggered" if assessment == "clear" else "unavailable"
+        assert response.signal_status("DICT02") == expected_signal_status
 
     def test_rejeicao_cross_combina_os_dois_eixos(self, dict_mock: DictMock):
         """D-REJ-CROSS — risco relevante nos dois eixos.
@@ -268,7 +271,7 @@ class TestPoliticaRfcV05:
         ])
         recipient = new_recipient()
         dict_mock.set_trust(recipient.document, 12)
-        seed_external_risk([{
+        seed_dict_security_evidence([{
             "customer_document": recipient.document,
             "axis": "recipient",
             "assessment": "confirmed_in_mock",
@@ -282,3 +285,4 @@ class TestPoliticaRfcV05:
         assert response.decision_rule == "D-REJ-CROSS"
         assert response.scores["payer"] >= 40
         assert response.scores["recipient"] >= 40
+        assert response.signal_status("DICT03") == "triggered"

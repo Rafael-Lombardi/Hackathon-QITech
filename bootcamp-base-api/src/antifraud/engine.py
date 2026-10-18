@@ -20,7 +20,7 @@ from antifraud.contract import (
     SignalStatus,
     Sufficiency,
 )
-from antifraud.layers import DecisionTreeLayer, InitialChecksLayer, TrustFactorLayer
+from antifraud.layers import DecisionTreeLayer, DictSecurityLayer, InitialChecksLayer, TrustFactorLayer
 from antifraud.policy import DecisionRule
 
 # As camadas, na ordem em que rodam, uma por linha — como as cascas de
@@ -35,6 +35,7 @@ LAYERS: tuple[Layer, ...] = (
     InitialChecksLayer(),
     DecisionTreeLayer(),
     TrustFactorLayer(),
+    DictSecurityLayer(),
 )
 
 # Quantos sinais a frase do D-PAY e do D-RCP cita, do mais pesado pro

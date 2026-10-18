@@ -50,6 +50,8 @@ CATALOG = {
     "REL01": (2, "Contraparte", "recipient", "pair", 8),
     "REL02": (2, "Contraparte", "recipient", "pair", -8),
     "DICT01": (3, "Contraparte", "recipient", "recipient", 32),
+    "DICT02": (3, "Contraparte", "recipient", "recipient", 20),
+    "DICT03": (3, "Contraparte", "recipient", "recipient", 25),
 }
 
 SIGNAL_KEYS = {"code", "layer", "family", "axis", "granularity", "status", "points"}

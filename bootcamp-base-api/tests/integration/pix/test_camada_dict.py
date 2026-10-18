@@ -53,7 +53,7 @@ class TestCamadaDict:
         assert pix.scores["recipient"] == points
         assert pix.status == "approved"
         if expected == "triggered":
-            assert pix.signal("DICT01")["evidence"] == {"trust_factor": 29, "threshold": 30}
+            assert pix.signal("DICT01")["evidence"] == {"security_statistics": 29, "threshold": 30}
 
     def test_primeiro_pix_entre_contas_novas_com_dict_baixo_pede_2fa(self, dict_mock):
         """Conta nova pagando conta nova que o DICT avalia mal: 2FA já no primeiro Pix.

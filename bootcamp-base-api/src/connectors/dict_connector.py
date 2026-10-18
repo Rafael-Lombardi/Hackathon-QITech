@@ -11,10 +11,9 @@ class DictConnector(RestConnector):
 
     DICT é o Diretório de Identificadores de Contas Transacionais, o
     cadastro do Banco Central que liga chave Pix a conta. O de verdade
-    devolve contadores de fraude por CPF/CNPJ (Manual do DICT, cap. 18);
-    o time aceitou a ficção de um DICT que já responde a nota: o trust
-    factor do titular de um documento, de 0 a 100, e maior é mais
-    confiável. É a parte de I/O da camada 3 do motor, e quem faz o papel
+    devolve estatísticas de segurança e marcações de fraude; o mock reduz
+    as estatísticas a um indicador numérico para os cenários. É a parte de
+    I/O da camada 3 do motor, e quem faz o papel
     do DICT é o mock do docker-compose.yml (mockserver/README.md).
 
     Repare no que este connector NÃO decide: o que fazer quando o DICT
@@ -33,8 +32,8 @@ class DictConnector(RestConnector):
             internal_token=DICT_API_INTERNAL_TOKEN,
         )
 
-    def get_trust_factor(self, document_number: str) -> int:
-        """Devolve o trust factor do titular do documento, de 0 a 100.
+    def get_security_statistics(self, document_number: str) -> int:
+        """Devolve indicador numérico mockado das estatísticas DICT.
 
         O documento chega só com dígitos: quem normaliza é o
         utils/document_number.py, antes daqui. Qualquer falha levanta
@@ -57,19 +56,21 @@ class DictConnector(RestConnector):
         if response.status != 200:
             raise self._unavailable(masked_document, f"status {response.status}")
 
-        trust_factor = None
+        security_statistics = None
         if isinstance(response.json, dict):
-            trust_factor = response.json.get("trust_factor")
+            security_statistics = response.json.get("security_statistics")
+            if security_statistics is None:  # formato antigo do mock
+                security_statistics = response.json.get("trust_factor")
 
         # Repare no `type(...) is int` no lugar do isinstance: em Python,
         # True é um int que vale 1, e um {"trust_factor": true} passaria
         # como trust factor 1. O 70.0 e o "70" também ficam de fora — o
         # combinado é um inteiro, e resposta fora do combinado não vira
         # número por boa vontade nossa.
-        if type(trust_factor) is not int or not 0 <= trust_factor <= 100:
-            raise self._unavailable(masked_document, "body without an integer trust_factor from 0 to 100")
+        if type(security_statistics) is not int or not 0 <= security_statistics <= 100:
+            raise self._unavailable(masked_document, "body without integer DICT security statistics")
 
-        return trust_factor
+        return security_statistics
 
     def _unavailable(self, masked_document: str, reason: str) -> DictUnavailable:
         # Toda desistência deixa uma linha dizendo por quê. Sem ela, o

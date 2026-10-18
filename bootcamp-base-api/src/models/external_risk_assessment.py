@@ -1,4 +1,4 @@
-"""Avaliações de inteligência externa usadas pela política antifraude."""
+"""Evidência antifraude simulada retornada pelo DICT."""
 
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint
 
@@ -6,8 +6,8 @@ from models.base import Base
 from models.customer import Customer
 
 
-class ExternalRiskAssessment(Base):
-    """Snapshot seedado de reputação para um documento e eixo de risco."""
+class DictSecurityEvidence(Base):
+    """Snapshot de segurança do DICT para um documento e eixo de risco."""
 
     __tablename__ = "external_risk_assessment"
 
@@ -27,3 +27,7 @@ class ExternalRiskAssessment(Base):
         UniqueConstraint("occurrence_id"),
         Index("external_risk_customer_axis_idx", "customer_id", "axis", "valid_from"),
     )
+
+
+# Compatibilidade interna durante transição do nome antigo da tabela/model.
+ExternalRiskAssessment = DictSecurityEvidence

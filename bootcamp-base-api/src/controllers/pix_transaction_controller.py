@@ -125,7 +125,9 @@ class PixTransactionController(BaseController):
         # Pix espera o DICT. Medido com 120 Pix e o DICT lento: 6 Pix/s
         # segurando a conexão, 12 devolvendo.
         self.session.rollback()
-        trust_factor = self._get_trust_factor(pix_request.destination_account.document_number)
+        dict_security_statistics = self._get_dict_security_statistics(
+            pix_request.destination_account.document_number
+        )
 
         payer, recipient = self._get_or_create_customers(pix_request)
         source_account = self._get_or_create_account(payer, pix_request.source_account)
@@ -138,7 +140,7 @@ class PixTransactionController(BaseController):
             return replayed
 
         context, risk_evidence, context_snapshot = self._build_context(
-            pix_request, payer, recipient, trust_factor, destination_account.id, received_at
+            pix_request, payer, recipient, dict_security_statistics, destination_account.id, received_at
         )
         analysis = evaluate(context)
 
@@ -216,8 +218,8 @@ class PixTransactionController(BaseController):
 
         return self._recorded_analysis(recorded)
 
-    def _get_trust_factor(self, document_number: str) -> int | None:
-        """O trust factor do recebedor no DICT, ou None se o DICT falhou.
+    def _get_dict_security_statistics(self, document_number: str) -> int | None:
+        """Indicador mockado das estatísticas DICT, ou None se falhou.
 
         É aqui que "o DICT caiu" vira "a camada 3 não tem como responder":
         o motor recebe None, o DICT01 sai unavailable e o Pix é decidido
@@ -225,7 +227,7 @@ class PixTransactionController(BaseController):
         no log.
         """
         try:
-            return self.dict_connector.get_trust_factor(document_number)
+            return self.dict_connector.get_security_statistics(document_number)
         except DictUnavailable:
             return None
 
@@ -266,7 +268,7 @@ class PixTransactionController(BaseController):
         pix_request: PixRequest,
         payer: Customer,
         recipient: Customer,
-        trust_factor: int | None,
+        dict_security_statistics: int | None,
         recipient_account_id: int,
         received_at: datetime,
     ) -> tuple[Context, list[dict], dict]:
@@ -370,7 +372,7 @@ class PixTransactionController(BaseController):
             device=device_history,
             recipient=recipient_history,
             pair=pair_history,
-            trust_factor=trust_factor,
+            dict_security_statistics=dict_security_statistics,
             device_trusted=device_trusted,
             device_registry_available=device_registry_available,
             restriction_active=risk_inputs["restriction_active"],
@@ -379,6 +381,8 @@ class PixTransactionController(BaseController):
             payer_external_confirmed=risk_inputs["payer_external_confirmed"],
             recipient_external_adverse=risk_inputs["recipient_external_adverse"],
             recipient_external_confirmed=risk_inputs["recipient_external_confirmed"],
+            payer_dict_security_assessment=risk_inputs["payer_dict_security_assessment"],
+            recipient_dict_security_assessment=risk_inputs["recipient_dict_security_assessment"],
         )
         snapshot = json.loads(json.dumps(asdict(context), default=str))
         snapshot["history_evaluated_at"] = history_time.isoformat()
@@ -393,7 +397,7 @@ class PixTransactionController(BaseController):
         transaction_date: datetime,
         captured_at: datetime,
     ) -> dict:
-        """Lê as fontes seedadas uma vez e congela flags para o motor."""
+        """Lê DICT security evidence uma vez e congela flags para o motor."""
         try:
             restriction = self.risk_repository.active_restriction(
                 payer_customer_id=payer_customer_id,
@@ -401,10 +405,10 @@ class PixTransactionController(BaseController):
                 recipient_account_id=recipient_account_id,
                 at=transaction_date,
             )
-            payer_assessment = self.risk_repository.external_assessment(
+            payer_assessment = self.risk_repository.dict_security_evidence(
                 customer_id=payer_customer_id, axis="payer", at=transaction_date,
             )
-            recipient_assessment = self.risk_repository.external_assessment(
+            recipient_assessment = self.risk_repository.dict_security_evidence(
                 customer_id=recipient_customer_id, axis="recipient", at=transaction_date,
             )
         except SQLAlchemyError:
@@ -415,6 +419,8 @@ class PixTransactionController(BaseController):
                 "payer_external_confirmed": False,
                 "recipient_external_adverse": False,
                 "recipient_external_confirmed": False,
+                "payer_dict_security_assessment": None,
+                "recipient_dict_security_assessment": None,
                 "evidence": [],
             }
 
@@ -446,7 +452,7 @@ class PixTransactionController(BaseController):
         for assessment in (payer_assessment, recipient_assessment):
             if assessment is not None:
                 evidence.append({
-                    "source_type": "external_risk",
+                "source_type": "dict_security",
                     "scope": None,
                     "assessment": assessment.assessment,
                     "axis": assessment.axis,
@@ -466,6 +472,8 @@ class PixTransactionController(BaseController):
             "payer_external_confirmed": payer_confirmed,
             "recipient_external_adverse": recipient_adverse,
             "recipient_external_confirmed": recipient_confirmed,
+            "payer_dict_security_assessment": payer_assessment.assessment if payer_assessment else None,
+            "recipient_dict_security_assessment": recipient_assessment.assessment if recipient_assessment else None,
             "evidence": evidence,
         }
 

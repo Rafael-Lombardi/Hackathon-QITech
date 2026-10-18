@@ -16,13 +16,13 @@ Nenhuma camada lê o sinal de outra; quem junta é o engine, nos tetos, nas nota
 
 ## Regras
 
-Os 19 sinais, na ordem da resposta. Valores em reais; no payload são centavos (R$ 1.000 é `100000`). Como ler:
+Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (R$ 1.000 é `100000`). Como ler:
 
 - abaixo do nome: camada · família · eixo. **Família** é o rótulo do desafio, que sai na resposta (Velocity é ritmo); **grupo de teto**, por onde os pontos somam;
 - **pagador** e **recebedor** são o documento, somando as contas: o laranja — quem cede a conta para receber dinheiro de golpe e repassar — com três contas é um recebedor só;
 - as janelas contam no tempo do negócio (`transaction_date`), até o Pix atual; "hoje" é o dia civil de São Paulo. Rajadas contam qualquer status, para quem insiste depois do 2FA seguir visível;
 - **`unavailable`** quando falta histórico: L02, P03, P09 e P10 pedem 3 Pix aprovados do pagador (antes, quase todo aparelho é novo); P06, 10 aprovados em 7 dias distintos; as demais, algum Pix anterior do pagador, do aparelho (P08) ou do recebedor (R02 a R04); DICT01, um DICT que responda. A camada 1 sempre responde;
-- os números estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py), e a versão da política (`v0.3.2`) vai gravada em cada análise. Os que não citam o Banco Central são da RFC do time ([`RFC3.pdf`](RFC3.pdf)), sem âncora externa: o "Por quê" dá a lógica ou o custo de errar.
+- os números estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py), e a versão da política (`v0.5.0`) vai gravada em cada análise. `DICT01` é estatística de segurança mockada; `DICT02`/`DICT03` são evidências antifraude DICT suspeita/confirmada na fixture.
 
 **A conta que guia os pesos:** 2FA pela nota começa em 40, e nenhum sinal chega lá sozinho — o mais pesado, o DICT01, tem 32 —, então cada peso é escolhido pela combinação que leva a 40. As siglas D-* são as linhas da [decisão](#como-as-regras-viram-decisão).
 
@@ -113,7 +113,7 @@ O pagador tinha 10 Pix aprovados de R$ 1.000, um por dia, sempre do mesmo aparel
   "key": "aa80f536-0ec7-42d1-b9e8-6e76fbf10fd8",
   "status": "two_factor_required",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-ATO-1",
     "reasons": ["Dispositivo sem Pix aprovado deste pagador, com valor 6,2x a mediana"],
     "scores": {"payer": 46, "recipient": 8},
@@ -186,7 +186,7 @@ Num banco novo, volta **201** (encurtado):
   "key": "b1f7f4da-ee18-403d-903d-9cd63c41fa60",
   "status": "approved",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-OK",
     "reasons": ["Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)"],
     "scores": {"payer": 8, "recipient": 0},

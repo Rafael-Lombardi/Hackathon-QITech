@@ -71,7 +71,7 @@ class TestCenariosRfc:
         assert pix.sufficiency == {"payer": "unavailable", "recipient": "unavailable"}
         assert pix.triggered() == set()
         assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L02", "P03", "DICT01"}
-        assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS - {"L02", "P03"}
+        assert pix.signals_with("unavailable") == (HISTORICAL_SIGNALS - {"L02", "P03"}) | {"DICT02", "DICT03"}
 
     def test_primeiro_pix_noturno_alto_aprova_com_l01(self):
         """Cenário 02 — o primeiro Pix na base, R$ 5.000 às 3h da manhã.
@@ -94,7 +94,7 @@ class TestCenariosRfc:
         assert pix.triggered() == {"L01"}
         assert pix.signal("L01")["points"] == 8
         assert pix.scores == {"payer": 8, "recipient": 0}
-        assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS - {"L02", "P03"}
+        assert pix.signals_with("unavailable") == (HISTORICAL_SIGNALS - {"L02", "P03"}) | {"DICT02", "DICT03"}
 
     def test_destino_novo_isolado_aprova(self):
         """Cenário 03 — R$ 350 para uma conta aberta há 2 dias, de um pagador regular.

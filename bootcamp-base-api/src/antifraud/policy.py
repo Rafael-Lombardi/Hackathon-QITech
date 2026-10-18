@@ -260,10 +260,20 @@ CATALOG: dict[str, SignalSpec] = {
     # pagador, menos o próprio titular (REL03) e quem já tem relação
     # recorrente com ele (REL02).
     "DICT01": SignalSpec(
-        name="Destino com baixa confiança no DICT",
+        name="Estatística de segurança DICT desfavorável",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient",
         cap_group="recipient_trust", points=32,
+    ),
+    "DICT02": SignalSpec(
+        name="Marcação de fraude suspeita no DICT",
+        layer=3, family="Contraparte", axis=Axis.RECIPIENT,
+        granularity="recipient", cap_group="dict_security", points=20,
+    ),
+    "DICT03": SignalSpec(
+        name="Marcação de fraude confirmada na fixture DICT",
+        layer=3, family="Contraparte", axis=Axis.RECIPIENT,
+        granularity="recipient", cap_group="dict_security", points=25,
     ),
 }
 
@@ -299,6 +309,7 @@ CAPS: dict[str, tuple[int, int]] = {
     "payer_behavior": (0, 45),
     "recipient_network": (0, 35),
     "recipient_trust": (0, 32),
+    "dict_security": (0, 25),
     "relation": (-10, 8),
 }
 

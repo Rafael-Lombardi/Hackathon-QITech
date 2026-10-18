@@ -24,7 +24,7 @@ import pytest
 
 from tests.utils.pix import PixResponse, get_pix, post_pix, seed
 from tests.utils.device_registry import seed_devices
-from tests.utils.risk_sources import seed_external_risk, seed_restrictions
+from tests.utils.risk_sources import seed_dict_security_evidence, seed_restrictions
 
 
 @dataclass(frozen=True)
@@ -77,7 +77,7 @@ class Scenario:
         # diretamente, para que o caso teste o mesmo caminho de produção.
         seed_devices(self.authoritative.get("devices", []))
         seed_restrictions(self.authoritative.get("restrictions", []))
-        seed_external_risk(self.authoritative.get("external_risk", []))
+        seed_dict_security_evidence(self.authoritative.get("dict_security", self.authoritative.get("external_risk", [])))
         seed(list(self.history), list(statuses), register_devices=False)
         response = post_pix(self.request, auto_register=False)
         if response.http_status != 201:

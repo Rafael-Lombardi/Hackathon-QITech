@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy import case, or_, select
 
 from database import Context
-from models import ExternalRiskAssessment, RiskRestriction
+from models import DictSecurityEvidence, RiskRestriction
 
 
 @dataclass(frozen=True)
@@ -24,7 +24,7 @@ class RestrictionSnapshot:
 
 
 @dataclass(frozen=True)
-class ExternalRiskAssessmentSnapshot:
+class DictSecurityEvidenceSnapshot:
     axis: str
     assessment: str
     provenance: str
@@ -37,7 +37,7 @@ class ExternalRiskAssessmentSnapshot:
 
 
 class RiskRepository:
-    """Consulta restrições e inteligência externa vigentes no instante do Pix."""
+    """Consulta restrições e evidência antifraude do DICT."""
 
     def __init__(self, context: Context) -> None:
         self.session = context.db_session
@@ -84,31 +84,31 @@ class RiskRepository:
         row = rows[0]
         return RestrictionSnapshot(row.scope, row.provenance, row.occurrence_id, row.active_from, row.active_until)
 
-    def external_assessment(
+    def dict_security_evidence(
         self,
         *,
         customer_id: int,
         axis: str,
         at: datetime,
-    ) -> ExternalRiskAssessmentSnapshot | None:
-        """Retorna o assessment vigente mais recente para o eixo informado."""
+    ) -> DictSecurityEvidenceSnapshot | None:
+        """Retorna evidência de segurança DICT vigente para o eixo."""
         row = self.session.scalar(
-            select(ExternalRiskAssessment)
+            select(DictSecurityEvidence)
             .where(
-                ExternalRiskAssessment.customer_id == customer_id,
-                ExternalRiskAssessment.axis == axis,
-                ExternalRiskAssessment.valid_from <= at,
+                DictSecurityEvidence.customer_id == customer_id,
+                DictSecurityEvidence.axis == axis,
+                DictSecurityEvidence.valid_from <= at,
                 or_(
-                    ExternalRiskAssessment.valid_until.is_(None),
-                    ExternalRiskAssessment.valid_until > at,
+                    DictSecurityEvidence.valid_until.is_(None),
+                    DictSecurityEvidence.valid_until > at,
                 ),
             )
-            .order_by(ExternalRiskAssessment.valid_from.desc(), ExternalRiskAssessment.id.desc())
+            .order_by(DictSecurityEvidence.valid_from.desc(), DictSecurityEvidence.id.desc())
             .limit(1)
         )
         if row is None:
             return None
-        return ExternalRiskAssessmentSnapshot(
+        return DictSecurityEvidenceSnapshot(
             axis=row.axis,
             assessment=row.assessment,
             provenance=row.provenance,

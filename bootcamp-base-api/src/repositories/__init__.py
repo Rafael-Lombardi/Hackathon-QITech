@@ -4,7 +4,7 @@ from repositories.pix_transaction_repository import PixTransactionRepository
 from repositories.pix_history_repository import PixHistoryRepository
 from repositories.device_registry_repository import DeviceRegistryRepository
 from repositories.risk_repository import (
-    ExternalRiskAssessmentSnapshot,
+    DictSecurityEvidenceSnapshot,
     RestrictionSnapshot,
     RiskRepository,
 )

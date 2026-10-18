@@ -413,10 +413,10 @@ CREATE TABLE pix_transaction_risk_evidence(
     observed_at                    TIMESTAMPTZ,
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_id, source_type, occurrence_id),
-    CHECK(source_type IN ('restriction', 'external_risk')),
+    CHECK(source_type IN ('restriction', 'dict_security')),
     CHECK(axis IS NULL OR axis IN ('payer', 'recipient')),
     CHECK(source_type <> 'restriction' OR scope IS NOT NULL),
-    CHECK(source_type <> 'external_risk' OR axis IS NOT NULL),
+    CHECK(source_type <> 'dict_security' OR axis IS NOT NULL),
     CHECK(provenance <> ''),
     CHECK(occurrence_id <> ''),
     CHECK(valid_until IS NULL OR valid_until > valid_from)

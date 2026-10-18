@@ -16,7 +16,7 @@ def test_scenario_declarativo_confere_post_e_get():
 
     unavailable = {code: "unavailable" for code in (
         "G01", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
-        "R02", "R03", "R04", "REL01", "REL02",
+        "R02", "R03", "R04", "REL01", "REL02", "DICT02", "DICT03",
     )}
     not_triggered = {code: "not_triggered" for code in ("P01", "L01", "R01", "REL03", "L02", "DICT01")}
 
@@ -41,7 +41,7 @@ def test_scenario_device_cadastrado_nao_e_observado():
     payload = pix_payload(payer, recipient, T0)
     unavailable = {code: "unavailable" for code in (
         "G01", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
-        "R02", "R03", "R04", "REL01", "REL02",
+        "R02", "R03", "R04", "REL01", "REL02", "DICT02", "DICT03",
     )}
     not_triggered = {code: "not_triggered" for code in (
         "P01", "L01", "R01", "REL03", "P03", "L02", "DICT01",

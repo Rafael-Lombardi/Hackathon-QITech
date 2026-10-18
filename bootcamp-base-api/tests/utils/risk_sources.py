@@ -1,4 +1,4 @@
-"""Seeds reproduzíveis para restrições e inteligência externa.
+"""Seeds reproduzíveis para restrições e evidência antifraude do DICT.
 
 Esses dados ficam separados de ``seed`` de Pix: são fontes autoritativas
 observadas pelo motor, não eventos que devem alterar o histórico.
@@ -123,8 +123,8 @@ def seed_restrictions(restrictions: list[dict]) -> None:
     engine.dispose()
 
 
-def seed_external_risk(assessments: list[dict]) -> None:
-    """Insere snapshots ``clear``, ``suspicious`` ou ``confirmed_in_mock``."""
+def seed_dict_security_evidence(assessments: list[dict]) -> None:
+    """Insere evidência DICT ``clear``, ``suspicious`` ou confirmada."""
     if not assessments:
         return
     engine = _engine()
@@ -165,3 +165,6 @@ def seed_external_risk(assessments: list[dict]) -> None:
                 },
             )
     engine.dispose()
+
+
+seed_external_risk = seed_dict_security_evidence

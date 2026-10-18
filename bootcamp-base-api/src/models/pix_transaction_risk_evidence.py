@@ -11,7 +11,7 @@ class PixTransactionRiskEvidence(Base):
 
     A tabela não representa o estado atual da fonte. Ela representa o que a
     análise consultou, permitindo reconstruir a decisão mesmo depois que uma
-    fixture, lista de restrição ou assessment for alterado.
+    fixture DICT ou lista de restrição for alterada.
     """
 
     __tablename__ = "pix_transaction_risk_evidence"
@@ -34,10 +34,10 @@ class PixTransactionRiskEvidence(Base):
     __table_args__ = (
         UniqueConstraint("pix_transaction_id", "source_type", "occurrence_id"),
         Index("pix_transaction_risk_evidence_transaction_idx", "pix_transaction_id"),
-        CheckConstraint("source_type IN ('restriction', 'external_risk')"),
+        CheckConstraint("source_type IN ('restriction', 'dict_security')"),
         CheckConstraint("axis IS NULL OR axis IN ('payer', 'recipient')"),
         CheckConstraint("source_type <> 'restriction' OR scope IS NOT NULL"),
-        CheckConstraint("source_type <> 'external_risk' OR axis IS NOT NULL"),
+        CheckConstraint("source_type <> 'dict_security' OR axis IS NOT NULL"),
         CheckConstraint("provenance <> ''"),
         CheckConstraint("occurrence_id <> ''"),
         CheckConstraint("valid_until IS NULL OR valid_until > valid_from"),
