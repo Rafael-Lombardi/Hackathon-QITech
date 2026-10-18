@@ -38,8 +38,9 @@ Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (
 | **L01** Valor alto no período noturno<br>camada 1 · Limite · pagador | Hora de São Paulo das 20h às 5h59 **e** valor acima de R$ 1.000. | 20h às 6h · > R$ 1.000 · **+8** · limite, teto 15 | O limite noturno do Banco Central (R$ 1.000 das 20h às 6h), criado contra o sequestro relâmpago. Aqui é só um sinal fraco: o cliente pode ter pedido aumento desse limite, e o payload não diz qual é o dele. |
 | **R01** Conta destino recém-aberta<br>camada 1 · Contraparte · destino | Conta de destino do Pix (o ISPB, código de 8 dígitos do banco, mais agência e número) aberta há menos de 7 dias. | < 7 dias · **+12** · rede do destino, teto 35 | O laranja abre a conta para receber o golpe e esvaziar logo. Sozinho passa: conta nova recebendo o primeiro Pix é comum (cenário 03 da RFC). Pesa mais que o P01 porque o pagador já é cliente nosso, e o recebedor não. |
 | **REL03** Mesmo titular<br>camada 1 · Contraparte · destino | Documento do pagador igual ao do recebedor. | **-5** · relação, de -10 a +8 | Mandar dinheiro para si mesmo, entre bancos, é comum. Desconta 5, menos que a relação recorrente: autotransferência não é golpe, mas também não basta para aprovar. |
-| **L02** Valor acima do limite para dispositivo novo<br>camada 2 · Limite · pagador | Aparelho sem Pix aprovado do pagador antes de hoje **e** (valor acima de R$ 200 **ou** soma de hoje nele, com o atual, acima de R$ 1.000). | > R$ 200 por Pix · > R$ 1.000 no dia · **+10** · limite, teto 15 | A regra do Banco Central para aparelho não cadastrado: o golpista operando a conta da vítima a partir do aparelho dele. Não sabemos o que o banco cadastrou; temos o nosso histórico. |
-| **P03** Dispositivo sem Pix aprovado do pagador<br>camada 2 · Perfil · pagador | Nenhum Pix aprovado do pagador, por qualquer conta, com este `device_id`. | **+18** · comportamento, teto 45 | Tomada de conta: a conta operada de outro aparelho. Troca de celular acontece, e 18 sozinho passa; com valor atípico (D-ATO-1) ou IP novo (D-ATO-2), pede 2FA. Só Pix aprovado ensina o aparelho: senão a 2ª tentativa do invasor passaria limpa. |
+| **L02** Valor acima do limite para dispositivo novo<br>camada 2 · Limite · pagador | Aparelho sem vínculo ativo no cadastro autoritativo **e** (valor acima de R$ 200 **ou** soma de hoje nele, com o atual, acima de R$ 1.000). | > R$ 200 por Pix · > R$ 1.000 no dia · **+10** · limite, teto 15 | A regra do Banco Central para aparelho não cadastrado: o golpista operando a conta da vítima a partir do aparelho dele. O histórico calcula a soma; o cadastro decide se o aparelho é confiável. |
+| **G01** Localização distante do padrão<br>camada 2 · Localização · pagador | Distância acima de 300 km dos centros habituais, quando há ao menos 10 observações em 7 dias; as últimas 24 h não treinam o padrão. | > 300 km · **+6** · comportamento, teto 45 | Deslocamento impossível ajuda a reconhecer tomada de conta, mas viagem é normal: sozinho não cria fricção. |
+| **P03** Dispositivo não confiável do pagador<br>camada 2 · Perfil · pagador | O `device_id` não possui vínculo ativo no cadastro autoritativo do pagador. | **+18** · comportamento, teto 45 | Tomada de conta: a conta operada de outro aparelho. Troca de celular acontece, e 18 sozinho passa; com valor atípico (D-ATO-1) ou IP novo (D-ATO-2), pede 2FA. |
 | **P04** Muitas tentativas em 5 min<br>camada 2 · Velocity · pagador | 5 ou mais Pix do pagador nos últimos 5 min, contando o atual. | ≥ 5 em 5 min · **+20** · rajada do pagador, teto 25 | O ritmo de quem esvazia a conta: acesso remoto, malware que dispara transferências, a sequência que a falsa central pede. Quem paga contas faz um Pix de cada vez, e rapidez sozinha passa (20, cenário 08 da RFC). |
 | **P05** Montante alto na última hora<br>camada 2 · Montante · pagador | Soma dos Pix do pagador na última hora, com o atual, acima de R$ 8.000. | > R$ 8.000 em 1 h · **+15** · rajada do pagador, teto 25 | O mesmo esvaziamento, visto pelo dinheiro: quem fraciona para passar por baixo de um limite por Pix soma alto na hora. Mais baixo, pegaria quem paga as contas do mês de uma vez; mais alto, deixaria passar o esvaziamento em parcelas. |
 | **P06** Valor muito acima do padrão<br>camada 2 · Perfil · pagador | Valor maior que 5 vezes a mediana dos Pix aprovados do pagador **e** a partir de R$ 1.000. | > 5 × a mediana · ≥ R$ 1.000 · **+18** · comportamento, teto 45 | Na falsa central e no falso parente, a vítima paga muito mais do que costuma. Mediana, e não média: um Pix de R$ 5.000 entre vinte de R$ 50 leva a média a R$ 286. 5 vezes deixa passar a compra maior que o normal; o piso tira o troco. |
@@ -56,7 +57,7 @@ Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (
 | **DICT02** Marcação de fraude suspeita no DICT<br>camada 3 · Contraparte · destino | O DICT possui uma marcação de fraude suspeita para o recebedor. | fixture `suspicious` · **+20** · evidência DICT, teto 25 | Evidência adversa declarada, mas ainda não confirmada; participa das rejeições demonstrativas quando combinada com outros sinais. |
 | **DICT03** Marcação de fraude confirmada na fixture<br>camada 3 · Contraparte · destino | A fixture possui confirmação de fraude para o recebedor. | fixture `confirmed_in_mock` · **+25** · evidência DICT, teto 25 | Evidência mais forte da demonstração; não é confirmação regulatória nem prova produzida pelo DICT produtivo. |
 
-Os grupos de teto. O pagador chega no máximo a 95, e o destino a 75; o preço do teto é que o segundo indício de um grupo vale menos que o primeiro.
+Os grupos de teto. O pagador chega no máximo a 95, e o destino a 100; o preço do teto é que o segundo indício de um grupo vale menos que o primeiro. A resposta persiste `raw`, `applied`, `floor` e `cap` de cada grupo em `metadata.family_contributions`.
 
 | Grupo (no código) | Sinais | Faixa | Por quê |
 |---|---|---|---|
@@ -66,17 +67,18 @@ Os grupos de teto. O pagador chega no máximo a 95, e o destino a 75; o preço d
 | comportamento (`payer_behavior`) | P03, P06, P07, P08, P09, P10 | 0 a 45 | o maior grupo, porque é onde mora a tomada de conta |
 | rede do destino (`recipient_network`) | R01, R02, R03, R04 | 0 a 35 | abaixo de 40: a rede sozinha nunca pede 2FA, e a combinação completa é a rejeição (D-REJ) |
 | estatística DICT (`dict_security_statistics`) | DICT01 | 0 a 32 | um sinal só, e o teto é o próprio peso: a evidência DICT soma por fora da rede |
+| marcação DICT (`dict_security`) | DICT02, DICT03 | 0 a 25 | suspeita e confirmação mockada compartilham teto; a confirmação já o preenche |
 | relação (`relation`) | REL01, REL02, REL03 | -10 a +8 | o único que desce, e no máximo 10: relação antiga não apaga sinal grave |
 
-**Ajustes à RFC v0.3:**
+**Desvios deliberados da RFC:**
 
 - **DICT01 (camada 3) é novo**, com teto próprio desde a versão histórica v0.3.2: dividindo o da rede, conta recém-aberta com nota ruim parava em 35, aprovada.
-- **Conhecido e relação exigem Pix aprovado** (P03, P07, P09, P10, REL01, REL02), e a pré-condição de aparelho e IP conta 3 aprovados: o 2FA não volta para a API e não pode ensinar o aparelho.
-- **L02:** aparelho novo é o sem Pix aprovado antes de hoje; com o "nunca visto" da RFC, a soma do dia seria só o próprio Pix.
+- **Conhecido e relação exigem Pix aprovado** (P07, P09, P10, REL01, REL02), e a pré-condição de IP conta 3 aprovados: o 2FA não volta para a API e não pode ensinar comportamento.
+- **P03/L02:** confiança do aparelho vem do cadastro autoritativo; histórico continua responsável pelas somas e perfis.
 - **REL02:** 3 aprovados, o primeiro há 7 dias ou mais, sem rejeição nem 2FA recente: só relação provada.
 - **A suficiência só informa:** cada regra tem a própria pré-condição de histórico.
 - **D-RCP a partir de 40, sem o teto de 69:** com o destino em até 75, os piores iriam para o D-OK; vão para 2FA, porque rejeição só sai do D-REJ.
-- **A concorrência** usa advisory lock transacional pelo documento do pagador e lock determinístico das linhas de customer.
+- **A concorrência** trava pagador e recebedor e fixa, depois das travas, um corte monotônico de avaliação: ordem de chegada não pode esconder uma transação já concluída.
 
 ## Como as regras viram decisão
 
@@ -130,6 +132,11 @@ O pagador tinha 10 Pix aprovados de R$ 1.000, um por dia, sempre do mesmo aparel
     "reasons": ["Dispositivo sem Pix aprovado deste pagador, com valor 6,2x a mediana"],
     "scores": {"payer": 46, "recipient": 8},
     "evidence_sufficiency": {"payer": "medium", "recipient": "unavailable"},
+    "family_contributions": {
+      "limit": {"axis": "payer", "raw": 10, "applied": 10, "floor": 0, "cap": 15},
+      "payer_behavior": {"axis": "payer", "raw": 36, "applied": 36, "floor": 0, "cap": 45},
+      "relation": {"axis": "recipient", "raw": 8, "applied": 8, "floor": -10, "cap": 8}
+    },
     "signals": [
       {"code": "L02", "layer": 2, "granularity": "payer", "family": "Limite", "axis": "payer", "status": "triggered", "points": 10, "evidence": {"amount": 620000, "amount_threshold": 20000, "device_day_amount": 620000, "device_seen_before_today": false, "device_day_amount_threshold": 100000}},
       {"code": "P03", "layer": 2, "granularity": "payer", "family": "Perfil", "axis": "payer", "status": "triggered", "points": 18, "evidence": {"payer_prior_tx": 10, "device_seen_before": false}},
@@ -168,7 +175,7 @@ curl -s -X POST http://localhost:3000/pix/transaction \
   -d '{
     "id": "pix-000123",
     "amount": 150000,
-    "transaction_date": "2026-10-17T22:15:00-03:00",
+    "transaction_date": "'"$(date --iso-8601=seconds)"'",
     "source_account": {
       "branch": "0001",
       "account_number": "88213",
@@ -207,19 +214,20 @@ Num banco novo, volta **201** (encurtado):
 }
 ```
 
-O GET devolve a mesma análise; o POST repetido dá **200**, e o mesmo `id` com outro conteúdo, **409**. Os testes, com a stack de pé, levam uns 12 s:
+O trecho acima mostra a chamada feita no período noturno; fora dele, L01 não dispara e a nota do pagador cai de 8 para 0. O GET devolve a mesma análise; o POST repetido dá **200**, e o mesmo `id` com outro conteúdo, **409**. Para os testes, recrie a API em ambiente `test`, único que aceita o relógio injetado:
 
 ```bash
 uv venv --python 3.11 .venv && uv pip install -r requirements-dev.txt
 source .venv/bin/activate
+APP_ENV=test docker compose up -d --build --force-recreate --wait
 pytest
 ```
 
-Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre os 18 cenários históricos da RFC; os dois lados dos limiares que a RFC lista, mais P07, P08, REL02, DICT01, a pré-condição de 3 aprovados, a suficiência e o teto do corpo; D-PAY e D-RCP em 39 e 40; os tetos de grupo que dá para passar; o mesmo `id` em corrida, Pix cruzados, conta conjunta e o R$ 1 milhão da política histórica v0.3.2. Mapa: [`tests/integration/pix/README.md`](bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](bootcamp-base-api/README.md#7-quando-dá-errado).
+Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre 195 testes: os 18 cenários históricos da RFC; fronteiras; G01; cadastro de aparelhos; DICT; recibos; auditabilidade por grupo; e concorrência, inclusive a inversão entre ordem de chegada e ordem de avaliação. Mapa: [`tests/integration/pix/README.md`](bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](bootcamp-base-api/README.md#7-quando-dá-errado).
 
 ## Modelagem de dados
 
-Seis tabelas, em [`database.sql`](bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
+Onze tabelas, em [`database.sql`](bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
 
 | Tabela | O que guarda |
 |---|---|
@@ -227,8 +235,13 @@ Seis tabelas, em [`database.sql`](bootcamp-base-api/database/database.sql), cada
 | `pix_signal_status` | os três estados de um sinal |
 | `customer` | quem paga ou recebe, um por documento (só dígitos, `UNIQUE`); é a linha que a trava segura |
 | `account` | uma conta de um customer, em qualquer banco: `UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, customer_id)`. Conta conjunta vira uma linha por titular, e o ISPB fica `NULL` na origem, que o contrato não traz |
-| `pix_transaction` | um Pix: o payload inteiro (JSONB), as colunas que o motor leu e a decisão explicada. As notas são colunas, para calibrar os pesos com uma consulta; `UNIQUE(external_id)` é a idempotência |
+| `device_registry` | vínculos autoritativos entre pagador e aparelho, com período de validade |
+| `risk_restriction` | restrições duras, prioritárias à pontuação |
+| `external_risk_assessment` | evidência externa de risco usada pelas camadas adicionais |
+| `pix_transaction` | um Pix: payload, relógios de recebimento/avaliação, contexto, decisão, notas e contribuições por grupo. `UNIQUE(external_id)` reforça a idempotência |
+| `pix_transaction_receipt` | ciclo idempotente `processing`/`failed`/`completed`, lease, primeiro recebimento e erro |
 | `pix_transaction_rule_result` | um sinal avaliado por linha, 22 por Pix, com estado, pontos e evidência: é o `metadata.signals` |
+| `pix_transaction_risk_evidence` | snapshot normalizado das evidências usadas em cada eixo |
 
 **Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino da RFC v0.3: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `received_at`, mais `account(customer_id)`, que leva das contas ao documento.
 

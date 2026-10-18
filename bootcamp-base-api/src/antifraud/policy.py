@@ -38,6 +38,11 @@ RECIPIENT_ATTEMPTS_WINDOW = timedelta(minutes=10)  # attempts_10m
 RECIPIENT_PAYERS_WINDOW = timedelta(hours=1)  # distinct_payers_1h
 PAIR_ANOMALY_WINDOW = timedelta(days=7)  # recent_anomaly
 
+# O Pix precisa representar o instante que está sendo autorizado agora.
+# Cinco minutos absorvem atraso de rede/filas sem deixar o cliente escolher
+# livremente o horário usado por L01 e pela idade das contas.
+TRANSACTION_DATE_MAX_SKEW = timedelta(minutes=5)
+
 
 # ────────────────────────────────────────────────────────────────────
 # Limiares

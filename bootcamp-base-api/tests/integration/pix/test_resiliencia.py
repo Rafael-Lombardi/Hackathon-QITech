@@ -11,7 +11,7 @@ from repositories.device_registry_repository import DeviceRegistryRepository
 from repositories.pix_transaction_repository import PixTransactionRepository
 from tests.utils.clock import T0
 from tests.utils.identities import new_payer, new_recipient
-from tests.utils.pix import pix_payload, post_pix
+from tests.utils.pix import get_pix, pix_payload, post_pix
 from tests.utils.risk_sources import seed_restrictions
 
 
@@ -54,6 +54,7 @@ def test_owner_expirado_nao_conclui_receipt_reclamado_por_outro_owner():
     assert transaction.http_status == 201
 
     lookup = Context()
+    lookup.get_or_create_session()
     lookup_repository = PixTransactionRepository(lookup)
     persisted_transaction = lookup_repository.get_by_external_id(transaction_payload["id"])
     assert persisted_transaction is not None
@@ -65,6 +66,7 @@ def test_owner_expirado_nao_conclui_receipt_reclamado_por_outro_owner():
     receipt_payload = {"id": f"lease-{uuid4()}"}
 
     first = Context()
+    first.get_or_create_session()
     first_repository = PixTransactionRepository(first)
     first_receipt, first_claimed = first_repository.claim_receipt(
         external_id=receipt_payload["id"], payload=receipt_payload, now=received_at,
@@ -74,6 +76,7 @@ def test_owner_expirado_nao_conclui_receipt_reclamado_por_outro_owner():
     first.db_session.commit()
 
     second = Context()
+    second.get_or_create_session()
     second_repository = PixTransactionRepository(second)
     second_receipt, second_claimed = second_repository.claim_receipt(
         external_id=receipt_payload["id"], payload=receipt_payload, now=expired_at,
@@ -103,6 +106,7 @@ def test_owner_expirado_nao_conclui_receipt_reclamado_por_outro_owner():
         second.db_session.close()
 
     verification = Context()
+    verification.get_or_create_session()
     try:
         persisted_receipt = PixTransactionRepository(verification).get_receipt(receipt_payload["id"])
         assert persisted_receipt is not None
@@ -110,3 +114,27 @@ def test_owner_expirado_nao_conclui_receipt_reclamado_por_outro_owner():
         assert persisted_receipt.owner_token == second_token
     finally:
         verification.db_session.close()
+
+
+def test_get_distingue_receipt_em_processamento_e_com_falha():
+    now = T0.astimezone(timezone.utc)
+    processing_id = f"processing-{uuid4()}"
+    failed_id = f"failed-{uuid4()}"
+    context = Context()
+    context.get_or_create_session()
+    repository = PixTransactionRepository(context)
+    try:
+        repository.claim_receipt(external_id=processing_id, payload={"id": processing_id}, now=now)
+        failed, _ = repository.claim_receipt(external_id=failed_id, payload={"id": failed_id}, now=now)
+        context.db_session.commit()
+        repository.mark_receipt_failed(failed, owner_token=failed.owner_token, reason="simulated")
+        context.db_session.commit()
+    finally:
+        context.db_session.close()
+
+    processing = get_pix(processing_id)
+    failed_response = get_pix(failed_id)
+    assert processing.http_status == 409
+    assert processing.body["code"] == "QIT001004"
+    assert failed_response.http_status == 503
+    assert failed_response.body["code"] == "QIT001005"

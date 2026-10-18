@@ -9,7 +9,14 @@ from connectors import DictConnector
 from controllers.base_controller import BaseController
 from controllers.pix_request import AccountData, PixRequest, parse_pix_request
 from dtos import PixTransactionDTO
-from errors import DictUnavailable, PixTransactionIdConflict, PixTransactionNotFound
+from errors import (
+    DictUnavailable,
+    InvalidSchema,
+    PixTransactionEvaluationFailed,
+    PixTransactionIdConflict,
+    PixTransactionNotFound,
+    PixTransactionProcessing,
+)
 from models import Account, Customer, PixTransaction
 from repositories import (
     AccountRepository,
@@ -88,12 +95,14 @@ class PixTransactionController(BaseController):
                 replayed = self._wait_for_replay(pix_request)
                 if replayed is not None:
                     return replayed, False
-                raise PixTransactionIdConflict(pix_request.external_id)
+                self._raise_receipt_state(pix_request.external_id)
             replayed = self._replay_if_recorded(pix_request)
             if replayed is not None:
                 return replayed, False
             raise PixTransactionIdConflict(pix_request.external_id)
         owner_token = receipt.owner_token
+        received_at = receipt.received_at
+        self._validate_transaction_date(pix_request.transaction_date, received_at)
         # Make the claim durable before external I/O or risk evaluation.
         self.session.commit()
 
@@ -143,12 +152,18 @@ class PixTransactionController(BaseController):
 
         self.customer_repository.lock_for_pix_many(customer_ids=(payer.id, recipient.id))
 
+        evaluated_at = self.pix_history_repository.next_evaluation_time(
+            payer_customer_id=payer.id,
+            recipient_customer_id=recipient.id,
+            requested_at=received_at,
+        )
+
         replayed = self._replay_if_recorded(pix_request)
         if replayed is not None:
             return replayed, False
 
         context, risk_evidence, context_snapshot = self._build_context(
-            pix_request, payer, recipient, dict_security_statistics, destination_account.id, received_at
+            pix_request, payer, recipient, dict_security_statistics, destination_account.id, evaluated_at
         )
         analysis = evaluate(context)
 
@@ -157,7 +172,6 @@ class PixTransactionController(BaseController):
         # CONFLICT (external_id) DO NOTHING espera o outro commitar, desiste
         # sem erro e devolve None. Aí a análise do outro já está gravada, e
         # este responde como num reenvio — 200 ou 409, nunca 500.
-        evaluated_at = datetime.now(timezone.utc)
         pix_transaction = self._create_pix_transaction(
             pix_request, analysis, source_account, destination_account,
             received_at=received_at, evaluated_at=evaluated_at, evaluation_context=context_snapshot,
@@ -210,9 +224,28 @@ class PixTransactionController(BaseController):
         pix_transaction = self.pix_transaction_repository.get_by_external_id(external_id=external_id)
 
         if pix_transaction is None:
-            raise PixTransactionNotFound(external_id)
+            receipt = self.pix_transaction_repository.get_receipt(external_id)
+            if receipt is None:
+                raise PixTransactionNotFound(external_id)
+            if receipt.state == "processing":
+                raise PixTransactionProcessing(external_id)
+            raise PixTransactionEvaluationFailed(external_id)
 
         return self._recorded_analysis(pix_transaction)
+
+    def _raise_receipt_state(self, external_id: str) -> None:
+        receipt = self.pix_transaction_repository.get_receipt(external_id)
+        if receipt is not None and receipt.state == "failed":
+            raise PixTransactionEvaluationFailed(external_id)
+        raise PixTransactionProcessing(external_id)
+
+    def _validate_transaction_date(self, transaction_date: datetime, received_at: datetime) -> None:
+        skew = abs(transaction_date - received_at)
+        if skew > policy.TRANSACTION_DATE_MAX_SKEW:
+            minutes = int(policy.TRANSACTION_DATE_MAX_SKEW.total_seconds() // 60)
+            raise InvalidSchema(
+                f"transaction_date must be within {minutes} minutes of the server receipt time"
+            )
 
     def _replay_if_recorded(self, pix_request: PixRequest) -> dict | None:
         """A análise já gravada com este id, se houver — ou 409, se o conteúdo mudou.
@@ -531,6 +564,7 @@ class PixTransactionController(BaseController):
             received_at=received_at,
             evaluated_at=evaluated_at,
             evaluation_context=evaluation_context,
+            family_contributions=analysis.family_contributions,
         )
 
     def _signal_rows(self, analysis: Analysis) -> list[dict]:

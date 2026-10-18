@@ -74,6 +74,7 @@ class PixTransactionDTO:
                     "payer": pix_transaction.payer_sufficiency,
                     "recipient": pix_transaction.recipient_sufficiency,
                 },
+                "family_contributions": pix_transaction.family_contributions,
                 "signals": signals,
             },
         }

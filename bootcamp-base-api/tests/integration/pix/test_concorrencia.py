@@ -15,11 +15,13 @@ quase nunca.
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
+import time
 from threading import Barrier
 
 from tests.utils.clock import T0, minutes_before
 from tests.utils.identities import new_payer, new_recipient
 from tests.utils.pix import PixResponse, get_pix, pix_payload, post_pix, seed, seed_pix
+from tests.utils.dict_mock import dict_timeout
 
 ROUNDS = 3
 
@@ -37,6 +39,24 @@ def post_together(payloads: list[dict]) -> list[PixResponse]:
 
 
 class TestConcorrencia:
+    def test_ordem_de_avaliacao_invertida_ainda_conta_pix_concluido(self, dict_mock):
+        """DICT lento inverte a ordem; corte pós-lock inclui quem terminou primeiro."""
+        payer, base = new_payer(), new_recipient()
+        slow_recipient, fast_recipient = new_recipient(), new_recipient()
+        seed_pix(payer, base, minutes_before(T0, 3))
+        dict_mock.set_delay(slow_recipient.document, int(dict_timeout()) + 2, statistics=70)
+
+        slow_payload = pix_payload(payer, slow_recipient, T0)
+        fast_payload = pix_payload(payer, fast_recipient, T0)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            slow = pool.submit(post_pix, slow_payload)
+            time.sleep(0.15)
+            fast = pool.submit(post_pix, fast_payload)
+            responses = [slow.result(), fast.result()]
+
+        assert [response.http_status for response in responses] == [201, 201]
+        assert sorted(response.signal_status("P04") for response in responses) == ["not_triggered", "triggered"]
+
     def test_concorrencia_mesmo_pagador_conta_uma_vez(self):
         """Cenário 15 — dois Pix do mesmo pagador ao mesmo tempo, na fronteira do P04.
 

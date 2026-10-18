@@ -229,6 +229,31 @@ class PixHistoryRepository:
         self.session = context.db_session
         self.pix_transaction_repository = PixTransactionRepository(context)
 
+    def next_evaluation_time(
+        self, *, payer_customer_id: int, recipient_customer_id: int, requested_at: datetime,
+    ) -> datetime:
+        """Clock cut captured after locks, strictly after relevant completed evaluations."""
+        latest = self.session.scalar(text("""
+            SELECT max(evaluated_at)
+            FROM (
+                SELECT pix.evaluated_at
+                FROM account source
+                JOIN pix_transaction pix ON pix.source_account_id = source.id
+                WHERE source.customer_id = :payer_customer_id
+                UNION ALL
+                SELECT pix.evaluated_at
+                FROM account destination
+                JOIN pix_transaction pix ON pix.destination_account_id = destination.id
+                WHERE destination.customer_id = :recipient_customer_id
+            ) relevant
+        """), {
+            "payer_customer_id": payer_customer_id,
+            "recipient_customer_id": recipient_customer_id,
+        })
+        if latest is None or requested_at > latest:
+            return requested_at
+        return latest + timedelta(microseconds=1)
+
     def get_location_distance_km(
         self, *, payer_customer_id: int, transaction_date: datetime,
         latitude: float | None, longitude: float | None,

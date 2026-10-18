@@ -29,7 +29,7 @@ def qi_exception_to_response(exception: QIException) -> JSONResponse:
         "translation": exception.translation,
         "code": exception.code,
     }
-    return JSONResponse(status_code=exception.http_status, content=body)
+    return JSONResponse(status_code=exception.http_status, content=body, headers=exception.headers)
 
 
 def describe_validation_error(error: dict) -> str:

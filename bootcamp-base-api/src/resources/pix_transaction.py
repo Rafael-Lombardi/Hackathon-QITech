@@ -6,6 +6,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
 from controllers import PixTransactionController
+from errors import InvalidSchema
 from utils.schema_handler import SchemaHandler
 
 
@@ -53,13 +54,16 @@ class PixTransactionResource:
     def on_post(self, payload: dict, request: Request) -> JSONResponse:
         controller = PixTransactionController()
         test_received_at = None
-        if environ.get("APP_ENV", "local") in {"local", "test"}:
+        if environ.get("APP_ENV") == "test":
             raw_clock = request.headers.get("X-Test-Received-At")
-            if raw_clock:
+            if raw_clock is not None:
                 try:
-                    test_received_at = datetime.fromisoformat(raw_clock).astimezone(timezone.utc)
-                except ValueError:
-                    test_received_at = None
+                    parsed_clock = datetime.fromisoformat(raw_clock)
+                    if parsed_clock.tzinfo is None or parsed_clock.utcoffset() is None:
+                        raise ValueError
+                    test_received_at = parsed_clock.astimezone(timezone.utc)
+                except (ValueError, OverflowError):
+                    raise InvalidSchema("X-Test-Received-At must be an ISO 8601 datetime with timezone")
         pix_transaction, created = controller.create(payload, test_received_at=test_received_at)
 
         status_code = http_status.HTTP_201_CREATED if created else http_status.HTTP_200_OK

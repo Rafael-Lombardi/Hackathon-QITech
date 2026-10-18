@@ -64,6 +64,7 @@ class PixTransaction(Base):
     received_at = Column(DateTime(timezone=True), nullable=False)
     evaluated_at = Column(DateTime(timezone=True), nullable=False)
     evaluation_context = Column(JSONB, nullable=False, default=dict)
+    family_contributions = Column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (
         UniqueConstraint("pix_transaction_key"),

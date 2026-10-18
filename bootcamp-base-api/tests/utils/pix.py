@@ -177,13 +177,13 @@ def _can_seed_device(payload: dict) -> bool:
     return offset is not None and abs(offset.total_seconds()) <= 14 * 3600
 
 
-def post_raw(data, content_type: str | None = "application/json") -> PixResponse:
+def post_raw(data, content_type: str | None = "application/json", headers: dict | None = None) -> PixResponse:
     """POST /pix/transaction com o corpo em bytes crus, do jeito que vier.
 
     `data` pode ser um gerador: aí o requests manda em pedaços (chunked),
     sem Content-Length. content_type=None manda sem o header.
     """
-    headers = _token_header(INTERNAL_TOKEN)
+    headers = {**_token_header(INTERNAL_TOKEN), **(headers or {})}
     if content_type is not None:
         headers["Content-Type"] = content_type
     response = ClientRequisition.send("POST", "/pix/transaction", headers=headers, data=data)

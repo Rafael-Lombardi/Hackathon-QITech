@@ -59,8 +59,9 @@ def evaluate(context: Context) -> Analysis:
         raise RuntimeError("fonte de restrições indisponível; análise sem veredicto")
 
     triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
-    payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
-    recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
+    family_contributions = _family_contributions(triggered.values())
+    payer_risk = _axis_risk(family_contributions, Axis.PAYER)
+    recipient_risk = _axis_risk(family_contributions, Axis.RECIPIENT)
     rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
 
     # Indisponibilidade só é fallback: não pode apagar restrição ou
@@ -76,6 +77,7 @@ def evaluate(context: Context) -> Analysis:
             payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
             recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
             policy_version=policy.POLICY_VERSION,
+            family_contributions=family_contributions,
             signals=tuple(signals),
         )
 
@@ -88,21 +90,35 @@ def evaluate(context: Context) -> Analysis:
         payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
         recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
         policy_version=policy.POLICY_VERSION,
+        family_contributions=family_contributions,
         signals=tuple(signals),
     )
 
 
-def _axis_risk(triggered: Iterable[Signal], axis: Axis) -> int:
-    group_points: dict[str, int] = {}
+def _family_contributions(triggered: Iterable[Signal]) -> dict[str, dict[str, int | str]]:
+    group_points = {group: 0 for group in policy.CAPS}
     for signal in triggered:
-        if signal.axis == axis:
-            group_points[signal.cap_group] = group_points.get(signal.cap_group, 0) + signal.points
+        group_points[signal.cap_group] += signal.points
 
-    risk = 0
-    for group, points in group_points.items():
-        floor, ceiling = policy.CAPS[group]
-        risk += _clamp(points, floor, ceiling)
-    return _clamp(risk, policy.MIN_RISK, policy.MAX_RISK)
+    return {
+        group: {
+            "axis": next(spec.axis.value for spec in policy.CATALOG.values() if spec.cap_group == group),
+            "raw": raw,
+            "applied": _clamp(raw, floor, ceiling),
+            "floor": floor,
+            "cap": ceiling,
+        }
+        for group, raw in group_points.items()
+        for floor, ceiling in (policy.CAPS[group],)
+    }
+
+
+def _axis_risk(contributions: Mapping[str, Mapping[str, int | str]], axis: Axis) -> int:
+    return _clamp(
+        sum(int(group["applied"]) for group in contributions.values() if group["axis"] == axis.value),
+        policy.MIN_RISK,
+        policy.MAX_RISK,
+    )
 
 
 def _sufficiency(prior_attempts: int, prior_days: int) -> Sufficiency:

@@ -319,4 +319,5 @@ class Analysis:
     payer_sufficiency: Sufficiency
     recipient_sufficiency: Sufficiency
     policy_version: str
+    family_contributions: dict[str, dict[str, int | str]]
     signals: tuple[Signal, ...]

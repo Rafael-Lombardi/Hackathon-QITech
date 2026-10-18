@@ -272,6 +272,7 @@ CREATE TABLE pix_transaction(
     received_at                     TIMESTAMPTZ NOT NULL,
     evaluated_at                    TIMESTAMPTZ NOT NULL,
     evaluation_context              JSONB NOT NULL DEFAULT '{}'::jsonb,
+    family_contributions            JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
@@ -283,6 +284,7 @@ CREATE TABLE pix_transaction(
     CHECK(policy_version <> ''),
     CHECK(decision_rule <> ''),
     CHECK(jsonb_typeof(reasons) = 'array'),
+    CHECK(jsonb_typeof(family_contributions) = 'object'),
     CHECK(amount > 0),
     CHECK((latitude IS NULL) = (longitude IS NULL)),
     CHECK(latitude IS NULL OR latitude BETWEEN -90 AND 90),
@@ -309,10 +311,9 @@ CREATE INDEX pix_transaction_receipt_lease_idx
     ON pix_transaction_receipt (state, lease_until);
 
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
--- em transaction_date porque a pergunta é sempre "deste X, numa janela
--- de tempo". A janela conta em transaction_date, não em created_at:
--- histórico se conta no tempo do negócio, é o que deixa o teste mandar a
--- data no payload, e um Pix que chegar atrasado continua no lugar certo.
+-- em received_at porque a pergunta é sempre "deste X, numa janela de
+-- tempo". O relógio do histórico é o recebimento do servidor; o instante
+-- de avaliação monotônico é calculado depois das travas.
 --
 -- Conta de origem: quantos Pix e quanto dinheiro em 1 min, 10 min, 1 h,
 -- 24 h; valor e horário habituais; aparelho ou destino que esta conta

@@ -237,7 +237,10 @@ class TestContrato:
         assert body["status"] in PIX_STATUSES
 
         metadata = body["metadata"]
-        assert set(metadata) == {"policy_version", "decision_rule", "reasons", "scores", "evidence_sufficiency", "signals"}
+        assert set(metadata) == {
+            "policy_version", "decision_rule", "reasons", "scores",
+            "evidence_sufficiency", "family_contributions", "signals",
+        }
         assert metadata["policy_version"] == "v0.5.0"
         assert metadata["decision_rule"] in {
             "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP",
@@ -250,6 +253,21 @@ class TestContrato:
         assert all(type(score) is int for score in metadata["scores"].values())
         assert set(metadata["evidence_sufficiency"]) == {"payer", "recipient"}
         assert set(metadata["evidence_sufficiency"].values()) <= SUFFICIENCIES
+        contributions = metadata["family_contributions"]
+        assert set(contributions) == {
+            "limit", "payer_account", "payer_velocity", "payer_behavior",
+            "recipient_network", "dict_security_statistics", "dict_security", "relation",
+        }
+        assert all(set(item) == {"axis", "raw", "applied", "floor", "cap"} for item in contributions.values())
+        assert {item["axis"] for item in contributions.values()} == {"payer", "recipient"}
+        assert sum(
+            item["applied"] for group, item in contributions.items()
+            if item["axis"] == "payer"
+        ) == metadata["scores"]["payer"]
+        assert sum(
+            item["applied"] for group, item in contributions.items()
+            if item["axis"] == "recipient"
+        ) == metadata["scores"]["recipient"]
         assert [signal["code"] for signal in metadata["signals"]] == list(CATALOG)
         assert all(type(signal["points"]) is int and type(signal["layer"]) is int for signal in metadata["signals"])
 
@@ -352,7 +370,10 @@ class TestContrato:
         payload = pix_payload(new_payer(), new_recipient(), T0)
         body = json.dumps(payload).encode()
 
-        pix = post_raw(body + b" " * (size - len(body)))
+        pix = post_raw(
+            body + b" " * (size - len(body)),
+            headers={"X-Test-Received-At": T0.isoformat()},
+        )
 
         assert pix.http_status == http_status, pix.body
 
@@ -366,6 +387,43 @@ class TestContrato:
 
         assert refused.http_status == 400
         assert found.http_status == 404
+
+    def test_transaction_date_fora_da_tolerancia_volta_400(self):
+        payload = pix_payload(new_payer(), new_recipient(), T0)
+        response = ClientRequisition.send(
+            "POST",
+            "/pix/transaction",
+            payload=payload,
+            headers={
+                "INTERNAL-TOKEN": INTERNAL_TOKEN,
+                "X-Test-Received-At": (T0 + timedelta(minutes=6)).isoformat(),
+            },
+        )
+
+        assert response.response_status == 400
+        assert response.response_json["code"] == "QIT000001"
+        assert get_pix(payload["id"]).http_status == 404
+
+    @pytest.mark.parametrize(
+        "test_clock",
+        ["not-a-date", "2026-10-17T22:15:00", ""],
+        ids=["texto", "sem-fuso", "vazio"],
+    )
+    def test_relogio_de_teste_invalido_volta_400(self, test_clock):
+        payload = pix_payload(new_payer(), new_recipient(), T0)
+        response = ClientRequisition.send(
+            "POST",
+            "/pix/transaction",
+            payload=payload,
+            headers={
+                "INTERNAL-TOKEN": INTERNAL_TOKEN,
+                "X-Test-Received-At": test_clock,
+            },
+        )
+
+        assert response.response_status == 400
+        assert response.response_json["code"] == "QIT000001"
+        assert get_pix(payload["id"]).http_status == 404
 
     @pytest.mark.parametrize("vary_payload", WITHIN_CONTRACT)
     def test_variacao_dentro_do_contrato_volta_201(self, vary_payload):

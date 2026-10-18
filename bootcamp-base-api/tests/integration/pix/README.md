@@ -12,11 +12,11 @@ Da pasta `bootcamp-base-api/`, com o [uv](https://docs.astral.sh/uv/) e o Python
 ```bash
 uv venv --python 3.11 .venv
 uv pip install -r requirements-dev.txt
-docker compose up -d --build --wait
+APP_ENV=test docker compose up -d --build --wait
 .venv/bin/pytest
 ```
 
-A suíte cobre 189 testes: os 18 cenários principais da RFC, regressões,
+A suíte cobre 195 testes: os 18 cenários principais da RFC, regressões,
 fronteiras, contrato, concorrência e cenários adicionais da política v0.5. O mais lento espera
 de propósito o timeout do DICT. Se a stack não estiver de pé, a suíte para no
 começo com uma mensagem só, e o comando que resolve. Mudou o
@@ -30,12 +30,12 @@ Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteado
 |---|---|
 | `test_cenarios_rfc.py` | os cenários de aceitação da RFC v0.5, com a conta de cada um no docstring |
 | `test_fronteiras.py` | os dois lados de cada limiar, os tetos e o piso dos grupos, D-PAY e D-RCP em 39 e 40, a pré-condição de 3 Pix aprovados e a suficiência |
-| `test_historico.py` | o que entra no histórico: só Pix aprovado ensina aparelho e mediana, a rajada soma toda tentativa, conta conjunta é um histórico por titular, conta de destino e titular são identidades diferentes, Pix com data posterior não entra |
+| `test_historico.py` | o que entra no histórico: só Pix aprovado ensina aparelho e mediana, a rajada soma toda tentativa, conta conjunta é um histórico por titular, conta de destino e titular são identidades diferentes, e relógio injetado não apaga histórico concluído |
 | `test_camada_dict.py` | a camada 3: DICT01, indisponibilidade, mock lento/com erro/corpo inválido e quem é consultado |
 | `test_politica_v05.py` | restrição prioritária e as quatro rejeições demonstrativas da RFC v0.5 com evidências DICT seedadas |
 | `test_contrato.py` | 201, 200, 400, 403, 404 e 409, o corpo da resposta, GET igual ao POST nos mesmos bytes, corpo que nem é JSON, documento com e sem pontuação |
-| `test_concorrencia.py` | POSTs ao mesmo tempo: a trava por pagador, o mesmo id em corrida (200 ou 409, nunca 500) e Pix cruzados de gente nova |
-| `test_resiliencia.py` | Restrição ativa vence indisponibilidade do cadastro de devices; owner expirado não sobrescreve receipt reassumido |
+| `test_concorrencia.py` | POSTs ao mesmo tempo: a trava por pagador, inversão entre chegada e avaliação, o mesmo id em corrida (200 ou 409, nunca 500) e Pix cruzados de gente nova |
+| `test_resiliencia.py` | Restrição ativa vence indisponibilidade do cadastro de devices; owner expirado não sobrescreve receipt reassumido; GET distingue receipt em processamento e falho |
 | `test_geolocalizacao.py` | G01: cobertura insuficiente, viagem distante, múltiplos centros habituais, limiar de 300 km, janela de 24h e combinações de 2FA/rejeição |
 
 Os nomes dos cenários são os da tabela da RFC §9. O cenário 15 está dividido: `test_reenvio_devolve_mesma_analise` e `test_mesmo_id_payload_diferente_409` em `test_contrato.py`, e `test_concorrencia_mesmo_pagador_conta_uma_vez` em `test_concorrencia.py`.

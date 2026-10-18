@@ -63,7 +63,7 @@ As duas de cima são abertas — o `/health_check` porque quem o consulta é o p
 
 ### POST /pix/transaction
 
-O contrato de entrada é o do desafio, escrito em JSON Schema em [`src/schemas/post_pix_transaction.json`](src/schemas/post_pix_transaction.json); o `$comment` de cada campo diz a medida e o porquê dela. Valores em **centavos**, datas **com fuso**, `source.geolocation` opcional, e `destination_account.participant` (o ISPB, código de 8 dígitos do banco de destino no Pix) obrigatório. O documento vale com ou sem máscara, CPF ou CNPJ. O corpo vai com `Content-Type: application/json` e com o tamanho declarado (`Content-Length`), como o curl faz sozinho.
+O contrato de entrada é o do desafio, escrito em JSON Schema em [`src/schemas/post_pix_transaction.json`](src/schemas/post_pix_transaction.json); o `$comment` de cada campo diz a medida e o porquê dela. Valores em **centavos**, datas **com fuso**, `source.geolocation` opcional, e `destination_account.participant` (o ISPB, código de 8 dígitos do banco de destino no Pix) obrigatório. `transaction_date` deve ficar a até 5 minutos do recebimento do servidor. O documento vale com ou sem máscara, CPF ou CNPJ. O corpo vai com `Content-Type: application/json` e com o tamanho declarado (`Content-Length`), como o curl faz sozinho.
 
 ```bash
 curl -s -X POST http://localhost:3000/pix/transaction \
@@ -72,7 +72,7 @@ curl -s -X POST http://localhost:3000/pix/transaction \
   -d '{
     "id": "pix-000123",
     "amount": 150000,
-    "transaction_date": "2026-10-17T22:15:00-03:00",
+    "transaction_date": "'"$(date --iso-8601=seconds)"'",
     "source_account": {
       "branch": "0001",
       "account_number": "88213",
@@ -95,7 +95,7 @@ curl -s -X POST http://localhost:3000/pix/transaction \
   }'
 ```
 
-Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para caber na tela):
+Num banco novo, a resposta é `approved`; a nota pode variar com a hora local. Corpo ilustrativo, com os 22 sinais (um por linha aqui, para caber na tela):
 
 ```json
 {
@@ -140,6 +140,7 @@ Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para ca
 | `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-DATA-UNAVAILABLE`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
 | `metadata.reasons` | a frase dessa linha, com os números da evidência |
 | `metadata.scores` | a nota de 0 a 100 do pagador (`payer`) e a do destino (`recipient`) |
+| `metadata.family_contributions` | por grupo de teto: eixo (`axis`), soma bruta (`raw`), parcela aplicada (`applied`), piso e teto. Explica exatamente como os sinais viraram as duas notas |
 | `metadata.evidence_sufficiency` | quanto histórico sustenta cada nota: `unavailable`, `low`, `medium` ou `high` |
 | `metadata.signals` | os 22 sinais, na ordem do catálogo. `DICT02`/`DICT03` representam evidência antifraude do DICT suspeita/confirmada na fixture; `clear` e ausência não pontuam. |
 
@@ -175,6 +176,8 @@ São, na ordem, o POST sem o `participant` do destino, o POST sem o `INTERNAL-TO
 | 404 | `QIT000404` | a rota não existe |
 | 405 | `QIT000405` | a rota existe, mas não aceita esse método |
 | 409 | `QIT001002` | o mesmo `id` chegou com outro conteúdo |
+| 409 | `QIT001004` | o mesmo `id` ainda está sendo avaliado; traz `Retry-After: 2` |
+| 503 | `QIT001005` | uma avaliação desse `id` falhou; pode ser tentada novamente conforme a política do cliente |
 | 500 | `QIT000500` | erro que ninguém nomeou. Tudo é desfeito, inclusive o registro do Pix: reenvie com o mesmo `id` |
 
 Repare na ordem: sem o token, toda rota que não é pública responde 403, inclusive as que não existem. A porta vem antes do roteador, e o 404 e o 405 só aparecem para quem passou por ela. O teto de 16 KiB é quase quatro vezes o maior Pix válido medido (4,2 KiB), e é conferido pelo `Content-Length`, antes de ler um byte do corpo.
@@ -194,7 +197,7 @@ Toda configuração entra por variável de ambiente. O padrão mora no `docker-c
 | `INTERNAL_TOKEN` | `default_token` | o valor que o cabeçalho `INTERNAL-TOKEN` precisa ter |
 | `DICT_API_TIMEOUT` | `2` | quantos segundos esperar pelo DICT, por etapa: conectar e cada leitura, e não a chamada inteira. O DNS fica fora, limitado a ~2 s pelo `dns_opt` do compose. Zero, negativo ou texto barra a subida da API |
 | `DICT_API_INTERNAL_TOKEN` | `default_token` | o token que a API manda ao DICT |
-| `APP_ENV`, `SERVICE_NAME` | `local`, `bootcamp-api` | o ambiente, e o nome que aparece no log e no `GET /` |
+| `APP_ENV`, `SERVICE_NAME` | `local`, `bootcamp-api` | o ambiente, e o nome que aparece no log e no `GET /`. Somente `test` aceita `X-Test-Received-At`; se enviado, deve ser ISO 8601 com fuso ou retorna 400 |
 | `API_PORT`, `DB_PORT`, `DICT_MOCK_PORT` | `3000`, `5432`, `1080` | as portas na sua máquina |
 | `SERVER_LOCALHOST` | `0.0.0.0` | onde os testes procuram a API e o mock |
 
@@ -233,10 +236,11 @@ Como os testes combinam a resposta de cada documento, as armadilhas do MockServe
 ```bash
 uv venv --python 3.11 .venv && uv pip install -r requirements-dev.txt
 source .venv/bin/activate
+APP_ENV=test docker compose up -d --build --wait
 pytest
 ```
 
-A stack precisa estar de pé (seção 1). O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova. A suíte leva uns 12 s.
+A stack precisa estar de pé em `APP_ENV=test`, pois só esse ambiente aceita o relógio injetado pelos cenários. O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova.
 
 Todos são de integração. A maioria fala HTTP com a API, como um cliente faria;
 os testes de resiliência também usam controller/repositories reais e sessões
@@ -259,15 +263,16 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
                                  e com a conexão de volta ao pool durante a espera
 4. cria customer e account       na primeira aparição, em ordem de documento:
                                  dois Pix cruzados não esperam um pelo outro
-5. trava o pagador               SELECT ... FOR NO KEY UPDATE no customer dele,
-                                 e procura o id de novo
-6. conta o histórico             monta o Context e roda o motor
+5. trava pagador e recebedor     advisory lock do pagador, depois customers em
+                                 ordem determinística; procura o id de novo
+6. fixa o corte de avaliação     depois das travas, monotônico por pagador ou
+                                 recebedor; monta o Context e roda o motor
 7. grava o Pix e os 22 sinais    e só então dá o commit → 201
 8. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
 
-O histórico usa `received_at`, o recebimento do servidor; `transaction_date` é reservado ao relógio de negócio. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. A conclusão do recibo usa `owner_token` em uma atualização condicional: um avaliador que perdeu o lease não pode completar ou marcar como falho o recibo de outro.
+O histórico usa um corte monotônico derivado de `received_at` depois das travas: uma requisição concluída nunca desaparece porque outra capturou o relógio antes de esperar. `transaction_date` é o relógio de negócio, aceito dentro de ±5 minutos. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. O recibo preserva o primeiro `received_at`; `processing` e `failed` são estados explícitos, e `owner_token` impede um avaliador com lease vencido de concluir o recibo de outro.
 
 Quem fala com o banco, o DICT e o motor é o controller, e só ele. O mapa das pastas, o que cada uma pode e não pode e onde mexer para cada mudança estão em [`docs/como-o-projeto-e-organizado.md`](docs/como-o-projeto-e-organizado.md).
 
@@ -309,7 +314,7 @@ Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--
 | Um processo da API | ~85 a 100 Pix/s |
 | 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
 | Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 189 testes em ~12 s |
+| Suíte de testes | 195 testes (tempo varia por máquina e Docker) |
 | Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
 
 - **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.

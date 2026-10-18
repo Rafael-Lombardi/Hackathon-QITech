@@ -209,12 +209,13 @@ class TestHistorico:
         assert to_new.scores["recipient"] == 35
         assert to_old.status == to_new.status == "approved"
 
-    def test_pix_com_data_posterior_nao_entra_no_historico(self):
-        """Histórico se conta no tempo do negócio, e nunca com dado do futuro.
+    def test_relogio_injetado_nao_faz_historico_concluido_desaparecer(self):
+        """Corte monotônico não volta no tempo depois de avaliações concluídas.
 
         Chegam primeiro 4 Pix datados de T0+1 a T0+4 minutos; depois, um
-        datado de T0. Para ele, nenhum dos 4 é anterior: o pagador está no
-        primeiro Pix da vida — P04 unavailable, suficiência unavailable.
+        com relógio de teste em T0. Em produção o relógio do servidor não faz
+        esse recuo; no teste, o corte pós-lock avança além da última avaliação.
+        Os quatro continuam visíveis e o atual aciona P04.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, [T0 + timedelta(minutes=minutes) for minutes in (1, 2, 3, 4)])
@@ -222,8 +223,9 @@ class TestHistorico:
         pix = post_pix(pix_payload(payer, recipient, T0))
 
         assert pix.http_status == 201
-        assert pix.signal_status("P04") == "unavailable"
-        assert pix.sufficiency["payer"] == "unavailable"
+        assert pix.signal_status("P04") == "triggered"
+        assert pix.signal("P04")["evidence"]["attempts_5m"] == 5
+        assert pix.sufficiency["payer"] == "low"
 
     def test_ipv6_escrito_de_outro_jeito_e_o_mesmo_ip(self):
         """2001:DB8:0:0:0:0:0:1 e 2001:db8::1 são o mesmo endereço, e o histórico sabe disso.
