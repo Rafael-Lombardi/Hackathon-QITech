@@ -1,0 +1,5 @@
+test-suite:
+    test -f .env || cp .env.example .env
+    docker compose down -v
+    APP_ENV=test docker compose up -d --build --wait
+    DATABASE_URL=postgresql+psycopg2://bootcamp:bootcamp@localhost:5432/bootcamp INTERNAL_TOKEN=default_token SERVER_LOCALHOST=localhost APP_ENV=test uv run --with-requirements requirements-dev.txt pytest -q

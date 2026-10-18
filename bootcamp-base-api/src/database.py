@@ -6,6 +6,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from constants import DATABASE_URL
 
+# Tests that import a controller directly do not pass through ``app.main``;
+# fail with the same actionable message instead of SQLAlchemy's opaque
+# ``Expected string or URL object, got None``.
+if not DATABASE_URL:
+    raise EnvironmentError(
+        "DATABASE_URL não está configurada. Copie .env.example para .env "
+        "ou exporte DATABASE_URL antes de rodar a API/testes."
+    )
+
 # hide_parameters: sem ele, todo erro de banco traz os parâmetros do
 # comando na mensagem, e o log da exceção imprimiria o CPF inteiro — que,
 # pela LGPD, nunca vai pro log.

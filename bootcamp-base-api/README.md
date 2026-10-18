@@ -44,11 +44,22 @@ curl -s http://localhost:3000/pix/transaction/example-id \
 Os cenários completos ficam em [`tests/integration/pix/`](tests/integration/pix/) e são explicados no README principal.
 
 ```bash
+cp .env.example .env
 uv venv --python 3.11 .venv
 uv pip install -r requirements-dev.txt
 source .venv/bin/activate
 APP_ENV=test docker compose up -d --build --force-recreate --wait
 pytest
+```
+
+O `.env.example` já traz `DATABASE_URL`, `INTERNAL_TOKEN`, `DICT_API_URL` e
+`SERVER_LOCALHOST`. O `.env` é local e ignorado pelo Git. Para não depender de
+venv ou export manual, use `just test-suite`.
+
+Atalho equivalente, incluindo a recriação do banco local:
+
+```bash
+just test-suite
 ```
 
 Para selecionar um cenário:

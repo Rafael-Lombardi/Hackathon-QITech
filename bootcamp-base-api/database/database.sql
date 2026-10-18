@@ -1,13 +1,9 @@
 -- O antifraude Pix, nas tabelas de contrato, histórico e fontes:
 --   pix_transaction_status       os três veredictos do contrato.
---   pix_signal_status            os três estados de um sinal.
 --   account                      identidade account-scoped: documento + conta.
 --   pix_transaction              uma linha por Pix: payload + decisão
 --                                explicada, com FK pra conta de origem e
 --                                de destino.
---   pix_transaction_rule_result  uma linha por sinal por Pix: a lista de
---                                regras que a resposta devolve em
---                                metadata.signals.
 -- Os índices são um por pergunta de regra (conta de origem, conta de
 -- destino, aparelho), todos terminando em transaction_date, mais um em
 -- account(document_number) para localizar a identidade.
@@ -28,22 +24,6 @@ INSERT INTO pix_transaction_status (enumerator) VALUES
 ('approved'),
 ('rejected'),
 ('two_factor_required');
-
--- Os três estados de um sinal. Uma regra dispara, não dispara, ou não
--- tinha histórico pra responder. Os dois últimos parecem a mesma coisa
--- e não são: falta de informação não é prova de que está tudo bem, e o
--- GET precisa dizer "esta regra não rodou" em vez de "não viu nada".
-CREATE TABLE pix_signal_status(
-    id                              SERIAL PRIMARY KEY,
-    enumerator                      VARCHAR(50) NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(enumerator)
-);
-
-INSERT INTO pix_signal_status (enumerator) VALUES
-('triggered'),
-('not_triggered'),
-('unavailable');
 
 -- A conta é a unidade de identidade do domínio. O controller serializa o
 -- documento do pagador com advisory lock, faz o upsert das contas e trava
@@ -151,7 +131,8 @@ CREATE TABLE external_risk_assessment(
 CREATE INDEX external_risk_account_axis_idx
     ON external_risk_assessment (account_id, risk_subject, valid_from);
 
--- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
+-- Uma linha por Pix recebido: o fato observado. A decisão fica em
+-- pix_analysis, uma linha 1:1, para separar entrada de resultado.
 --
 -- Transação e análise moram na mesma tabela de propósito. São 1:1 — o
 -- mesmo Pix nunca gera duas análises — e toda regra que olha o histórico
@@ -179,8 +160,7 @@ CREATE INDEX external_risk_account_axis_idx
 -- payer_risk dos Pix que viraram 2FA?" — e não deveria passar por
 -- reasons->>'payer_risk'. Sem índice nelas: quem ajusta peso roda a
 -- consulta de vez em quando e pode esperar; não é caminho do POST. Os
--- sinais, um a um, ficam em pix_transaction_rule_result, no fim do
--- arquivo.
+-- a explicação detalhada fica em pix_analysis.metadata.
 --
 -- Sobre as colunas, o que não está escrito no tipo:
 --
@@ -212,14 +192,6 @@ CREATE INDEX external_risk_account_axis_idx
 CREATE TABLE pix_transaction(
     id                              BIGSERIAL PRIMARY KEY,
     pix_transaction_key             CHAR(36) NOT NULL,
-    status_id                       INTEGER NOT NULL REFERENCES pix_transaction_status(id),
-    payer_risk                      SMALLINT NOT NULL,
-    recipient_risk                  SMALLINT NOT NULL,
-    payer_sufficiency               VARCHAR(12) NOT NULL,
-    recipient_sufficiency           VARCHAR(12) NOT NULL,
-    policy_version                  VARCHAR(20) NOT NULL,
-    decision_rule                   VARCHAR(20) NOT NULL,
-    reasons                         JSONB NOT NULL,
     source_account_id               BIGINT NOT NULL REFERENCES account(id),
     destination_account_id          BIGINT NOT NULL REFERENCES account(id),
     pix_transaction_data            JSONB NOT NULL,
@@ -232,21 +204,10 @@ CREATE TABLE pix_transaction(
     latitude                        NUMERIC(9, 6),
     longitude                       NUMERIC(9, 6),
     received_at                     TIMESTAMPTZ NOT NULL,
-    evaluated_at                    TIMESTAMPTZ NOT NULL,
-    evaluation_context              JSONB NOT NULL DEFAULT '{}'::jsonb,
-    family_contributions            JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
     CHECK(jsonb_typeof(pix_transaction_data) = 'object'),
-    CHECK(payer_risk BETWEEN 0 AND 100),
-    CHECK(recipient_risk BETWEEN 0 AND 100),
-    CHECK(payer_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
-    CHECK(recipient_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
-    CHECK(policy_version <> ''),
-    CHECK(decision_rule <> ''),
-    CHECK(jsonb_typeof(reasons) = 'array'),
-    CHECK(jsonb_typeof(family_contributions) = 'object'),
     CHECK(amount > 0),
     CHECK((latitude IS NULL) = (longitude IS NULL)),
     CHECK(latitude IS NULL OR latitude BETWEEN -90 AND 90),
@@ -282,7 +243,37 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 CREATE INDEX pix_transaction_device_id_idx
     ON pix_transaction (device_id, received_at);
 
--- A explicação da decisão: uma linha por sinal avaliado, por Pix,
+-- Uma única decisão por Pix. metadata guarda a explicação compacta (sinais,
+-- evidências consultadas e contexto) sem criar uma tabela por regra.
+CREATE TABLE pix_analysis(
+    id                              BIGSERIAL PRIMARY KEY,
+    pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
+    status_id                       INTEGER NOT NULL REFERENCES pix_transaction_status(id),
+    payer_risk                      SMALLINT NOT NULL,
+    recipient_risk                  SMALLINT NOT NULL,
+    payer_sufficiency               VARCHAR(12) NOT NULL,
+    recipient_sufficiency           VARCHAR(12) NOT NULL,
+    policy_version                  VARCHAR(20) NOT NULL,
+    decision_rule                   VARCHAR(20) NOT NULL,
+    reasons                         JSONB NOT NULL,
+    evaluated_at                    TIMESTAMPTZ NOT NULL,
+    metadata                        JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(pix_transaction_id),
+    CHECK(payer_risk BETWEEN 0 AND 100),
+    CHECK(recipient_risk BETWEEN 0 AND 100),
+    CHECK(payer_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
+    CHECK(recipient_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
+    CHECK(policy_version <> ''),
+    CHECK(decision_rule <> ''),
+    CHECK(jsonb_typeof(reasons) = 'array'),
+    CHECK(jsonb_typeof(metadata) = 'object')
+);
+
+-- A explicação da decisão fica em pix_analysis.metadata. Não há uma linha
+-- por sinal nem uma tabela separada de snapshots: isso mantém o modelo
+-- pequeno para o escopo síncrono do desafio.
+/* A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta
 -- e é isto que o contrato promete: quais regras rodaram, o que cada uma viu e
 -- quanto cada uma pesou.
@@ -308,9 +299,8 @@ CREATE INDEX pix_transaction_device_id_idx
 -- rule_name, risk_subject e family são texto com CHECK, não FK pra tabela: regra
 -- é código, nasce e muda no motor, e uma tabela populada por INSERT aqui
 -- custaria um docker compose down -v a cada regra ou família nova. Só o
--- status do sinal tem tabela própria (pix_signal_status): é o status da
--- linha, o papel que status_id tem no Base Service; domínio fixo de
--- atributo, como risk_subject aqui e as sufficiency em pix_transaction, é CHECK.
+-- os estados individuais dos sinais ficam no metadata da análise; não há
+-- catálogo ou tabela de resultado por regra.
 --
 -- Append-only: ninguém dá UPDATE aqui, e o controller grava os sinais de
 -- um Pix num INSERT só (dezenove idas ao banco custam o dobro de uma). O
@@ -367,3 +357,4 @@ CREATE TABLE pix_transaction_risk_evidence(
 
 CREATE INDEX pix_transaction_risk_evidence_transaction_idx
     ON pix_transaction_risk_evidence (pix_transaction_id);
+*/

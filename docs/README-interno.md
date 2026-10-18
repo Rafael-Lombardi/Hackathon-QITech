@@ -438,7 +438,7 @@ Os helpers em `tests/utils/` controlam o relógio, criam identidades e semeiam h
 
 ## Modelagem de dados
 
-Nove tabelas, em [`database.sql`](../bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
+Sete tabelas, em [`database.sql`](../bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
 
 ```mermaid
 erDiagram
@@ -448,10 +448,8 @@ erDiagram
 
     ACCOUNT ||--o{ PIX_TRANSACTION : origem
     ACCOUNT ||--o{ PIX_TRANSACTION : destino
-    PIX_TRANSACTION_STATUS ||--o{ PIX_TRANSACTION : classifica
-    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RULE_RESULT : gera
-    PIX_SIGNAL_STATUS ||--o{ PIX_TRANSACTION_RULE_RESULT : estado
-    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RISK_EVIDENCE : congela
+    PIX_TRANSACTION ||--|| PIX_ANALYSIS : analisa
+    PIX_TRANSACTION_STATUS ||--o{ PIX_ANALYSIS : classifica
 
     ACCOUNT {
         bigint id PK
@@ -485,82 +483,61 @@ erDiagram
         bigint id PK
         bigint source_account_id FK
         bigint destination_account_id FK
-        integer status_id FK
         datetime received_at
-        datetime evaluated_at
-        json evaluation_context
     }
-    PIX_TRANSACTION_RULE_RESULT {
+    PIX_ANALYSIS {
         bigint id PK
-        bigint pix_transaction_id FK
-        integer signal_status_id FK
-        string rule_name
-        integer points
-        json evidence
-    }
-    PIX_TRANSACTION_RISK_EVIDENCE {
-        bigint id PK
-        bigint pix_transaction_id FK
-        string source_type
-        string risk_subject
-        string occurrence_id
+        bigint pix_transaction_id FK UK
+        integer status_id FK
+        integer payer_risk
+        integer recipient_risk
+        string decision_rule
+        json metadata
     }
     PIX_TRANSACTION_STATUS {
         integer id PK
         string enumerator UK
     }
-    PIX_SIGNAL_STATUS {
-        integer id PK
-        string enumerator UK
-    }
 ```
 
-Como ler o modelo: `account` combina documento e conta concreta usada na origem ou destino. `pix_transaction` guarda o fato analisado e aponta para as duas contas. Os resultados das regras e as evidências ficam em tabelas filhas para que uma análise possa ser explicada sem reexecutar o motor. A própria `pix_transaction` também guarda o payload original e o `external_id` único, que resolvem o reenvio.
+Como ler o modelo: `account` combina documento e conta concreta usada na origem ou destino. `pix_transaction` guarda o fato observado e aponta para as duas contas. `pix_analysis` guarda uma única decisão para esse fato, incluindo metadata com sinais e evidências compactadas. O payload original e o `external_id` único resolvem o reenvio.
 
 ### Como interpretar as tabelas que mais confundem
 
 - **`account`:** unidade account-scoped com documento, participante, agência e número. Evita uma segunda identidade implícita no domínio; cada regra deixa explícito quando conta a conta concreta ou agrega contas pelo documento.
 - **`pix_transaction_status`:** resultado final do Pix: `approved`, `rejected` ou `two_factor_required`.
-- **`pix_signal_status`:** resultado de uma regra individual: `triggered`, `not_triggered` ou `unavailable`. Um Pix tem um status final, mas tem uma linha de status para cada sinal.
-- **`pix_transaction_rule_result`:** explicação de cada regra executada — código, eixo, família, pontos e evidência observada. São as linhas que formam `metadata.signals`.
-- **`pix_transaction_risk_evidence`:** snapshot das fontes externas/autoritativas consultadas. `source_type` só aceita `restriction` (veto operacional, com `scope`) ou `dict_security` (avaliação do DICT, com `risk_subject` `payer` ou `recipient`). `family` não fica aqui: pertence ao resultado individual de regra. Não é outra regra; registra qual fonte estava válida para que a análise continue auditável mesmo depois que a fonte mudar.
+- **`pix_analysis`:** resultado 1:1 da avaliação. Guarda status final, scores, regra vencedora, razões, relógio da avaliação e metadata com os sinais e snapshots de evidência necessários para explicar a decisão.
 - **`risk_subject` em `external_risk_assessment` e na evidência:** sujeito de risco ao qual a fonte se aplica: `payer` ou `recipient`. Nome explícito evita confundir a coluna com eixo geométrico ou score.
 - **`assessment`:** classificação devolvida pela fonte externa: `clear`, `suspicious`, `confirmed_in_mock` ou `unavailable`. Ela descreve a qualidade/estado da evidência; o motor transforma `suspicious` e `confirmed_in_mock` em sinais DICT, mas não trata `clear` como prova de segurança.
-- **`pix_signal_status`:** catálogo do estado de cada regra individual. `triggered` soma seus pontos, `not_triggered` respondeu sem disparar e `unavailable` não conseguiu responder por falta de dados/fonte. O status final do Pix fica em `pix_transaction_status`; são conceitos diferentes.
 
 | Tabela | O que guarda | Por que existe |
 |---|---|---|
 | `pix_transaction_status` | catálogo dos três veredictos finais | evita gravar texto livre e mantém o contrato estável |
-| `pix_signal_status` | catálogo de `triggered`, `not_triggered` e `unavailable` | distingue ausência de sinal de falta de dados |
 | `account` | documento + conta concreta, com unicidade por identidade bancária | é a unidade do domínio sem uma entidade `customer` paralela |
 | `device_registry` | vínculo autoritativo entre conta/documento e aparelho, com validade | cadastro externo; não é inferido só porque um device apareceu num Pix |
 | `risk_restriction` | veto operacional temporal, por pagador, titular ou conta de destino | permite bloquear antes da pontuação e auditar a origem do veto |
 | `external_risk_assessment` | snapshot vigente de avaliação externa/DICT | separa inteligência externa do histórico observado |
 | `pix_transaction` | payload, relógios, contexto, decisão, notas e contribuições | é o fato antifraude persistido e consultável pelo GET |
-| `pix_transaction_rule_result` | uma regra por linha, 22 por Pix, com estado, pontos e evidência | constrói `metadata.signals` e torna a decisão explicável |
-| `pix_transaction_risk_evidence` | snapshots `restriction`/`dict_security` usados na avaliação | conserva a evidência externa mesmo se a fonte mudar depois |
 
 ### Dicionário operacional: quem escreve, quem lê e o que a linha significa
 
 | Modelo | Natureza | Quem grava | Quem consulta | Regra de interpretação |
 |---|---|---|---|---|
 | `pix_transaction_status` | catálogo | `database.sql` na criação do banco | `pix_transaction` e DTO | três veredictos finais; não é histórico de mudanças |
-| `pix_signal_status` | catálogo | `database.sql` na criação do banco | `pix_transaction_rule_result` e DTO | estado de uma regra (`triggered`, `not_triggered`, `unavailable`), não estado do Pix |
 | `account` | identidade account-scoped | controller no primeiro uso; seeds de fontes | locks, histórico, cadastro e restrições | documento + conta concreta; não representa um cliente separado |
 | `device_registry` | cadastro autoritativo | seed/serviço de identidade | regras P03, L02 e P08 | só um vínculo explicitamente cadastrado é confiável; aparecer num Pix não cadastra device |
 | `risk_restriction` | veto autoritativo temporal | seed/integração de lista | política antes dos scores | bloqueio explícito por pagador, titular recebedor ou conta recebedora; não soma pontos |
 | `external_risk_assessment` | inteligência externa vigente | seed/integração DICT | regras DICT01–03 | snapshot aplicável ao eixo; não é Pix observado nem ground truth |
-| `pix_transaction` | fato observado + decisão | controller, uma vez por `external_id` | histórico, GET e auditoria | uma linha já decidida; payload original e campos derivados ficam juntos para reprocessamento/auditoria |
-| `pix_transaction_rule_result` | explicação por regra | controller, uma linha por regra | DTO e auditoria | 22 linhas esperadas por análise; `points` não deve ser somado sem aplicar tetos/famílias |
-| `pix_transaction_risk_evidence` | snapshot da evidência usada | controller, durante a análise | auditoria | copia o estado externo consultado; mudanças posteriores na fonte não alteram decisão passada |
+| `pix_transaction` | fato observado | controller, uma vez por `external_id` | histórico e GET | payload original, contas e relógio de recebimento |
+| `pix_analysis` | decisão 1:1 e explicação compacta | controller, na mesma transação SQL | DTO, histórico e auditoria | status, scores, regra, razões e metadata; não há linhas filhas por regra |
 
-O fluxo de escrita é intencionalmente curto: fontes autoritativas existem antes do POST; o POST lê essas fontes, calcula a decisão e grava `pix_transaction` com suas duas tabelas filhas na mesma transação. Não existe tabela de `receipt`, `lease`, fila ou estado intermediário: antes do `commit`, nenhuma análise é consultável; depois dele, todas as partes da explicação estão disponíveis juntas.
+O fluxo de escrita é intencionalmente curto: fontes autoritativas existem antes do POST; o POST lê essas fontes, calcula a decisão e grava `pix_transaction` e `pix_analysis` na mesma transação. Não existe tabela de `receipt`, `lease`, fila ou estado intermediário: antes do `commit`, nenhuma análise é consultável; depois dele, todas as partes da explicação estão disponíveis juntas.
 
 As FKs de `pix_transaction` apontam para as contas concreta de origem e destino. A mesma conta pode aparecer em muitos Pix e nos dois papéis em momentos diferentes. Consultas por titular usam `account.document_number` quando a regra pede visão agregada; consultas por conta usam `account.id`. Essa distinção evita confundir “mesmo documento” com “mesma conta bancária”.
 
-`pix_transaction_rule_result` e `pix_transaction_risk_evidence` são append-only na prática: não corrigimos uma análise antiga sobrescrevendo suas linhas. A evidência se liga diretamente à análise (`pix_transaction_id`), e não a um único rule result, por dois motivos: uma mesma avaliação externa pode sustentar DICT02 e DICT03, e uma restrição pode decidir por veto antes de qualquer score. A relação com regras aparece no `rule_result_data`/`metadata.signals` e no mesmo `pix_transaction_id`. Se a auditoria exigir proveniência relacional por regra no futuro, o desenho correto é uma tabela associativa many-to-many, não uma FK única em evidence. Se uma fonte ou política mudar, o próximo Pix recebe nova captura e nova `policy_version`; a análise anterior continua reproduzível com o contexto e os snapshots que já guardou.
+`pix_analysis` é append-only na prática: não corrigimos uma análise antiga sobrescrevendo o fato observado. A metadata congela os sinais, contexto e evidências necessários para explicar o resultado. Se uma fonte ou política mudar, o próximo Pix recebe nova captura e nova `policy_version`; a análise anterior continua reproduzível com o snapshot guardado.
 
-No código, esses modelos ficam separados pelo papel que desempenham: `Account` e as fontes (`DeviceRegistry`, `RiskRestriction`, `DictSecurityEvidence`) representam estado autoritativo; `PixTransaction` representa o fato observado, o payload original e a decisão produzida; `PixTransactionRuleResult` e `PixTransactionRiskEvidence` representam a explicação imutável daquela decisão. O fluxo não cria um objeto intermediário de processamento: antes do commit, ainda não existe análise consultável.
+No código, esses modelos ficam separados pelo papel que desempenham: `Account` e as fontes (`DeviceRegistry`, `RiskRestriction`, `DictSecurityEvidence`) representam estado autoritativo; `PixTransaction` representa o fato observado; `PixAnalysis` representa a decisão e sua explicação imutável. O fluxo não cria um objeto intermediário de processamento: antes do commit, ainda não existe análise consultável.
 
 **Por que account-scoped.** O esquema usa uma única entidade concreta, mas o documento continua armazenado para normalização e para regras explicitamente document-based, como concentração de recebimentos. Não há uma entidade paralela nem uma FK `customer_id` escondida.
 

@@ -1,6 +1,9 @@
-# [Nome do grupo]
+# AntiFraud System - Grupo 21
 
-**Integrantes:** [nomes]
+**Integrantes:**
+- Rafael Lombardi dos Santos
+- Matheus Silveira Feitosa
+- Ryan de Oliveira Freitas
 
 Este é o README principal do projeto. Ele explica a decisão antifraude, as camadas, o modelo de dados, como executar a API e como reproduzir cenários. O [README do serviço](bootcamp-base-api/README.md) contém somente comandos operacionais; a explicação de manutenção fica em [`docs/README-interno.md`](docs/README-interno.md).
 
@@ -48,7 +51,7 @@ O desenho separa coordenação de infraestrutura e decisão antifraude: o contro
 | Serviço/fonte | Papel |
 |---|---|
 | `api` | recebe o Pix, coordena o caso de uso e executa o motor |
-| PostgreSQL | mantém contas, histórico, sinais, decisão e evidências |
+| PostgreSQL | mantém contas, histórico e a análise auditável de cada Pix |
 | DICT mock | simula estatísticas e marcações externas de segurança |
 | cadastro de devices | fonte autoritativa de aparelhos confiáveis; um Pix observado não cadastra aparelho |
 | restrições | blocklist temporal, aplicada como veto antes dos scores |
@@ -61,7 +64,7 @@ O DICT não retorna probabilidade de fraude nem decide sozinho. `clear` signific
 
 Uma tentativa observada não equivale a uma aprovação. Todas as tentativas entram no histórico de rajadas e volume; apenas `approved` ensina device/IP, mediana, destinos conhecidos e relações recorrentes. `two_factor_required` não vira aprovação automaticamente porque não existe retorno real de 2FA neste escopo.
 
-As restrições são diferentes dos sinais: `risk_restriction` é um veto explícito e temporal, não pontos heurísticos. Já `pix_transaction_rule_result` registra cada regra avaliada (`triggered`, `not_triggered` ou `unavailable`). `pix_transaction_risk_evidence` congela as fontes consultadas para a análise; ela se liga ao Pix inteiro porque uma fonte pode sustentar várias regras ou um veto anterior aos scores.
+As restrições são diferentes dos sinais: `risk_restriction` é um veto explícito e temporal, não pontos heurísticos. Cada Pix tem uma linha `pix_analysis` 1:1, com a decisão, scores, razões e `metadata` (incluindo sinais e evidências compactadas). Não há uma tabela por regra nem uma tabela separada de snapshots.
 
 ## Regras
 
@@ -229,12 +232,27 @@ O `GET` lê a análise persistida: `metadata.decision_rule`, `reasons`, `scores`
 Para a suíte de integração:
 
 ```bash
+cd bootcamp-base-api
+cp .env.example .env
 uv venv --python 3.11 .venv
 uv pip install -r requirements-dev.txt
 source .venv/bin/activate
 APP_ENV=test docker compose up -d --build --force-recreate --wait
 pytest
 ```
+
+O `.env` local contém os valores de desenvolvimento:
+
+| Variável | Valor local | Uso |
+|---|---|---|
+| `DATABASE_URL` | `postgresql+psycopg2://bootcamp:bootcamp@localhost:5432/bootcamp` | PostgreSQL do Compose |
+| `INTERNAL_TOKEN` | `default_token` | autenticação das rotas Pix |
+| `DICT_API_URL` | `http://localhost:1080` | mock do DICT |
+| `SERVER_LOCALHOST` | `localhost` | endereço usado pelos testes |
+
+O `just test-suite` preenche essas variáveis automaticamente, recria o banco
+local e executa a suíte completa. O arquivo `.env` não é versionado; apenas o
+`.env.example` é entregue.
 
 Os cenários estão organizados por contrato: aceitação (`test_cenarios_aceitacao.py`), decisões/rejeições (`test_decisoes.py`), fronteiras, contrato/idempotência, concorrência, histórico, DICT/geolocalização e indisponibilidade. O relógio é fixável em `APP_ENV=test`, permitindo testar janelas sem depender da hora real.
 
@@ -264,13 +282,13 @@ Cada cenário cria suas próprias identidades e histórico com helpers em `tests
 
 ```bash
 docker compose exec db psql -U bootcamp -d bootcamp -c \
-  "SELECT id, external_id, decision_rule, payer_risk, recipient_risk, received_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
+  "SELECT id, external_id, received_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
 
 docker compose exec db psql -U bootcamp -d bootcamp -c \
-  "SELECT pix_transaction_id, rule_name, risk_subject, signal_status_id, points FROM pix_transaction_rule_result ORDER BY id DESC LIMIT 30;"
+  "SELECT pix_transaction_id, status_id, payer_risk, recipient_risk, decision_rule, evaluated_at FROM pix_analysis ORDER BY id DESC LIMIT 30;"
 
 docker compose exec db psql -U bootcamp -d bootcamp -c \
-  "SELECT external_id, status_id, received_at, evaluated_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
+  "SELECT t.external_id, a.status_id, t.received_at, a.evaluated_at FROM pix_transaction t JOIN pix_analysis a ON a.pix_transaction_id = t.id ORDER BY t.id DESC LIMIT 10;"
 ```
 
 O banco começa com os catálogos de status; contas, Pix, devices, restrições e evidências são criados pelo cenário que está rodando. Para voltar a um banco vazio, use `docker compose down -v` e suba a stack novamente.
@@ -285,12 +303,11 @@ O banco usa um modelo account-scoped: cada `account` combina documento e conta b
 | `device_registry` | cadastro autoritativo de devices confiáveis e revogações; um Pix observado não cadastra device |
 | `risk_restriction` | veto temporal explícito para pagador, titular recebedor ou conta recebedora; avaliado antes dos scores |
 | `external_risk_assessment` | snapshot de inteligência externa/DICT por `risk_subject` (`payer`/`recipient`); não é histórico nem ground truth |
-| `pix_transaction` | fato observado, payload original, relógios, scores, regra vencedora e decisão final; `UNIQUE(external_id)` dá idempotência |
-| `pix_transaction_rule_result` | uma linha por regra, incluindo `unavailable`, com status, família, sujeito, pontos e evidência observada |
-| `pix_transaction_risk_evidence` | cópia imutável das restrições e avaliações externas usadas naquela decisão |
-| `pix_transaction_status` / `pix_signal_status` | catálogos dos três estados finais e dos três estados de cada regra |
+| `pix_transaction` | fato observado, payload original, relógios e contas; `UNIQUE(external_id)` dá idempotência |
+| `pix_analysis` | uma decisão 1:1 por Pix: status, scores, regra, razões e metadata explicativa |
+| `pix_transaction_status` | catálogo dos três estados finais: `approved`, `rejected`, `two_factor_required` |
 
-`pix_transaction` aponta para as contas de origem e destino. A decisão e suas duas coleções de explicação são gravadas na mesma transação; não há `receipt`, `lease`, fila ou estado intermediário persistido. Assim, o `GET` só encontra análises completas e cada Pix continua auditável mesmo se as fontes externas mudarem depois.
+`pix_transaction` aponta para as contas de origem e destino. A transação e sua análise são gravadas na mesma transação SQL; não há `receipt`, `lease`, fila ou estado intermediário persistido. Assim, o `GET` só encontra análises completas e cada Pix continua auditável mesmo se as fontes externas mudarem depois.
 
 ### Dicionário das tabelas
 
@@ -301,10 +318,8 @@ O banco usa um modelo account-scoped: cada `account` combina documento e conta b
 | `risk_restriction` | `scope`, `active_from`, `active_until`, `status`, `occurrence_id` | blocklist temporal; FK para `account`; consultada antes de pontuar |
 | `external_risk_assessment` | `risk_subject`, `assessment`, validade, severidade e versão da fonte | inteligência externa vigente; FK para `account`; alimenta DICT02/03 |
 | `pix_transaction_status` | `enumerator` | catálogo fixo: `approved`, `rejected`, `two_factor_required` |
-| `pix_signal_status` | `enumerator` | catálogo fixo por regra: `triggered`, `not_triggered`, `unavailable` |
-| `pix_transaction` | payload, `external_id`, `received_at`, `evaluated_at`, scores, `decision_rule`, `reasons`, contexto | fato observado + decisão; FKs para conta de origem/destino; pai das explicações |
-| `pix_transaction_rule_result` | `rule_name`, `risk_subject`, `family`, `points`, `rule_result_data` | filho de `pix_transaction`; uma linha por regra executada; compõe `metadata.signals` |
-| `pix_transaction_risk_evidence` | `source_type`, `occurrence_id`, validade, `captured_at`, avaliação | snapshot filho do Pix; congela restrição/DICT usado, mesmo se fonte mudar depois |
+| `pix_transaction` | payload, `external_id`, `received_at`, contas e dados do Pix | fato observado; não contém a decisão |
+| `pix_analysis` | `status`, scores, `decision_rule`, `reasons`, `evaluated_at`, `metadata` | resultado 1:1; metadata conserva a explicação da avaliação |
 
 ```mermaid
 erDiagram
@@ -313,10 +328,8 @@ erDiagram
     ACCOUNT ||--o{ EXTERNAL_RISK_ASSESSMENT : avalia
     ACCOUNT ||--o{ PIX_TRANSACTION : origem
     ACCOUNT ||--o{ PIX_TRANSACTION : destino
-    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RULE_RESULT : explica
-    PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RISK_EVIDENCE : congela
-    PIX_TRANSACTION_STATUS ||--o{ PIX_TRANSACTION : classifica
-    PIX_SIGNAL_STATUS ||--o{ PIX_TRANSACTION_RULE_RESULT : estado
+    PIX_TRANSACTION ||--|| PIX_ANALYSIS : analisa
+    PIX_TRANSACTION_STATUS ||--o{ PIX_ANALYSIS : classifica
 ```
 
 `created_at` existe nos registros persistidos para indicar entrada no banco. Ele não substitui validade da fonte (`valid_from`/`valid_until`), cadastro de device (`registered_at`/`revoked_at`) nem o instante em que uma evidência foi capturada (`captured_at`).

@@ -3,7 +3,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from sqlalchemy.exc import SQLAlchemyError
 
-from antifraud import Analysis, Context, Transaction, evaluate, policy
+from antifraud import Analysis, Context, Transaction, evaluate, policy, signal_spec
 from connectors import DictConnector
 from controllers.base_controller import BaseController
 from controllers.pix_request import AccountData, PixRequest, parse_pix_request
@@ -115,6 +115,12 @@ class PixTransactionController(BaseController):
             pix_request, source_account, destination_account, dict_security_statistics, destination_account.id, evaluated_at
         )
         analysis = evaluate(context)
+        analysis_metadata = {
+            "evaluation_context": context_snapshot,
+            "family_contributions": analysis.family_contributions,
+            "signals": self._signal_rows(analysis),
+            "risk_evidence": json.loads(json.dumps(risk_evidence, default=str)),
+        }
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
         # DOIS pagadores. O banco ainda protege o INSERT com UNIQUE(external_id):
@@ -122,7 +128,7 @@ class PixTransactionController(BaseController):
         # responde como reenvio — 200 ou 409.
         pix_transaction = self._create_pix_transaction(
             pix_request, analysis, source_account, destination_account,
-            received_at=received_at, evaluated_at=evaluated_at, evaluation_context=context_snapshot,
+            received_at=received_at,
         )
         if pix_transaction is None:
             replayed = self._replay_if_recorded(pix_request)
@@ -130,14 +136,20 @@ class PixTransactionController(BaseController):
                 raise PixTransactionIdConflict(pix_request.external_id)
             return replayed, False
 
-        self.pix_transaction_repository.create_signals(
+        persisted_analysis = self.pix_transaction_repository.create_analysis(
             pix_transaction_id=pix_transaction.id,
-            signals=self._signal_rows(analysis),
+            status_id=self.pix_transaction_repository.get_status_id(enumerator=analysis.status),
+            payer_risk=analysis.payer_risk,
+            recipient_risk=analysis.recipient_risk,
+            payer_sufficiency=analysis.payer_sufficiency,
+            recipient_sufficiency=analysis.recipient_sufficiency,
+            policy_version=analysis.policy_version,
+            decision_rule=analysis.decision_rule,
+            reasons=list(analysis.reasons),
+            evaluated_at=evaluated_at,
+            analysis_metadata=analysis_metadata,
         )
-        self.pix_transaction_repository.create_risk_evidence(
-            pix_transaction_id=pix_transaction.id,
-            evidence=risk_evidence,
-        )
+        pix_transaction.analysis = persisted_analysis
 
         self.logger.info(
             f"Pix {pix_request.external_id} de {mask_document(pix_request.source_account.document_number)} "
@@ -145,10 +157,16 @@ class PixTransactionController(BaseController):
             f"{analysis.status} pela {analysis.decision_rule}"
         )
 
-        pix_transaction_dto = self._recorded_analysis(pix_transaction)
         self.session.commit()
-
-        return pix_transaction_dto, True
+        # Read back through the same path as GET. PostgreSQL canonicalizes
+        # JSONB key order; returning the persisted row keeps POST and GET
+        # byte-for-byte identical.
+        recorded = self.pix_transaction_repository.get_by_external_id(
+            external_id=pix_request.external_id
+        )
+        if recorded is None:
+            raise PixTransactionIdConflict(pix_request.external_id)
+        return self._recorded_analysis(recorded), True
 
     def get_by_external_id(self, external_id: str) -> dict:
         """A análise gravada do Pix com este id do payload.
@@ -457,17 +475,9 @@ class PixTransactionController(BaseController):
 
     def _create_pix_transaction(
         self, pix_request: PixRequest, analysis: Analysis, source_account: Account, destination_account: Account,
-        *, received_at: datetime, evaluated_at: datetime, evaluation_context: dict,
+        *, received_at: datetime,
     ) -> PixTransaction | None:
         return self.pix_transaction_repository.create(
-            status_id=self.pix_transaction_repository.get_status_id(enumerator=analysis.status),
-            payer_risk=analysis.payer_risk,
-            recipient_risk=analysis.recipient_risk,
-            payer_sufficiency=analysis.payer_sufficiency,
-            recipient_sufficiency=analysis.recipient_sufficiency,
-            policy_version=analysis.policy_version,
-            decision_rule=analysis.decision_rule,
-            reasons=list(analysis.reasons),
             source_account_id=source_account.id,
             destination_account_id=destination_account.id,
             pix_transaction_data=pix_request.payload,
@@ -480,30 +490,31 @@ class PixTransactionController(BaseController):
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
             received_at=received_at,
-            evaluated_at=evaluated_at,
-            evaluation_context=evaluation_context,
-            family_contributions=analysis.family_contributions,
         )
 
     def _signal_rows(self, analysis: Analysis) -> list[dict]:
-        """Os 20 sinais como linhas de pix_transaction_rule_result.
+        """Sinais compactados no metadata da análise.
 
         Vão todos, inclusive os not_triggered e os unavailable: o GET
         mostra cada regra e o que ela disse, até quando foi "não sei".
         """
-        return [
-            {
-                "rule_name": signal.code,
-                "signal_status_id": self.pix_transaction_repository.get_signal_status_id(enumerator=signal.status),
+        rows = []
+        for signal in analysis.signals:
+            row = {
+                "code": signal.code,
+                "layer": signal_spec(signal.code).layer,
+                "granularity": signal_spec(signal.code).granularity,
                 "risk_subject": signal.axis,
                 "family": signal.family,
                 "points": signal.points,
-                "rule_result_data": signal.evidence,
+                "status": signal.status,
             }
-            for signal in analysis.signals
-        ]
+            if signal.evidence:
+                row["evidence"] = signal.evidence
+            rows.append(row)
+        return rows
 
     def _recorded_analysis(self, pix_transaction: PixTransaction) -> dict:
-        rule_results = self.pix_transaction_repository.list_signals(pix_transaction_id=pix_transaction.id)
-
-        return PixTransactionDTO.obj_to_dict(pix_transaction, rule_results)
+        if pix_transaction.analysis is None:
+            raise PixTransactionIdConflict(pix_transaction.external_id)
+        return PixTransactionDTO.obj_to_dict(pix_transaction, pix_transaction.analysis)

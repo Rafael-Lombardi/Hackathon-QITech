@@ -22,7 +22,7 @@ LOCAL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 
 class SignalStatus(StrEnum):
-    """Os três estados de um sinal, com o texto de pix_signal_status.
+    """Os três estados de um sinal, persistidos na metadata da análise.
 
     unavailable existe pra que falta de histórico não vire resposta. Se
     virasse not_triggered, o primeiro Pix de um cliente sairia com P03
@@ -264,7 +264,7 @@ class Context:
 
 @dataclass(frozen=True)
 class Signal:
-    """O resultado de uma regra, uma linha de pix_transaction_rule_result.
+    """O resultado de uma regra, serializado na metadata da análise.
 
     points é o do catálogo quando triggered e 0 nos outros dois estados;
     evidence só tem conteúdo quando triggered. Quem garante são as três
@@ -308,7 +308,7 @@ class Analysis:
 
     status vira o status_id; os sete campos seguintes são as sete colunas
     de decisão de pix_transaction; signals vira as linhas de
-    pix_transaction_rule_result, na ordem do catálogo.
+    metadata da análise, na ordem do catálogo.
     """
 
     status: PixStatus

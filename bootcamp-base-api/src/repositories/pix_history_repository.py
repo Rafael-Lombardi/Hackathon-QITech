@@ -51,13 +51,14 @@ _PAYER_QUERY = text("""
         SELECT pix.received_at,
                (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day,
                pix.amount,
-               pix.status_id,
+               analysis.status_id,
                pix.device_id,
                pix.ip,
                pix.destination_account_id,
                recipient.document_number AS destination_document
         FROM account payer
         JOIN pix_transaction pix ON pix.source_account_id = payer.id
+        JOIN pix_analysis analysis ON analysis.pix_transaction_id = pix.id
         JOIN account recipient ON recipient.id = pix.destination_account_id
         WHERE payer.document_number = (SELECT document_number FROM account WHERE id = :payer_account_id)
           AND pix.received_at < :t
@@ -192,12 +193,13 @@ _RECIPIENT_QUERY = text("""
 """)
 
 _PAIR_QUERY = text("""
-    SELECT count(*) FILTER (WHERE pix.status_id = :approved) AS prior_approved,
-           min(pix.received_at) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
-           count(*) FILTER (WHERE pix.status_id IN (:rejected, :two_factor_required)
+    SELECT count(*) FILTER (WHERE analysis.status_id = :approved) AS prior_approved,
+           min(pix.received_at) FILTER (WHERE analysis.status_id = :approved) AS first_approved_at,
+           count(*) FILTER (WHERE analysis.status_id IN (:rejected, :two_factor_required)
                               AND pix.received_at > :anomaly_since) > 0 AS recent_anomaly
     FROM account payer
     JOIN pix_transaction pix ON pix.source_account_id = payer.id
+    JOIN pix_analysis analysis ON analysis.pix_transaction_id = pix.id
     JOIN account recipient ON recipient.id = pix.destination_account_id
     WHERE payer.document_number = (SELECT document_number FROM account WHERE id = :payer_account_id)
       AND recipient.document_number = (SELECT document_number FROM account WHERE id = :recipient_account_id)
@@ -227,14 +229,16 @@ class PixHistoryRepository:
         latest = self.session.scalar(text("""
             SELECT max(evaluated_at)
             FROM (
-                SELECT pix.evaluated_at
+                SELECT analysis.evaluated_at
                 FROM account source
                 JOIN pix_transaction pix ON pix.source_account_id = source.id
+                JOIN pix_analysis analysis ON analysis.pix_transaction_id = pix.id
                 WHERE source.document_number = (SELECT document_number FROM account WHERE id = :payer_account_id)
                 UNION ALL
-                SELECT pix.evaluated_at
+                SELECT analysis.evaluated_at
                 FROM account destination
                 JOIN pix_transaction pix ON pix.destination_account_id = destination.id
+                JOIN pix_analysis analysis ON analysis.pix_transaction_id = pix.id
                 WHERE destination.document_number = (SELECT document_number FROM account WHERE id = :recipient_account_id)
             ) relevant
         """), {
@@ -258,8 +262,9 @@ class PixHistoryRepository:
                    (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day
             FROM account payer
             JOIN pix_transaction pix ON pix.source_account_id = payer.id
+            JOIN pix_analysis analysis ON analysis.pix_transaction_id = pix.id
             WHERE payer.document_number = (SELECT document_number FROM account WHERE id = :account_id)
-              AND pix.status_id = :approved
+              AND analysis.status_id = :approved
               AND pix.received_at > :since
               AND pix.received_at <= :cutoff
             AND pix.latitude IS NOT NULL AND pix.longitude IS NOT NULL

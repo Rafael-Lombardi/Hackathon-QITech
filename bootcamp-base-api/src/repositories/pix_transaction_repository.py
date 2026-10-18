@@ -5,11 +5,11 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import Context
-from models import PixSignalStatus, PixTransaction, PixTransactionRuleResult, PixTransactionStatus
+from models import PixAnalysis, PixTransaction, PixTransactionStatus
 
 
 class PixTransactionRepository:
-    """O Pix gravado, os sinais dele e os ids das duas tabelas-enum.
+    """O Pix observado, sua análise e o catálogo de decisões.
 
     Não dá commit: create e create_signals deixam tudo na transação
     aberta, e o commit é a última linha do controller.
@@ -19,7 +19,6 @@ class PixTransactionRepository:
     # consulta e ficam lá, compartilhados por todas as requisições do
     # processo: eles não mudam depois do INSERT do database.sql.
     _status_ids: dict[str, int] = {}
-    _signal_status_ids: dict[str, int] = {}
 
     def __init__(self, context: Context) -> None:
         self.session = context.db_session
@@ -32,16 +31,15 @@ class PixTransactionRepository:
         """
         return self.session.scalars(
             select(PixTransaction)
-            .options(joinedload(PixTransaction.status, innerjoin=True))
+            .options(joinedload(PixTransaction.analysis).joinedload(PixAnalysis.status, innerjoin=True))
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
 
     def create(self, **fields) -> PixTransaction | None:
         """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.
 
-        fields usa os nomes das colunas (status_id, payer_risk,
-        pix_transaction_data...); só a pix_transaction_key nasce aqui. O
-        INSERT sai agora, sem commit: os sinais precisam do id.
+        fields usa os nomes das colunas do fato observado. A análise é
+        inserida depois, na mesma transação SQL.
 
         None é a corrida do mesmo id chegando junto por pagadores
         diferentes, que a trava (uma por pagador) não serializa: o outro
@@ -60,57 +58,20 @@ class PixTransactionRepository:
             .returning(PixTransaction)
         ).one_or_none()
 
-    def create_signals(self, pix_transaction_id: int, signals: list[dict]) -> None:
-        """Grava os sinais de um Pix num INSERT só, uma linha por sinal.
-
-        Cada dict usa os nomes das colunas (rule_name, signal_status_id,
-        risk_subject, family, points, rule_result_data); o pix_transaction_id
-        entra aqui. Passar a lista inteira ao session.execute vira um
-        INSERT ... VALUES (...), (...) — o insertmanyvalues do SQLAlchemy
-        2.0. Um INSERT por sinal custaria o dobro: medido com 8 clientes,
-        550 Pix por segundo em vez de 1.000.
-        """
-        # Com a lista vazia, o SQLAlchemy mandaria um INSERT sem valores.
-        if not signals:
-            return
-
-        rows = [{**signal, "pix_transaction_id": pix_transaction_id} for signal in signals]
-        self.session.execute(insert(PixTransactionRuleResult), rows)
-
-    def create_risk_evidence(self, pix_transaction_id: int, evidence: list[dict]) -> None:
-        """Grava os snapshots autoritativos consultados para esta análise."""
-        if not evidence:
-            return
-        from models import PixTransactionRiskEvidence
-
-        rows = [{**item, "pix_transaction_id": pix_transaction_id} for item in evidence]
-        self.session.execute(insert(PixTransactionRiskEvidence), rows)
-
-    def list_signals(self, pix_transaction_id: int) -> list[PixTransactionRuleResult]:
-        """Os sinais de um Pix na ordem em que foram gravados, com o estado de cada um.
-
-        O estado (signal_status.enumerator) vem no mesmo SELECT, por JOIN.
-        A ordem é a do id: o INSERT multi-linha numera as linhas na ordem
-        da lista que recebeu.
-        """
-        return list(self.session.scalars(
-            select(PixTransactionRuleResult)
-            .options(joinedload(PixTransactionRuleResult.signal_status, innerjoin=True))
-            .where(PixTransactionRuleResult.pix_transaction_id == pix_transaction_id)
-            .order_by(PixTransactionRuleResult.id)
-        ))
+    def create_analysis(self, **fields) -> PixAnalysis:
+        """Grava o único resultado da avaliação, sem commit."""
+        analysis = PixAnalysis(**fields)
+        self.session.add(analysis)
+        self.session.flush()
+        return analysis
 
     def get_status_id(self, enumerator: str) -> int:
         """O id de um veredicto ("approved", "rejected", "two_factor_required")."""
         return self._enum_ids(PixTransactionStatus, PixTransactionRepository._status_ids)[enumerator]
 
-    def get_signal_status_id(self, enumerator: str) -> int:
-        """O id de um estado de sinal ("triggered", "not_triggered", "unavailable")."""
-        return self._enum_ids(PixSignalStatus, PixTransactionRepository._signal_status_ids)[enumerator]
-
     def _enum_ids(
         self,
-        model: type[PixTransactionStatus] | type[PixSignalStatus],
+        model: type[PixTransactionStatus],
         cache: dict[str, int],
     ) -> dict[str, int]:
         # Uma consulta traz a tabela inteira, que são três linhas. Repare
