@@ -462,7 +462,7 @@ class TestFronteiras:
 
     @pytest.mark.parametrize(
         "earlier_minutes, expected, recipient_score",
-        [((7, 5, 3), "not_triggered", 0), ((9, 7, 5, 3), "triggered", 16)],
+        [((7, 5, 3), "not_triggered", 8), ((9, 7, 5, 3), "triggered", 24)],
         ids=["4a-entrada-nao-dispara", "5a-entrada-dispara"],
     )
     def test_fronteira_r02_entradas_em_10_min(self, earlier_minutes, expected, recipient_score):
@@ -471,8 +471,10 @@ class TestFronteiras:
         Preparo: o mesmo pagador manda 3 ou 4 Pix de 2 em 2 minutos,
         alternando duas contas do mesmo titular. Pix: a 4ª ou a 5ª entrada.
         Com um único pagador, o R03 fica de fora, e o espaço de 2 minutos
-        deixa o P04 de fora (no máximo 2 na janela de 5 min). Sozinho,
-        +16: D-OK.
+        deixa o P04 de fora (no máximo 2 na janela de 5 min). O REL01 +8
+        vai junto nos dois lados: os aprovados do par são de minutos atrás,
+        fora do baseline de 24 h, e pro motor o titular ainda é inédito.
+        Destino 8 ou 24: D-OK.
         """
         payer, holder = new_payer(), new_recipient()
         accounts = [holder, holder.with_new_account()]
@@ -564,6 +566,7 @@ class TestFronteiras:
         assert pix.signal("P04")["points"] == 20
         assert pix.signal("P05")["points"] == 15
         assert pix.scores == {"payer": 25, "recipient": 0}
+        assert pix.metadata["family_contributions"]["payer_velocity"] == {"raw": 35, "applied": 25, "cap": 25}
         assert pix.decision_rule == "D-OK"
 
     def test_teto_do_payer_behavior_segura_em_45(self):
@@ -619,15 +622,17 @@ class TestFronteiras:
         assert pix.http_status == 201
         assert pix.triggered() == {"R01", "REL02", "REL03"}
         assert pix.scores["recipient"] == 2
+        assert pix.metadata["family_contributions"]["relation"] == {"raw": -13, "applied": -10, "cap": 8}
         assert pix.decision_rule == "D-OK"
 
     def test_fronteira_d_pay_39_aprova(self):
         """O D-PAY pede pagador >= 40. Com 39, aprova.
 
-        Preparo: conta aberta há 2 dias; 3 Pix às 10h (anteontem, ontem e
-        hoje), do aparelho de sempre. Pix: R$ 8.100 às 21h, num IP novo.
+        Preparo: conta aberta há 4 dias; 3 Pix às 21h nos 3 dias
+        anteriores, do aparelho cadastrado (o de ontem, 24 h atrás, ainda
+        é baseline). Pix: R$ 8.100 às 21h, num IP novo.
 
-            P01 +10    conta pagadora com 2 dias
+            P01 +10    conta pagadora com 4 dias
             L01 +8     21h, acima de R$ 1.000
             P05 +15    R$ 8.100 em 1 h (> R$ 8.000)
             P09 +6     IP sem Pix aprovado do pagador (o aparelho é o
@@ -636,9 +641,9 @@ class TestFronteiras:
 
         D-OK. O outro lado da fronteira é o teste seguinte.
         """
-        payer = new_payer(opening_date=at(T0, 9) - timedelta(days=2))
+        payer = new_payer(opening_date=at(T0, 9) - timedelta(days=4))
         recipient = new_recipient()
-        seed_pix(payer, recipient, days_before(at(T0, 10), 2) + [at(T0, 10)])
+        seed_pix(payer, recipient, days_before(at(T0, 21), 3))
 
         pix = post_pix(pix_payload(payer, recipient, at(T0, 21), amount=810000, ip=new_ip()))
 
@@ -679,9 +684,9 @@ class TestFronteiras:
         """O D-RCP pede destino >= 40. Com 39, aprova.
 
         O destino soma quatro grupos: o recipient_network (R01 12, R02 16,
-        R03 20, R04 15; teto 40), a estatística DICT (DICT01 32; teto 32),
-        as marcações do DICT (DICT02 20, DICT03 25; teto 25) e a relation
-        (REL01 8, REL02 -8, REL03 -5; de -10 a 8). O 39 é este:
+        R03 20, R04 15; teto 35), a estatística DICT (DICT01 32; teto 32),
+        as ocorrências do DICT (DICT02 20, DICT03 25, DICT04 8; teto 25) e
+        a relation (REL01 8, REL02 -8, REL03 -5; de -10 a 8). O 39 é este:
 
         Um cliente novo manda R$ 50 pra uma conta DELE, noutro banco, aberta
         há 2 dias, e o DICT dá confiança 12 pro documento dele.

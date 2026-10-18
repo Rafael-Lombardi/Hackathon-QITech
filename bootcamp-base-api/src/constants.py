@@ -13,10 +13,9 @@ INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN")
 
 # As três fontes que o controller consulta antes de decidir, cada uma
 # atrás do próprio connector em src/connectors/: o DICT do Banco Central
-# (estatística de segurança e marcação de fraude do recebedor), o
-# cadastro de aparelhos do banco (o par pagador–aparelho está
-# cadastrado?) e as restrições internas (alguém desta transação está
-# bloqueado?). No compose as três são o mesmo MockServer, o serviço
+# (estatística e ocorrências de segurança de um documento), o cadastro de
+# aparelhos do banco (o par pagador–aparelho está cadastrado?) e as
+# restrições internas (alguém desta transação está bloqueado?). No compose as três são o mesmo MockServer, o serviço
 # dict-mock; trocar o mock pela fonte de verdade é mudar a URL dela, e
 # só. Prazo e token são um só pras três: são o mesmo tipo de conversa,
 # entre serviços internos, e ninguém quer três prazos pra afinar.

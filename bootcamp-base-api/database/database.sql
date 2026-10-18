@@ -145,7 +145,7 @@ CREATE INDEX account_customer_id_idx
 -- tabela (uns 650 bytes por Pix), e a primeira alavanca de retenção
 -- quando o disco apertar.
 --
--- status_id é o veredicto; as sete colunas logo abaixo dele são como ele
+-- status_id é o veredicto; as oito colunas logo abaixo dele são como ele
 -- foi tomado. Duas notas de risco, 0 a 100, uma pro pagador e uma pro
 -- destino — a RFC chama cada uma de eixo (payer_risk, recipient_risk).
 -- Quanto histórico havia pra sustentar cada nota (payer_sufficiency,
@@ -158,9 +158,11 @@ CREATE INDEX account_customer_id_idx
 -- pesos depois, olhando o que aconteceu, é uma consulta — "qual era o
 -- payer_risk dos Pix que viraram 2FA?" — e não deveria passar por
 -- reasons->>'payer_risk'. Sem índice nelas: quem ajusta peso roda a
--- consulta de vez em quando e pode esperar; não é caminho do POST. Os
--- sinais, um a um, ficam em pix_transaction_rule_result, no fim do
--- arquivo.
+-- consulta de vez em quando e pode esperar; não é caminho do POST. A
+-- conta das notas, grupo de teto a grupo de teto — pontos brutos, teto e
+-- quanto entrou (family_contributions) —, é JSONB: nove grupos por Pix,
+-- lidos sempre inteiros, pra resposta, e nunca filtrados. Os sinais, um
+-- a um, ficam em pix_transaction_rule_result, no fim do arquivo.
 --
 -- Sobre as colunas, o que não está escrito no tipo:
 --
@@ -225,6 +227,7 @@ CREATE TABLE pix_transaction(
     policy_version                  VARCHAR(20) NOT NULL,
     decision_rule                   VARCHAR(20) NOT NULL,
     reasons                         JSONB NOT NULL,
+    family_contributions            JSONB NOT NULL,
     source_account_id               BIGINT NOT NULL REFERENCES account(id),
     destination_account_id          BIGINT NOT NULL REFERENCES account(id),
     pix_transaction_data            JSONB NOT NULL,
@@ -255,6 +258,7 @@ CREATE TABLE pix_transaction(
     CHECK(policy_version <> ''),
     CHECK(decision_rule <> ''),
     CHECK(jsonb_typeof(reasons) = 'array'),
+    CHECK(jsonb_typeof(family_contributions) = 'object'),
     CHECK(amount > 0),
     CHECK((latitude IS NULL) = (longitude IS NULL)),
     CHECK(latitude IS NULL OR latitude BETWEEN -90 AND 90),

@@ -70,20 +70,72 @@ class Sufficiency(StrEnum):
     HIGH = "high"
 
 
-class FraudMarker(StrEnum):
-    """A marcação de fraude de um documento no DICT.
+class OccurrenceKind(StrEnum):
+    """Os três tipos de ocorrência de segurança que o DICT registra contra um documento.
 
-    Além das estatísticas, o DICT guarda as marcações de fraude que os
+    O DICT guarda, além das estatísticas, as marcações de fraude que os
     participantes registram contra uma chave ou um documento (Manual
-    Operacional do DICT, cap. 10 e 18): a suspeita, aberta por quem
-    notificou, e a confirmada. NONE é o DICT dizendo que não há marcação.
-    DICT fora do ar não é marcação nenhuma: aí o Context carrega None, e
-    o DICT02 e o DICT03 saem unavailable.
+    Operacional do DICT, cap. 10 e 18). A RFC as separa em três (§6): a
+    denúncia ainda não resolvida, a evidência ligada a fraude e a fraude
+    confirmada — na fixture, "confirmada no mock", que não é confirmação
+    de fraude real. Cada uma é um sinal (DICT04, DICT02, DICT03), e as
+    duas últimas são também a porteira das rejeições por evidência.
     """
 
-    NONE = "none"
-    SUSPICIOUS = "suspicious"
-    CONFIRMED = "confirmed"
+    UNRESOLVED_REPORT = "unresolved_report"
+    FRAUD_RELATED_EVIDENCE = "fraud_related_evidence"
+    CONFIRMED_IN_MOCK = "confirmed_in_mock"
+
+
+# Os tipos que abrem a porteira de uma rejeição (D-REJ-PAY, D-REJ-RCP,
+# D-REJ-CROSS). A denúncia não resolvida fica de fora de propósito: pesa
+# no score, e não rejeita ninguém (RFC §6 e §7).
+ADVERSE_KINDS = frozenset({OccurrenceKind.FRAUD_RELATED_EVIDENCE, OccurrenceKind.CONFIRMED_IN_MOCK})
+
+
+@dataclass(frozen=True)
+class DictOccurrence:
+    """Uma ocorrência de segurança do DICT, como a fonte a descreve.
+
+    source e occurrence_id juntos identificam a ocorrência: a mesma vinda
+    duas vezes conta uma. A vigência é [reported_at, expires_at), e as
+    duas datas são obrigatórias — ocorrência sem prazo não entra no
+    Context. severity e fixture_version são só registro.
+    """
+
+    occurrence_id: str
+    kind: OccurrenceKind
+    reported_at: datetime
+    expires_at: datetime
+    source: str
+    severity: str | None = None
+    fixture_version: str | None = None
+
+    def active_at(self, moment: datetime) -> bool:
+        return self.reported_at <= moment < self.expires_at
+
+
+@dataclass(frozen=True)
+class DictSecurityEvidence:
+    """O que o DICT disse de um documento: a estatística de segurança e as ocorrências vigentes.
+
+    O controller consulta o DICT pelo recebedor e pelo pagador, e entrega
+    de cada um só as ocorrências vigentes no instante da avaliação, já
+    deduplicadas. Sem resposta do DICT pra um documento, o Context carrega
+    None no lugar disto: a camada 3 inteira sai unavailable pra esse eixo,
+    e nenhuma rejeição por evidência casa.
+    """
+
+    statistics: int  # 0 a 100
+    occurrences: tuple[DictOccurrence, ...]
+
+    def occurrences_of(self, kind: OccurrenceKind) -> tuple[DictOccurrence, ...]:
+        return tuple(occurrence for occurrence in self.occurrences if occurrence.kind is kind)
+
+    @property
+    def adverse(self) -> bool:
+        """Há evidência ligada a fraude, ou fraude confirmada na fixture, vigente contra o documento."""
+        return any(occurrence.kind in ADVERSE_KINDS for occurrence in self.occurrences)
 
 
 class RegistrationStatus(StrEnum):
@@ -116,8 +168,8 @@ class RestrictionScope(StrEnum):
 
 # O que a regra viu e com que limite comparou. Vai pra rule_result_data
 # e volta em metadata.signals, então só leva tipo que o JSON entende — e
-# nunca documento.
-EvidenceValue = int | float | bool | str
+# nunca documento. A lista é pros ids das ocorrências do DICT, e só.
+EvidenceValue = int | float | bool | str | list[str]
 Evidence = dict[str, EvidenceValue]
 
 
@@ -333,7 +385,10 @@ class PairHistory:
     # Pix, como a idade das contas: (evaluated_at - primeiro).days. None
     # sem nenhum aprovado.
     first_approved_days_ago: int | None
-    # rejected ou two_factor_required no par, nos últimos 7 dias
+    # Algum sinal adverso (PAIR_ANOMALY_SIGNALS, no policy.py) disparou
+    # numa tentativa do par nas últimas 24 h, seja qual for o veredicto
+    # dela. Lido dos sinais gravados, não do status: um 2FA pelo destino
+    # (DICT01) não é anomalia do par; um P03 aprovado é.
     recent_anomaly: bool
 
 
@@ -343,8 +398,8 @@ class Context:
 
     Quem monta é o controller: o histórico vem dos repositories, o
     cadastro do aparelho e as restrições vêm dos connectors de cada
-    fonte, e a estatística de segurança e a marcação de fraude do
-    recebedor vêm do connector do DICT, numa consulta só. O motor só lê.
+    fonte, e a evidência de segurança do DICT vem do connector dele, uma
+    consulta pelo recebedor e uma pelo pagador. O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem
     exatos da própria definição. Pagador sem Pix anterior
@@ -365,10 +420,12 @@ class Context:
     # de destino ou desta conta exata: o controller filtra, e qualquer
     # uma aqui rejeita (D-RESTRICT-SIM). Quase sempre vazia.
     restrictions: tuple[Restriction, ...]
-    # Os dois vêm da mesma resposta do DICT sobre o recebedor, e os dois
-    # ficam None quando o DICT falhou: a camada 3 inteira sai unavailable.
-    dict_security_statistics: int | None
-    dict_fraud_marker: FraudMarker | None
+    # O DICT sobre o recebedor pontua (DICT01 a DICT04) e abre a porteira
+    # das rejeições do destino; sobre o pagador só abre a do D-REJ-PAY,
+    # sem ponto (RFC §7). None é o DICT que não respondeu sobre aquele
+    # documento.
+    recipient_dict: DictSecurityEvidence | None
+    payer_dict: DictSecurityEvidence | None
 
 
 @dataclass(frozen=True)
@@ -415,9 +472,14 @@ class Layer(Protocol):
 class Analysis:
     """A análise de um Pix, pronta pra gravar e devolver.
 
-    status vira o status_id; os sete campos seguintes são as sete colunas
+    status vira o status_id; os oito campos seguintes são as oito colunas
     de decisão de pix_transaction; signals vira as linhas de
     pix_transaction_rule_result, na ordem do catálogo.
+
+    family_contributions é a conta da nota, grupo de teto a grupo de teto
+    (RFC §6: "pontos brutos, teto e contribuição efetiva de cada
+    família"): {grupo: {raw, applied, cap}}, com os nove grupos sempre
+    presentes. A nota de cada eixo é a soma dos applied dos grupos dele.
     """
 
     status: PixStatus
@@ -428,4 +490,5 @@ class Analysis:
     payer_sufficiency: Sufficiency
     recipient_sufficiency: Sufficiency
     policy_version: str
+    family_contributions: dict[str, dict[str, int]]
     signals: tuple[Signal, ...]

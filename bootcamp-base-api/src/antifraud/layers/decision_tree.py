@@ -292,15 +292,18 @@ def _rel01_new_relation(context: Context) -> Signal:
 def _rel02_recurrent_relation(context: Context) -> Signal:
     if _payer_is_new(context):
         return policy.unavailable("REL02")
-    # Uma rejeição ou um 2FA no par nos últimos 7 dias suspende o
-    # desconto: se o próprio motor desconfiou desse par há pouco,
-    # descontar agora facilitaria justo a tentativa seguinte.
+    # Um sinal adverso numa tentativa do par nas últimas 24 h, ou uma
+    # restrição ativa agora, suspende o desconto: se o próprio motor
+    # desconfiou desse par há pouco, descontar agora facilitaria justo a
+    # tentativa seguinte (RFC §5). Com restrição a resposta é rejeição de
+    # qualquer jeito; o sinal fica calado pra contar a história certa.
     pair = context.pair
     recurrent = (
         pair.prior_approved >= policy.RECURRENT_PAIR_MIN_APPROVED
         and pair.first_approved_days_ago is not None
         and pair.first_approved_days_ago >= policy.RECURRENT_PAIR_MIN_DAYS
         and not pair.recent_anomaly
+        and not context.restrictions
     )
     if recurrent:
         return policy.triggered("REL02", {

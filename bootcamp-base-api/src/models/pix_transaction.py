@@ -50,6 +50,7 @@ class PixTransaction(Base):
     policy_version = Column(String(20), nullable=False)
     decision_rule = Column(String(20), nullable=False)
     reasons = Column(JSONB, nullable=False)
+    family_contributions = Column(JSONB, nullable=False)
     source_account_id = Column(BigInteger, ForeignKey(Account.id), nullable=False)
     destination_account_id = Column(BigInteger, ForeignKey(Account.id), nullable=False)
     pix_transaction_data = Column(JSONB, nullable=False)
@@ -82,6 +83,7 @@ class PixTransaction(Base):
         CheckConstraint("policy_version <> ''"),
         CheckConstraint("decision_rule <> ''"),
         CheckConstraint("jsonb_typeof(reasons) = 'array'"),
+        CheckConstraint("jsonb_typeof(family_contributions) = 'object'"),
         CheckConstraint("amount > 0"),
         CheckConstraint("(latitude IS NULL) = (longitude IS NULL)"),
         CheckConstraint("latitude IS NULL OR latitude BETWEEN -90 AND 90"),

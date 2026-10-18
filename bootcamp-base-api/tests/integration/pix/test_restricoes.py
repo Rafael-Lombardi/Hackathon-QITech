@@ -44,7 +44,7 @@ class TestRestricoes:
         de sempre — o Pix mais inocente da suíte, pagador 0 e destino 0 —
         e a fonte tem uma restrição ativa contra o pagador, o titular do
         destino ou a conta exata. Rejeitado, com a restrição na resposta
-        (sem o documento) e o motivo dizendo qual. Os 23 sinais continuam
+        (sem o documento) e o motivo dizendo qual. Os 24 sinais continuam
         na resposta: a restrição decide, mas não cala o motor. O GET
         devolve o mesmo.
         """
@@ -66,7 +66,7 @@ class TestRestricoes:
         assert pix.reasons == [f"Restrição ativa: conta bloqueada por ordem judicial ({scope})"]
         assert pix.metadata["restrictions"] == [_as_returned(restriction)]
         assert pix.scores == {"payer": 0, "recipient": 0}
-        assert len(pix.metadata["signals"]) == 23
+        assert len(pix.metadata["signals"]) == 24
         assert get_pix(payload["id"]).content == pix.content
 
     def test_restricao_prevalece_sobre_cadastro_fora_do_ar(self, sources_mock):

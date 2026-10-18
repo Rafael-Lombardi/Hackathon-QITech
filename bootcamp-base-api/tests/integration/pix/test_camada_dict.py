@@ -1,12 +1,16 @@
-"""Camada 3: a estatística de segurança e a marcação de fraude do destino, pelo mock do DICT.
+"""Camada 3: a estatística de segurança e as ocorrências do DICT, pelo mock dele.
 
-A API consulta GET /security-statistics/{documento do recebedor} antes de
-decidir, e a resposta traz as duas coisas. Estatística abaixo de 30
-dispara o DICT01 (+32, eixo do destino, com teto próprio); marcação de
-fraude suspeita dispara o DICT02 (+20) e confirmada o DICT03 (+25), no
-grupo dict_security. Mock lento demais, com erro ou respondendo torto
-vira a camada 3 inteira unavailable — e o Pix sai decidido pelas outras
-duas camadas, sem ponto e sem desconto.
+A API consulta GET /security-statistics/{documento} pelo recebedor e pelo
+pagador antes de decidir, e a resposta traz as duas coisas. Do recebedor:
+estatística abaixo de 30 dispara o DICT01 (+32, eixo do destino, com teto
+próprio); uma ocorrência vigente dispara o sinal do tipo dela — evidência
+de fraude, DICT02 (+20); fraude confirmada na fixture, DICT03 (+25);
+denúncia não resolvida, DICT04 (+8) —, os três no grupo dict_security
+(teto 25). Do pagador, ocorrência nenhuma pontua: é só a porteira do
+D-REJ-PAY (test_rejeicoes.py). Mock lento demais, com erro ou respondendo
+torto vira a camada 3 inteira unavailable — e o Pix sai decidido pelas
+outras duas camadas, sem ponto e sem desconto. Uma ocorrência torta, ao
+contrário, é só ignorada: as outras valem.
 
 Cada teste escreve o roteiro do recebedor dele no mock pela fixture
 sources_mock (tests/conftest.py), que apaga o roteiro quando o teste acaba,
@@ -23,11 +27,15 @@ from datetime import timedelta
 import pytest
 
 from tests.utils.clock import T0, at, days_ago
-from tests.utils.sources_mock import sources_timeout
 from tests.utils.identities import format_document, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed_pix
+from tests.utils.sources_mock import occurrence, sources_timeout
 
 LOW_SECURITY_STATISTICS = 12
+
+# O que fica calado no primeiro Pix de um pagador coberto pelo cadastro,
+# com o DICT respondendo sem nada contra o destino.
+QUIET_ON_FIRST_PIX = {"P01", "L01", "R01", "REL03", "L02", "L03", "P03", "DICT01", "DICT02", "DICT03", "DICT04"}
 
 
 class TestCamadaDict:
@@ -118,54 +126,172 @@ class TestCamadaDict:
         assert pix.decision_rule == "D-OK"
 
     @pytest.mark.parametrize(
-        "fraud_marker, triggered, points",
-        [("suspicious", "DICT02", 20), ("confirmed", "DICT03", 25)],
-        ids=["suspeita-dispara-dict02", "confirmada-dispara-dict03"],
+        "kind, triggered, points",
+        [("fraud_related_evidence", "DICT02", 20), ("confirmed_in_mock", "DICT03", 25), ("unresolved_report", "DICT04", 8)],
+        ids=["evidencia-dispara-dict02", "confirmada-dispara-dict03", "denuncia-dispara-dict04"],
     )
-    def test_marcacao_de_fraude_vira_dict02_ou_dict03(self, sources_mock, fraud_marker, triggered, points):
-        """A marcação de fraude do destino no DICT: suspeita é DICT02 (+20), confirmada é DICT03 (+25).
+    def test_ocorrencia_vigente_vira_dict02_dict03_ou_dict04(self, sources_mock, kind, triggered, points):
+        """Uma ocorrência vigente contra o destino vira o sinal do tipo dela: DICT02 (+20), DICT03 (+25) ou DICT04 (+8).
 
         A estatística fica no padrão (70) e o pagador é novo na base, do
-        aparelho cadastrado (P03 e L02 calados): no eixo do destino só a
-        marcação pesa, e o outro sinal do par fica calado — o DICT
-        respondeu, e a marcação é uma só. Sozinha, ela não
-        chega aos 40 do D-RCP: D-OK. O que ela abre é a porteira das
-        rejeições do destino, em test_rejeicoes.py.
+        aparelho cadastrado: no eixo do destino só a ocorrência pesa, e os
+        outros dois sinais do grupo ficam calados — o DICT respondeu, e a
+        ocorrência é de um tipo só. A evidência traz o id dela. Sozinha,
+        nenhuma chega aos 40 do D-RCP: D-OK. O que a evidência e a
+        confirmação abrem é a porteira das rejeições do destino, em
+        test_rejeicoes.py; a denúncia não resolvida não abre nada.
         """
         payer, recipient = new_payer(), new_recipient()
-        sources_mock.set_security_statistics(recipient.document, 70, fraud_marker=fraud_marker)
+        found = occurrence(kind)
+        sources_mock.set_security_statistics(recipient.document, 70, [found])
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 
         assert pix.http_status == 201
         assert pix.triggered() == {triggered}
-        assert pix.signal(triggered)["evidence"] == {"fraud_marker": fraud_marker}
-        assert pix.signals_with("not_triggered") == (
-            {"P01", "L01", "R01", "REL03", "L02", "L03", "P03", "DICT01", "DICT02", "DICT03"} - {triggered}
-        )
+        assert pix.signal(triggered)["evidence"] == {"occurrences": [found["occurrence_id"]]}
+        assert pix.signals_with("not_triggered") == QUIET_ON_FIRST_PIX - {triggered}
         assert pix.scores == {"payer": 0, "recipient": points}
         assert pix.status == "approved"
 
+    def test_tres_ocorrencias_pesam_como_a_mais_grave(self, sources_mock):
+        """Evidência, confirmação e denúncia juntas: os três sinais disparam, e o grupo para no teto de 25.
+
+        20 + 25 + 8 = 53 brutos, 25 aplicados (family_contributions mostra
+        os dois): um documento com tudo contra ele pesa como a fraude
+        confirmada, e não três vezes (RFC §6). Com a estatística 12, o
+        destino chega a 32 + 25 = 57: D-RCP, 2FA — e não rejeição, que
+        pede também a rede do destino ou o pagador no limiar.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        sources_mock.set_security_statistics(recipient.document, 12, [
+            occurrence("fraud_related_evidence"), occurrence("confirmed_in_mock"), occurrence("unresolved_report"),
+        ])
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.triggered() == {"DICT01", "DICT02", "DICT03", "DICT04"}
+        assert pix.metadata["family_contributions"]["dict_security"] == {"raw": 53, "applied": 25, "cap": 25}
+        assert pix.scores == {"payer": 0, "recipient": 57}
+        assert pix.status == "two_factor_required"
+        assert pix.decision_rule == "D-RCP"
+
     @pytest.mark.parametrize(
-        "fraud_marker",
-        ["none", "fraud", "SUSPICIOUS", 1, True],
-        ids=["none-em-texto", "fora-da-lista", "maiusculas", "numero", "booleano"],
+        "reported_at, expires_at, expected",
+        [
+            (T0 - timedelta(days=30), T0 - timedelta(hours=1), "not_triggered"),
+            (T0 - timedelta(days=30), T0, "not_triggered"),
+            (T0 + timedelta(hours=1), T0 + timedelta(days=30), "not_triggered"),
+            (T0, T0 + timedelta(days=30), "triggered"),
+        ],
+        ids=["vencida-ha-1h", "vence-neste-instante", "registrada-daqui-a-1h", "registrada-neste-instante"],
     )
-    def test_marcacao_fora_do_combinado_vira_dict_indisponivel(self, sources_mock, fraud_marker):
-        """Marcação que não é suspicious, confirmed ou null é resposta fora do combinado: a camada 3 inteira sai unavailable.
+    def test_ocorrencia_so_vale_dentro_da_vigencia(self, sources_mock, reported_at, expires_at, expected):
+        """E1 — uma ocorrência vale em t sse reported_at <= t < expires_at (RFC §6).
+
+        A fraude confirmada contra o destino, com estas datas; t é o
+        instante do Pix (T0). Vencida, vencendo neste exato instante ou
+        ainda não registrada, o DICT03 fica calado e nenhum ponto entra —
+        a ocorrência expirada não é evidência. Registrada neste exato
+        instante, já vale.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        sources_mock.set_security_statistics(
+            recipient.document, 70, [occurrence("confirmed_in_mock", reported_at=reported_at, expires_at=expires_at)],
+        )
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.signal_status("DICT03") == expected
+        assert pix.status == "approved"
+
+    def test_ocorrencia_duplicada_conta_uma_vez(self, sources_mock):
+        """E1 — a mesma ocorrência (mesma fonte, mesmo id) duas vezes na resposta é uma só.
+
+        A evidência do DICT03 traz o id uma vez. Com o teto, a duplicata
+        nem mudaria a nota; o que ela mudaria é a história que a resposta
+        conta, e a RFC pede deduplicação por fonte e id (§6).
+        """
+        payer, recipient = new_payer(), new_recipient()
+        found = occurrence("confirmed_in_mock", occurrence_id="occ-repetida")
+        sources_mock.set_security_statistics(recipient.document, 70, [found, dict(found)])
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.signal("DICT03")["evidence"] == {"occurrences": ["occ-repetida"]}
+        assert pix.scores["recipient"] == 25
+
+    @pytest.mark.parametrize(
+        "broken",
+        [
+            occurrence("suspicious"),
+            occurrence("confirmed_in_mock", expires_at=None),
+            occurrence("confirmed_in_mock", expires_at="amanhã"),
+            occurrence("confirmed_in_mock", reported_at="2026-01-01T00:00:00"),
+            {"kind": "confirmed_in_mock", "reported_at": "2026-01-01T00:00:00-03:00", "expires_at": "2030-01-01T00:00:00-03:00"},
+            "confirmed_in_mock",
+        ],
+        ids=["tipo-desconhecido", "sem-prazo", "prazo-que-nao-e-data", "registro-sem-fuso", "sem-id-nem-fonte", "texto-solto"],
+    )
+    def test_ocorrencia_torta_e_ignorada_e_o_resto_da_resposta_vale(self, sources_mock, broken):
+        """Uma ocorrência fora do combinado é ignorada, e a resposta continua valendo: estatística e as outras ocorrências.
+
+        Tipo que não conhecemos, sem prazo, prazo que não é data, registro
+        sem fuso, sem id ou fonte, ou nem um objeto: fica no log, e fora
+        do Context. A estatística 12 dispara o DICT01 e a confirmação boa,
+        no mesmo corpo, dispara o DICT03 — a RFC manda ignorar a
+        ocorrência sem prazo, não a resposta inteira (§6).
+        """
+        payer, recipient = new_payer(), new_recipient()
+        good = occurrence("confirmed_in_mock")
+        sources_mock.set_body(recipient.document, {"security_statistics": 12, "occurrences": [broken, good]})
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.signal_status("DICT01") == "triggered"
+        assert pix.signal("DICT03")["evidence"] == {"occurrences": [good["occurrence_id"]]}
+        assert {pix.signal_status(code) for code in ("DICT02", "DICT04")} == {"not_triggered"}
+
+    def test_occurrences_que_nao_e_lista_vira_dict_indisponivel(self, sources_mock):
+        """occurrences que não é lista é resposta fora do combinado: a camada 3 inteira sai unavailable.
 
         Vale também pra estatística que veio junto — a API não aproveita
         metade de uma resposta que não entendeu. A estatística 12 no mesmo
         corpo dispararia o DICT01 se fosse lida. D-OK.
         """
         payer, recipient = new_payer(), new_recipient()
-        sources_mock.set_body(recipient.document, {"security_statistics": 12, "fraud_marker": fraud_marker})
+        sources_mock.set_body(recipient.document, {"security_statistics": 12, "occurrences": "nenhuma"})
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 
         assert pix.http_status == 201
-        assert {pix.signal_status(code) for code in ("DICT01", "DICT02", "DICT03")} == {"unavailable"}
+        assert {pix.signal_status(code) for code in ("DICT01", "DICT02", "DICT03", "DICT04")} == {"unavailable"}
         assert pix.status == "approved"
+
+    def test_ocorrencia_contra_o_pagador_nao_pontua(self, sources_mock):
+        """A evidência do DICT contra o PAGADOR não vira ponto em eixo nenhum: é só a porteira do D-REJ-PAY.
+
+        O pagador tem fraude confirmada no DICT; o destino está limpo. Os
+        quatro sinais do DICT ficam calados (são do eixo do destino),
+        pagador 0, destino 0, D-OK — a RFC é explícita: a evidência do
+        pagador corrobora a rejeição, e não adiciona pontos (§7). O
+        D-REJ-PAY, com a rajada que a porteira exige, está em
+        test_rejeicoes.py.
+        """
+        payer, recipient = new_payer(), new_recipient()
+        sources_mock.set_security_statistics(payer.document, 70, [occurrence("confirmed_in_mock")])
+
+        pix = post_pix(pix_payload(payer, recipient, T0))
+
+        assert pix.http_status == 201
+        assert pix.triggered() == set()
+        assert pix.scores == {"payer": 0, "recipient": 0}
+        assert pix.status == "approved"
+        sources_mock.verify_called(payer.document, times=1)
 
     def test_mock_lento_vira_unavailable_e_a_decisao_sai(self, sources_mock):
         """O DICT que demora mais que o prazo não segura o Pix.
@@ -233,11 +359,12 @@ class TestCamadaDict:
         assert pix.signal_status("DICT01") == "unavailable"
         assert pix.status == "approved"
 
-    def test_so_o_recebedor_e_consultado(self, sources_mock):
-        """A camada 3 pergunta pelo destino, e só por ele: uma consulta por Pix.
+    def test_pagador_e_recebedor_sao_consultados_uma_vez_cada(self, sources_mock):
+        """A camada 3 pergunta pelo destino e pelo pagador: duas consultas por Pix, uma de cada.
 
-        "Quem recebe é confiável?" é a pergunta da família Contraparte. O
-        pagador é cliente nosso, e o que sabemos dele vem do histórico.
+        Do destino saem os pontos (DICT01 a DICT04) e a porteira das
+        rejeições do destino; do pagador, só a porteira do D-REJ-PAY. Pra
+        si mesmo (REL03) é um documento só, e uma consulta.
         """
         payer, recipient = new_payer(), new_recipient()
 
@@ -245,7 +372,7 @@ class TestCamadaDict:
 
         assert pix.http_status == 201
         sources_mock.verify_called(recipient.document, times=1)
-        sources_mock.verify_not_called(payer.document)
+        sources_mock.verify_called(payer.document, times=1)
 
     def test_dict_recebe_o_documento_so_com_digitos(self, sources_mock):
         """O documento chega pontuado no payload e vai ao DICT só com dígitos.

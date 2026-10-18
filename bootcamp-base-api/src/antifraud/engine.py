@@ -13,8 +13,8 @@ from antifraud.contract import (
     Analysis,
     Axis,
     Context,
+    DictSecurityEvidence,
     EvidenceValue,
-    FraudMarker,
     Layer,
     RegistrationStatus,
     Signal,
@@ -39,15 +39,16 @@ LAYERS: tuple[Layer, ...] = (
     DictSecurityLayer(),
 )
 
-# Quantos sinais as frases de nota (D-PAY, D-RCP, D-REJ-ATO e D-REJ-RCP)
+# Quantos sinais as frases de nota (D-PAY, D-RCP e as rejeições por nota)
 # citam, do mais pesado pro mais leve. Os outros continuam em
 # metadata.signals.
 _REASON_MAX_SIGNALS = 3
 
-# As marcações do DICT que abrem a porteira das rejeições do destino.
-_ADVERSE_MARKERS = (FraudMarker.SUSPICIOUS, FraudMarker.CONFIRMED)
-
 _CATALOG_POSITION = {code: position for position, code in enumerate(policy.CATALOG)}
+
+# De que eixo é cada grupo de teto: todos os sinais de um grupo são do
+# mesmo eixo, e o catálogo é quem sabe.
+_GROUP_AXIS = {spec.cap_group: spec.axis for spec in policy.CATALOG.values()}
 
 
 def evaluate(context: Context) -> Analysis:
@@ -61,8 +62,9 @@ def evaluate(context: Context) -> Analysis:
     signals.sort(key=lambda signal: _CATALOG_POSITION[signal.code])
 
     triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
-    payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
-    recipient_risk = _axis_risk(triggered.values(), Axis.RECIPIENT)
+    contributions = _family_contributions(triggered.values())
+    payer_risk = _axis_risk(contributions, Axis.PAYER)
+    recipient_risk = _axis_risk(contributions, Axis.RECIPIENT)
     rule = _decide(triggered.keys(), payer_risk, recipient_risk, context)
 
     return Analysis(
@@ -74,21 +76,29 @@ def evaluate(context: Context) -> Analysis:
         payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
         recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
         policy_version=policy.POLICY_VERSION,
+        family_contributions=contributions,
         signals=tuple(signals),
     )
 
 
-def _axis_risk(triggered: Iterable[Signal], axis: Axis) -> int:
-    group_points: dict[str, int] = {}
-    for signal in triggered:
-        if signal.axis == axis:
-            group_points[signal.cap_group] = group_points.get(signal.cap_group, 0) + signal.points
+def _family_contributions(triggered: Iterable[Signal]) -> dict[str, dict[str, int]]:
+    """A conta de cada grupo de teto: o que os sinais somaram (raw), o que entrou na nota (applied) e o teto.
 
-    risk = 0
-    for group, points in group_points.items():
-        floor, ceiling = policy.CAPS[group]
-        risk += _clamp(points, floor, ceiling)
-    return _clamp(risk, policy.MIN_RISK, policy.MAX_RISK)
+    Os nove grupos saem sempre, na ordem do CAPS, mesmo com raw 0: a
+    resposta mostra a conta inteira, e não só o que pesou.
+    """
+    raw = {group: 0 for group in policy.CAPS}
+    for signal in triggered:
+        raw[signal.cap_group] += signal.points
+    return {
+        group: {"raw": points, "applied": _clamp(points, *policy.CAPS[group]), "cap": policy.CAPS[group][1]}
+        for group, points in raw.items()
+    }
+
+
+def _axis_risk(contributions: Mapping[str, Mapping[str, int]], axis: Axis) -> int:
+    applied = sum(contribution["applied"] for group, contribution in contributions.items() if _GROUP_AXIS[group] is axis)
+    return _clamp(applied, policy.MIN_RISK, policy.MAX_RISK)
 
 
 def _sufficiency(prior_attempts: int, prior_days: int) -> Sufficiency:
@@ -124,11 +134,19 @@ def _matches(
         return False
     if rule.requires_restriction and not context.restrictions:
         return False
-    if rule.requires_recipient_adverse and context.dict_fraud_marker not in _ADVERSE_MARKERS:
+    if rule.requires_payer_adverse and not _adverse(context.payer_dict):
+        return False
+    if rule.requires_recipient_adverse and not _adverse(context.recipient_dict):
         return False
     if rule.requires_device_registry_unavailable and context.device_registration.status is not RegistrationStatus.UNAVAILABLE:
         return False
     return True
+
+
+def _adverse(evidence: DictSecurityEvidence | None) -> bool:
+    # DICT fora do ar não é evidência: unavailable nunca abre porteira de
+    # rejeição (RFC §7).
+    return evidence is not None and evidence.adverse
 
 
 # Repare que as frases leem a evidência pelo nome da chave: renomear uma
@@ -147,10 +165,13 @@ def _reason(
         return f"Restrição ativa: {restriction.reason} ({restriction.scope})"
     if rule.name == "D-REJ-ATO":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
+    if rule.name == "D-REJ-PAY":
+        risk = _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
+        return f"{risk}, com evidência de fraude no DICT contra o pagador"
     if rule.name == "D-REJ-RCP":
         return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
     if rule.name == "D-REJ-CROSS":
-        return f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com marcação de fraude no DICT"
+        return f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com evidência de fraude no DICT contra o destino"
     if rule.name == "D-ATO-1":
         ratio = triggered["P06"].evidence["ratio"]
         return f"Dispositivo não cadastrado no banco, com valor {_number(ratio)}x a mediana"

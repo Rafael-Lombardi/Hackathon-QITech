@@ -6,7 +6,11 @@ devolve direto o tipo de antifraud/contract.py. O porquê de cada campo
 mora lá: por que conhecido é só com approved, por que os distintos já
 contam o atual, onde cabe teto. Aqui fica o como contar.
 
-As definições valem pros cinco. O relógio é o do servidor: cada Pix fica
+As definições valem pros cinco. O baseline — o que ensina quem é o
+cliente: aprovados pra mediana, IP conhecido, relação, lugares de sempre
+— conta só Pix aprovados em [t - 90 d, t - 24 h]; o porquê está nas
+BASELINE_* do policy.py. Tentativas, suficiência e a soma do L02 contam
+tudo até t. O relógio é o do servidor: cada Pix fica
 gravado com o instante em que chegou (received_at), e t é o instante em
 que o Pix atual está sendo avaliado (evaluated_at), lido depois da trava
 do pagador. É o que a RFC manda (§2: contagens móveis usam tempo
@@ -57,7 +61,7 @@ from antifraud.contract import (
     RegistrationStatus,
 )
 from database import Context
-from models import PixTransactionStatus
+from models import PixSignalStatus, PixTransactionStatus
 from repositories.pix_transaction_repository import PixTransactionRepository
 
 # payer_pix lê o histórico inteiro do pagador uma vez, e cada campo é um
@@ -77,6 +81,9 @@ _PAYER_QUERY = text("""
     WITH payer_pix AS (
         SELECT pix.received_at,
                (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day,
+               pix.status_id = :approved
+                   AND pix.received_at >= :baseline_since
+                   AND pix.received_at <= :baseline_until AS in_baseline,
                pix.amount,
                pix.status_id,
                pix.device_id,
@@ -113,14 +120,14 @@ _PAYER_QUERY = text("""
     )
     SELECT count(*) AS prior_attempts,
            count(DISTINCT local_day) AS prior_days,
-           count(*) FILTER (WHERE status_id = :approved AND ip = :ip) > 0 AS ip_known,
+           count(*) FILTER (WHERE in_baseline AND ip = :ip) > 0 AS ip_known,
            count(*) FILTER (WHERE device_id = :device_id) > 0 AS device_previously_observed,
            count(*) FILTER (WHERE received_at >= :attempts_since) AS attempts_5m,
            coalesce(sum(amount) FILTER (WHERE received_at >= :amount_since), 0) AS amount_1h,
-           count(*) FILTER (WHERE status_id = :approved) AS approved_count,
-           count(DISTINCT local_day) FILTER (WHERE status_id = :approved) AS approved_days,
+           count(*) FILTER (WHERE in_baseline) AS approved_count,
+           count(DISTINCT local_day) FILTER (WHERE in_baseline) AS approved_days,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)
-               FILTER (WHERE status_id = :approved) AS approved_median_amount,
+               FILTER (WHERE in_baseline) AS approved_median_amount,
            (SELECT count(*) FROM new_destinations) AS new_destinations_10m,
            coalesce(sum(amount) FILTER (WHERE device_registration_status = :unregistered
                                           AND local_day = (:t AT TIME ZONE :local_timezone)::date), 0)
@@ -227,22 +234,40 @@ _RECIPIENT_QUERY = text("""
 # do índice do par numa descida só. Pelo JOIN com account, o Postgres lia
 # o histórico inteiro do pagador e buscava a conta de cada Pix pra saber
 # o documento do destino — 20 mil páginas num pagador de 5 mil Pix; assim
-# são 19.
+# são 19. A anomalia recente é lida dos sinais gravados das tentativas do
+# par na janela (pix_transaction_rule_result), e não do status delas:
+# são poucas tentativas, e cada uma tem os seus sinais pelo UNIQUE da
+# tabela.
 _PAIR_QUERY = text("""
-    SELECT count(*) FILTER (WHERE pix.status_id = :approved) AS prior_approved,
-           min(pix.received_at) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
-           count(*) FILTER (WHERE pix.status_id IN (:rejected, :two_factor_required)
-                              AND pix.received_at >= :anomaly_since) > 0 AS recent_anomaly
-    FROM pix_transaction pix
-    WHERE pix.source_account_id = ANY(:payer_accounts)
-      AND pix.destination_account_id = ANY(:recipient_accounts)
-      AND pix.received_at <= :t
+    WITH pair_pix AS (
+        SELECT pix.id, pix.received_at, pix.status_id
+        FROM pix_transaction pix
+        WHERE pix.source_account_id = ANY(:payer_accounts)
+          AND pix.destination_account_id = ANY(:recipient_accounts)
+          AND pix.received_at <= :t
+    )
+    SELECT count(*) FILTER (WHERE status_id = :approved
+                              AND received_at >= :baseline_since
+                              AND received_at <= :baseline_until) AS prior_approved,
+           min(received_at) FILTER (WHERE status_id = :approved
+                                      AND received_at >= :baseline_since
+                                      AND received_at <= :baseline_until) AS first_approved_at,
+           EXISTS (
+               SELECT 1
+               FROM pair_pix
+               JOIN pix_transaction_rule_result signal ON signal.pix_transaction_id = pair_pix.id
+               WHERE pair_pix.received_at >= :anomaly_since
+                 AND signal.signal_status_id = :triggered
+                 AND signal.rule_name = ANY(:anomaly_signals)
+           ) AS recent_anomaly
+    FROM pair_pix
 """)
 
-# Os Pix aprovados com localização dos últimos 90 dias, fora das últimas
-# 24 h: o dia civil vai junto porque a cobertura do G01 se mede em dias,
-# e o corte de 24 h impede que a rajada de agora ensine o lugar de agora.
-# O LIMIT segura o pior caso; mil observações bastam pra formar padrão.
+# Os Pix aprovados com localização do baseline — os 90 dias, fora das
+# últimas 24 h: o dia civil vai junto porque a cobertura do G01 se mede em
+# dias, e o corte de 24 h impede que a rajada de agora ensine o lugar de
+# agora. O LIMIT segura o pior caso; mil observações bastam pra formar
+# padrão.
 _LOCATION_QUERY = text("""
     SELECT pix.latitude, pix.longitude,
            (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day
@@ -250,8 +275,8 @@ _LOCATION_QUERY = text("""
     JOIN pix_transaction pix ON pix.source_account_id = payer.id
     WHERE payer.customer_id = :customer_id
       AND pix.status_id = :approved
-      AND pix.received_at > :since
-      AND pix.received_at <= :cutoff
+      AND pix.received_at >= :baseline_since
+      AND pix.received_at <= :baseline_until
       AND pix.latitude IS NOT NULL AND pix.longitude IS NOT NULL
     ORDER BY pix.received_at DESC
     LIMIT 1000
@@ -276,6 +301,7 @@ class PixHistoryRepository:
     def get_location_distance_km(
         self, *, payer_customer_id: int, at: datetime,
         latitude: float | None, longitude: float | None,
+        baseline_window: timedelta, baseline_recency_gap: timedelta,
     ) -> float | None:
         """Quilômetros até o lugar de sempre mais perto, ou None sem padrão formado.
 
@@ -290,8 +316,8 @@ class PixHistoryRepository:
         rows = self.session.execute(_LOCATION_QUERY, {
             "customer_id": payer_customer_id,
             "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
-            "since": at - policy.LOCATION_HISTORY_WINDOW,
-            "cutoff": at - policy.LOCATION_RECENCY_GAP,
+            "baseline_since": at - baseline_window,
+            "baseline_until": at - baseline_recency_gap,
             "local_timezone": LOCAL_TIMEZONE.key,
         }).all()
         if len(rows) < policy.LOCATION_MIN_OBSERVATIONS or len({row[2] for row in rows}) < policy.LOCATION_MIN_DAYS:
@@ -329,11 +355,15 @@ class PixHistoryRepository:
         attempts_window: timedelta,
         amount_window: timedelta,
         new_destinations_window: timedelta,
+        baseline_window: timedelta,
+        baseline_recency_gap: timedelta,
     ) -> PayerHistory:
         """O pagador: os Pix anteriores de todas as contas do documento.
 
         payer_accounts são os ids dessas contas, prontos. O porquê de cada
-        campo está no PayerHistory, no contrato do motor.
+        campo está no PayerHistory, no contrato do motor; o baseline (os
+        aprovados que contam pra mediana, lastro e IP conhecido) é
+        [t - baseline_window, t - baseline_recency_gap].
         """
         row = self.session.execute(_PAYER_QUERY, {
             "payer_accounts": payer_accounts,
@@ -344,6 +374,8 @@ class PixHistoryRepository:
             "attempts_since": at - attempts_window,
             "amount_since": at - amount_window,
             "new_destinations_since": at - new_destinations_window,
+            "baseline_since": at - baseline_window,
+            "baseline_until": at - baseline_recency_gap,
             "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
             "unregistered": RegistrationStatus.UNREGISTERED.value,
             "local_timezone": LOCAL_TIMEZONE.key,
@@ -429,22 +461,29 @@ class PixHistoryRepository:
         recipient_accounts: list[int],
         at: datetime,
         anomaly_window: timedelta,
+        anomaly_signals: tuple[str, ...],
+        baseline_window: timedelta,
+        baseline_recency_gap: timedelta,
     ) -> PairHistory:
         """O par pagador→recebedor, documento a documento: todas as contas de um pra todas as do outro.
 
-        O SQL devolve o primeiro approved do par, e os dias saem aqui, com
-        a conta da idade das contas: (t - primeiro).days. Sem nenhum
-        approved no par, None.
+        Os approved do par contam no baseline, [t - baseline_window,
+        t - baseline_recency_gap]. O SQL devolve o primeiro deles, e os
+        dias saem aqui, com a conta da idade das contas: (t -
+        primeiro).days; sem nenhum, None. A anomalia é algum dos
+        anomaly_signals disparado numa tentativa do par desde
+        t - anomaly_window.
         """
-        status_id = self.pix_transaction_repository.get_status_id
         row = self.session.execute(_PAIR_QUERY, {
             "payer_accounts": payer_accounts,
             "recipient_accounts": recipient_accounts,
             "t": at,
             "anomaly_since": at - anomaly_window,
-            "approved": status_id(PixTransactionStatus.APPROVED),
-            "rejected": status_id(PixTransactionStatus.REJECTED),
-            "two_factor_required": status_id(PixTransactionStatus.TWO_FACTOR_REQUIRED),
+            "anomaly_signals": list(anomaly_signals),
+            "baseline_since": at - baseline_window,
+            "baseline_until": at - baseline_recency_gap,
+            "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
+            "triggered": self.pix_transaction_repository.get_signal_status_id(PixSignalStatus.TRIGGERED),
         }).one()
 
         first_approved_at = row.first_approved_at

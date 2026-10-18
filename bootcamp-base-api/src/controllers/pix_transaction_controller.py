@@ -2,7 +2,16 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from antifraud import Analysis, Context, DeviceRegistration, Restriction, Transaction, evaluate, policy
+from antifraud import (
+    Analysis,
+    Context,
+    DeviceRegistration,
+    DictSecurityEvidence,
+    Restriction,
+    Transaction,
+    evaluate,
+    policy,
+)
 from connectors import DeviceRegistryConnector, DictConnector, RestrictionsConnector
 from connectors.device_registry_connector import DeviceRegistryRecord
 from connectors.dict_connector import DictSecurityInformation
@@ -89,9 +98,10 @@ class PixTransactionController(BaseController):
              sem esperar e sem segundo avaliador;
           3. consulta as três fontes ANTES de travar qualquer coisa: as
              restrições primeiro, porque sem elas não há veredito (503),
-             depois o cadastro de aparelhos e o DICT. Cada consulta pode
-             levar os 2 s do prazo, e um pagador travado esse tempo todo
-             seguraria todos os Pix dele;
+             depois o cadastro de aparelhos e o DICT — este pelo recebedor
+             e pelo pagador. Cada consulta pode levar os 2 s do prazo, e
+             um pagador travado esse tempo todo seguraria todos os Pix
+             dele;
           4. trava o pagador — pelo documento, porque as regras do
              pagador contam pelo documento, somando as contas dele — e só
              então cria customers e contas na primeira aparição;
@@ -141,9 +151,12 @@ class PixTransactionController(BaseController):
         registry_record = self.device_registry_connector.get_registration(
             pix_request.source_account.document_number, pix_request.device_id,
         )
-        dict_information = self._get_dict_security_information(
-            pix_request.destination_account.document_number
-        )
+        recipient_dict = self._get_dict_security_information(pix_request.destination_account.document_number)
+        # Pra si mesmo (REL03), a resposta do DICT é a mesma: uma consulta só.
+        if pix_request.source_account.document_number == pix_request.destination_account.document_number:
+            payer_dict = recipient_dict
+        else:
+            payer_dict = self._get_dict_security_information(pix_request.source_account.document_number)
 
         self.customer_repository.lock_for_pix_document(
             document_number=pix_request.source_account.document_number
@@ -158,7 +171,7 @@ class PixTransactionController(BaseController):
         # mesmo instante do recibo.
         evaluated_at = test_received_at or datetime.now(timezone.utc)
         context = self._build_context(
-            pix_request, payer, recipient, registry_record, restrictions, dict_information, evaluated_at,
+            pix_request, payer, recipient, registry_record, restrictions, recipient_dict, payer_dict, evaluated_at,
         )
         analysis = evaluate(context)
 
@@ -295,11 +308,12 @@ class PixTransactionController(BaseController):
         return pix_transaction
 
     def _get_dict_security_information(self, document_number: str) -> DictSecurityInformation | None:
-        """A estatística e a marcação de fraude do DICT, ou None se falhou.
+        """A estatística e as ocorrências do DICT sobre um documento, ou None se falhou.
 
         É aqui que "o DICT caiu" vira "a camada 3 não tem como responder":
-        o motor recebe None, o DICT01, o DICT02 e o DICT03 saem unavailable
-        e o Pix é decidido pelas outras duas camadas. O porquê da falha o
+        pelo recebedor, o motor recebe None e DICT01 a DICT04 saem
+        unavailable; pelo pagador, nenhuma rejeição por evidência casa. O
+        Pix é decidido pelas outras camadas, e o porquê da falha o
         connector já deixou no log.
         """
         try:
@@ -345,7 +359,8 @@ class PixTransactionController(BaseController):
         recipient: Customer,
         registry_record: DeviceRegistryRecord,
         restrictions: tuple[Restriction, ...],
-        dict_information: DictSecurityInformation | None,
+        recipient_dict: DictSecurityInformation | None,
+        payer_dict: DictSecurityInformation | None,
         evaluated_at: datetime,
     ) -> Context:
         """O Context do motor: o Pix normalizado, o histórico contado e o que as fontes disseram.
@@ -362,10 +377,10 @@ class PixTransactionController(BaseController):
 
         As fontes foram consultadas antes da trava, e o que elas
         responderam é lido AQUI, no instante da avaliação: o cadastro do
-        aparelho tem vigência, a restrição também, e as duas se resolvem
-        contra o mesmo relógio do histórico. transaction_date, a data do
-        payload, fica com o que é do negócio: a hora local do L01 e a
-        idade das contas.
+        aparelho tem vigência, a restrição e a ocorrência do DICT também,
+        e tudo se resolve contra o mesmo relógio do histórico.
+        transaction_date, a data do payload, fica com o que é do negócio:
+        a hora local do L01 e a idade das contas.
         """
         transaction_date = pix_request.transaction_date
         accounts = self.account_repository.ids_of(customer_ids={payer.id, recipient.id})
@@ -379,12 +394,16 @@ class PixTransactionController(BaseController):
             attempts_window=policy.PAYER_ATTEMPTS_WINDOW,
             amount_window=policy.PAYER_AMOUNT_WINDOW,
             new_destinations_window=policy.NEW_DESTINATIONS_WINDOW,
+            baseline_window=policy.BASELINE_WINDOW,
+            baseline_recency_gap=policy.BASELINE_RECENCY_GAP,
         )
         location_distance_km = self.pix_history_repository.get_location_distance_km(
             payer_customer_id=payer.id,
             at=evaluated_at,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
+            baseline_window=policy.BASELINE_WINDOW,
+            baseline_recency_gap=policy.BASELINE_RECENCY_GAP,
         )
         device_history = self.pix_history_repository.get_device_features(
             device_id=pix_request.device_id,
@@ -406,6 +425,9 @@ class PixTransactionController(BaseController):
             recipient_accounts=accounts[recipient.id],
             at=evaluated_at,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
+            anomaly_signals=policy.PAIR_ANOMALY_SIGNALS,
+            baseline_window=policy.BASELINE_WINDOW,
+            baseline_recency_gap=policy.BASELINE_RECENCY_GAP,
         )
 
         transaction = Transaction(
@@ -443,8 +465,8 @@ class PixTransactionController(BaseController):
             pair=pair_history,
             device_registration=device_registration,
             restrictions=active_restrictions,
-            dict_security_statistics=None if dict_information is None else dict_information.statistics,
-            dict_fraud_marker=None if dict_information is None else dict_information.fraud_marker,
+            recipient_dict=_dict_evidence_at(recipient_dict, evaluated_at),
+            payer_dict=_dict_evidence_at(payer_dict, evaluated_at),
         )
 
     def _account_age_days(self, account_data: AccountData, transaction_date: datetime) -> int:
@@ -487,6 +509,7 @@ class PixTransactionController(BaseController):
             device_registration_source=device_registration.source,
             device_previously_observed=device_registration.previously_observed,
             restrictions=[_restriction_row(restriction) for restriction in context.restrictions],
+            family_contributions=analysis.family_contributions,
             received_at=received_at,
             evaluated_at=evaluated_at,
         )
@@ -526,6 +549,16 @@ def _failure_reason(error: Exception) -> str:
     if isinstance(error, QIException):
         return f"{type(error).__name__} ({error.code}): {error.description}"
     return type(error).__name__
+
+
+def _dict_evidence_at(information: DictSecurityInformation | None, moment: datetime) -> DictSecurityEvidence | None:
+    """O que o DICT disse, só com as ocorrências vigentes em `moment` (RFC §6: reported_at <= t < expires_at)."""
+    if information is None:
+        return None
+    return DictSecurityEvidence(
+        statistics=information.statistics,
+        occurrences=tuple(occurrence for occurrence in information.occurrences if occurrence.active_at(moment)),
+    )
 
 
 def _account_key(account_data: AccountData) -> str:

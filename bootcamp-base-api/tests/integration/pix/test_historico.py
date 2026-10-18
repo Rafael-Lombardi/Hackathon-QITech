@@ -8,8 +8,9 @@ antifraude mora na definição de passado. As que o motor usa (o bloco
     header) — nada recebido depois conta, seja qual for a data no payload;
   • rajada e montante (P04, P05, R02, R03...) contam TODA tentativa, até
     as barradas: o invasor insistente não pode sumir depois do 1º 2FA;
-  • IP conhecido, par recorrente e mediana contam só Pix aprovados: um
-    2FA que ninguém confirmou não ensina nada ao motor;
+  • IP conhecido, par recorrente e mediana contam só Pix aprovados — e só
+    os de 24 h atrás ou antes (o baseline): um 2FA que ninguém confirmou
+    não ensina nada ao motor, e o Pix de agora não ensina sobre si mesmo;
   • o aparelho não é histórico: cadastrado é o que o BANCO cadastrou
     (test_cadastro_aparelhos.py), e tentativa nenhuma cadastra — o
     histórico só diz se o par já apareceu (previously_observed);
@@ -22,7 +23,9 @@ from dataclasses import replace
 from datetime import timedelta
 from ipaddress import ip_address
 
-from tests.utils.clock import NINE_OVER_SEVEN_DAYS, T0, days_ago, days_before, minutes_before, spread_over_days
+import pytest
+
+from tests.utils.clock import NINE_OVER_SEVEN_DAYS, T0, at, days_ago, days_before, minutes_before, spread_over_days
 from tests.utils.identities import new_device, new_ip, new_ipv6, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed, seed_pix
 
@@ -123,39 +126,85 @@ class TestHistorico:
         assert pix.signal_status("P06") == "unavailable"
         assert pix.status == "approved"
 
-    def test_rel02_suspenso_por_2fa_recente_no_par(self):
-        """O desconto da relação recorrente some se o par teve 2FA na última semana.
+    @pytest.mark.parametrize(
+        "anomaly_days_ago, expected",
+        [(1, "not_triggered"), (2, "triggered")],
+        ids=["anomalia-ha-24h-suspende", "anomalia-ha-2-dias-nao-suspende"],
+    )
+    def test_rel02_suspenso_por_sinal_adverso_recente_no_par(self, anomaly_days_ago, expected):
+        """O desconto da relação recorrente some se um sinal adverso disparou no par nas últimas 24 h.
 
-        Preparo: 3 Pix aprovados para o mesmo destino, há 10, 5 e 2 dias (o
-        REL02 já valeria). Ontem, um Pix para ele de aparelho sem cadastro
-        e IP novo: D-ATO-2, 2FA. Pix: o de sempre — e o REL02 fica calado. A relação
-        antiga é exatamente o que um golpista quer parecer.
+        Preparo: 3 Pix aprovados para o mesmo destino, há 10, 6 e 3 dias
+        (o REL02 já valeria). Depois, um Pix para ele de aparelho sem
+        cadastro e IP novo — P03, P09 e P10 disparados, D-ATO-2, 2FA — há
+        exatamente 24 h, ou há 2 dias. Pix: o de sempre.
+
+            há 24 h    a anomalia está na janela (fechada no começo): REL02
+                       calado — a relação antiga é exatamente o que um
+                       golpista quer parecer
+            há 2 dias  a janela de 24 h passou: REL02 -8 de novo
+
+        O que suspende é o sinal adverso gravado na tentativa do par
+        (P03, P06, P09, P10, P04, P07, R02, R03), e não o veredicto dela
+        (RFC §5, F3).
         """
         payer, recipient = new_payer(), new_recipient()
-        seed_pix(payer, recipient, days_ago(T0, 10, 5, 2))
+        seed_pix(payer, recipient, days_ago(T0, 10, 6, 3))
         seed_pix(
-            payer, recipient, [T0 - timedelta(days=1)],
+            payer, recipient, [T0 - timedelta(days=anomaly_days_ago)],
             expect="two_factor_required", device_id=new_device(), ip=new_ip(),
         )
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 
         assert pix.http_status == 201
-        assert pix.signal_status("REL02") == "not_triggered"
+        assert pix.signal_status("REL02") == expected
         assert pix.signal_status("REL01") == "not_triggered"
         assert pix.status == "approved"
+
+    def test_aprovado_nas_ultimas_24h_nao_e_baseline(self):
+        """O baseline só conta aprovados de 24 h atrás ou antes: o Pix de agora não ensina o motor sobre si mesmo.
+
+        Dois pagadores, cada um com o destino de sempre, mandam R$ 50 do
+        IP de sempre:
+
+            recente    3 Pix aprovados nos 3 minutos anteriores → REL01 +8
+                       (pro baseline o par ainda é inédito) e P09
+                       unavailable (nenhum aprovado no baseline: não há IP
+                       conhecido a perder)
+            assentado  3 Pix aprovados nos 3 dias anteriores — o de ontem,
+                       exatamente 24 h atrás, ainda é baseline → REL01 e
+                       P09 calados
+
+        Sem o corte, o invasor que aprovou três Pix pequenos de manhã
+        teria à tarde um IP conhecido e um destino de confiança (RFC §5).
+        """
+        recent, settled = new_payer(), new_payer()
+        recent_recipient, settled_recipient = new_recipient(), new_recipient()
+        seed_pix(recent, recent_recipient, minutes_before(T0, 3))
+        seed_pix(settled, settled_recipient, days_before(T0, 3))
+
+        fresh = post_pix(pix_payload(recent, recent_recipient, T0))
+        known = post_pix(pix_payload(settled, settled_recipient, T0))
+
+        assert fresh.http_status == 201
+        assert fresh.signal_status("REL01") == "triggered"
+        assert fresh.signal_status("P09") == "unavailable"
+        assert known.http_status == 201
+        assert known.signal_status("REL01") == "not_triggered"
+        assert known.signal_status("P09") == "not_triggered"
 
     def test_rajada_conta_toda_tentativa_mesmo_as_barradas(self):
         """O P04 conta tentativas, e não aprovações.
 
-        Preparo: 3 Pix nos 3 dias anteriores. Nos 4 minutos antes de T0, 4
+        Preparo: 3 Pix nos 3 dias anteriores, às 9h (baseline inteiro pra
+        qualquer Pix de hoje à tarde). Nos 4 minutos antes de T0, 4
         tentativas, cada uma de um aparelho sem cadastro e IP novo: as 4
         terminam em 2FA. Pix: o 5º, do aparelho cadastrado — P04 dispara
-        com 5. Contar
-        só aprovados deixaria o atacante insistente invisível.
+        com 5. Contar só aprovados deixaria o atacante insistente invisível.
         """
         payer, recipient = new_payer(), new_recipient()
-        seed_pix(payer, recipient, days_before(T0, 3))
+        seed_pix(payer, recipient, days_before(at(T0, 9), 3))
         seed(
             [pix_payload(payer, recipient, moment, device_id=new_device(), ip=new_ip()) for moment in minutes_before(T0, 4)],
             expect="two_factor_required",
@@ -199,13 +248,14 @@ class TestHistorico:
         pagadores novos pagam ele nos últimos 50 minutos, nas duas contas.
 
             4º pagador, conta ANTIGA   R03 +20 (4 pagadores no titular),
-                                       R01 calado: destino 20, aprovado
+                                       R01 calado: destino 20
             5º pagador, conta NOVA     R03 +20, R01 +12, R04 +15
                                        12 + 20 + 15 = 47, teto do
-                                       recipient_network: 40 → D-RCP, 2FA
+                                       recipient_network: 35
 
-        O mesmo titular, a mesma hora: o que muda a decisão é a conta,
-        porque é a conta nova concentrando pagadores que bate no teto.
+        O mesmo titular, a mesma hora: o que muda a nota é a conta — R01 e
+        R04 olham a conta exata, R03 o titular. Os dois aprovam: a rede
+        sozinha para no teto de 35, abaixo dos 40 do D-RCP (RFC §6).
         """
         old = new_recipient()
         new = old.with_new_account(opening_date=T0 - timedelta(days=2))
@@ -223,9 +273,9 @@ class TestHistorico:
         assert to_old.status == "approved"
         assert to_new.http_status == 201
         assert to_new.triggered() == {"R01", "R03", "R04"}
-        assert to_new.scores["recipient"] == 40
-        assert to_new.status == "two_factor_required"
-        assert to_new.decision_rule == "D-RCP"
+        assert to_new.scores["recipient"] == 35
+        assert to_new.status == "approved"
+        assert to_new.decision_rule == "D-OK"
 
     def test_pix_recebido_depois_nao_entra_no_historico(self):
         """Histórico se conta pelo relógio do servidor, e nada recebido depois de t é anterior.

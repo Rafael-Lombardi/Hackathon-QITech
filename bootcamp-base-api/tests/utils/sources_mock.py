@@ -3,8 +3,8 @@
 As fontes de fora — o DICT, o cadastro de aparelhos do banco e as
 restrições — são, na stack de teste, um MockServer só (o serviço
 dict-mock do docker-compose.yml). O mock responde o que estiver
-combinado: pra qualquer documento, estatística 70 sem marcação no DICT,
-pagador fora do cadastro (404) e lista de restrições vazia. Cada teste
+combinado: pra qualquer documento, estatística 70 e nenhuma ocorrência no
+DICT, pagador fora do cadastro (404) e lista de restrições vazia. Cada teste
 escreve por cima o roteiro das pessoas DELE: o pagador coberto pelo
 cadastro com o aparelho de sempre registrado (é o que o new_payer de
 identities.py faz, porque a RFC manda semear o cadastro por fixture e
@@ -86,6 +86,33 @@ def _iso(moment: datetime | str | None) -> str | None:
     if moment is None or isinstance(moment, str):
         return moment
     return moment.isoformat(timespec="seconds")
+
+
+def occurrence(
+    kind: str,
+    *,
+    reported_at: datetime | str = "2026-01-01T00:00:00-03:00",
+    expires_at: datetime | str | None = "2030-01-01T00:00:00-03:00",
+    source: str = "demo",
+    occurrence_id: str | None = None,
+    severity: str = "high",
+) -> dict:
+    """Uma ocorrência de segurança do DICT, no formato do mock.
+
+    kind é unresolved_report (DICT04), fraud_related_evidence (DICT02) ou
+    confirmed_in_mock (DICT03) — ou qualquer outro texto, pros testes de
+    ocorrência que a API deve ignorar. expires_at=None manda a ocorrência
+    sem prazo, que também deve ser ignorada.
+    """
+    return {
+        "occurrence_id": occurrence_id or f"occ-{uuid4().hex[:12]}",
+        "kind": kind,
+        "severity": severity,
+        "reported_at": _iso(reported_at),
+        "expires_at": _iso(expires_at),
+        "source": source,
+        "fixture_version": "v1",
+    }
 
 
 class SourcesMock:
@@ -191,16 +218,16 @@ class SourcesMock:
 
     # ── o DICT ──────────────────────────────────────────────────────
 
-    def set_security_statistics(self, document: str, statistics, fraud_marker: str | None = None) -> None:
-        """O DICT responde 200 com esta estatística para o documento — e com a marcação, se houver.
+    def set_security_statistics(self, document: str, statistics, occurrences: list[dict] | None = None) -> None:
+        """O DICT responde 200 com esta estatística para o documento — e com estas ocorrências, se houver.
 
-        fraud_marker é "suspicious", "confirmed" ou None (sem marcação, que
-        o DICT escreve como null).
+        occurrences é uma lista de occurrence(...); sem ela vai a lista
+        vazia, que é o DICT dizendo que não tem nada contra o documento.
         """
         self._expect_dict(document, {
             "statusCode": 200,
             "headers": _JSON,
-            "body": {"security_statistics": statistics, "fraud_marker": fraud_marker},
+            "body": {"security_statistics": statistics, "occurrences": occurrences or []},
         })
 
     def set_delay(self, document: str, seconds: int, statistics: int = 0) -> None:

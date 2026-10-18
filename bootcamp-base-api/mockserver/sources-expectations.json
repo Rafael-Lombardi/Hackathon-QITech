@@ -10,7 +10,7 @@
       "statusCode": 200,
       "body": {
         "security_statistics": 70,
-        "fraud_marker": null
+        "occurrences": []
       }
     }
   },
@@ -25,7 +25,17 @@
       "statusCode": 200,
       "body": {
         "security_statistics": 12,
-        "fraud_marker": "confirmed"
+        "occurrences": [
+          {
+            "occurrence_id": "demo-occ-confirmed-9",
+            "kind": "confirmed_in_mock",
+            "severity": "high",
+            "reported_at": "2026-01-01T00:00:00-03:00",
+            "expires_at": "2030-01-01T00:00:00-03:00",
+            "source": "demo",
+            "fixture_version": "v1"
+          }
+        ]
       }
     }
   },
@@ -40,7 +50,42 @@
       "statusCode": 200,
       "body": {
         "security_statistics": 70,
-        "fraud_marker": "suspicious"
+        "occurrences": [
+          {
+            "occurrence_id": "demo-occ-evidence-7",
+            "kind": "fraud_related_evidence",
+            "severity": "high",
+            "reported_at": "2026-01-01T00:00:00-03:00",
+            "expires_at": "2030-01-01T00:00:00-03:00",
+            "source": "demo",
+            "fixture_version": "v1"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "security-statistics-66666666666",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/66666666666"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 70,
+        "occurrences": [
+          {
+            "occurrence_id": "demo-occ-report-6",
+            "kind": "unresolved_report",
+            "severity": "high",
+            "reported_at": "2026-01-01T00:00:00-03:00",
+            "expires_at": "2030-01-01T00:00:00-03:00",
+            "source": "demo",
+            "fixture_version": "v1"
+          }
+        ]
       }
     }
   },
@@ -152,7 +197,9 @@
       "method": "GET",
       "path": "/restrictions",
       "queryStringParameters": {
-        "payer": ["55555555555"]
+        "payer": [
+          "55555555555"
+        ]
       }
     },
     "httpResponse": {
@@ -181,7 +228,9 @@
       "method": "GET",
       "path": "/restrictions",
       "queryStringParameters": {
-        "recipient_holder": ["55555555555"]
+        "recipient_holder": [
+          "55555555555"
+        ]
       }
     },
     "httpResponse": {

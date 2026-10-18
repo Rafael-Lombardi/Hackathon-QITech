@@ -16,10 +16,7 @@ from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 # uma marcada como emenda onde mora (catálogo e tabela): o L03, teto por
 # Pix, e três linhas de 2FA por combinação, D-LIMIT, D-SCAM e D-DRAIN.
 # Nenhuma emenda mexe no que a RFC manda; cada uma pede confirmação num
-# caso em que a v0.5 aprovaria. Onde ainda difere da RFC: o teto da rede
-# do destino está em 40, e não em 35; a camada 3 lê a marcação de fraude
-# do DICT, e não ocorrências datadas; e não há a rejeição do pagador por
-# evidência do DICT (D-REJ-PAY).
+# caso em que a v0.5 aprovaria.
 POLICY_VERSION = "v0.6.0"
 
 
@@ -45,7 +42,28 @@ NEW_DESTINATIONS_WINDOW = timedelta(minutes=10)  # new_destinations_10m
 DEVICE_PAYERS_WINDOW = timedelta(hours=24)  # distinct_payers_24h
 RECIPIENT_ATTEMPTS_WINDOW = timedelta(minutes=10)  # attempts_10m
 RECIPIENT_PAYERS_WINDOW = timedelta(hours=1)  # distinct_payers_1h
-PAIR_ANOMALY_WINDOW = timedelta(days=7)  # recent_anomaly
+PAIR_ANOMALY_WINDOW = timedelta(hours=24)  # recent_anomaly
+
+# O baseline: o que ensina ao motor quem é o cliente — a mediana e o
+# lastro do P06, o IP conhecido do P09, a relação do REL01 e do REL02, os
+# lugares de sempre do G01. Só Pix APROVADOS, e só em [t - 90 d, t - 24 h]
+# (RFC §5): os últimos 90 dias porque o cliente de três anos atrás não é
+# o de hoje, e fora das últimas 24 h porque a rajada de agora não pode
+# ensinar o motor sobre si mesma — o invasor que aprovou um Pix de manhã
+# não ganha com isso um IP conhecido à tarde. Fechada nas duas pontas: o
+# aprovado de exatamente 24 h atrás é baseline (a RFC escreve o fim
+# aberto, e a diferença é um instante; fechado, o cenário montado em dias
+# inteiros no relógio de teste tem o aprovado de ontem como lastro). As
+# contagens de tentativas, a suficiência e a soma diária do L02 continuam
+# inteiras.
+BASELINE_WINDOW = timedelta(days=90)
+BASELINE_RECENCY_GAP = timedelta(hours=24)
+
+# REL02: os sinais que, disparados numa tentativa do par nas últimas 24 h
+# (PAIR_ANOMALY_WINDOW), suspendem o desconto da relação recorrente —
+# acesso estranho, rajada, valor atípico, destino em rajada (RFC §5). Só
+# os do par; um 2FA pelo DICT do destino não é anomalia da relação.
+PAIR_ANOMALY_SIGNALS = ("P03", "P06", "P09", "P10", "P04", "P07", "R02", "R03")
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -124,18 +142,16 @@ RECURRENT_PAIR_MIN_DAYS = 7
 LOW_SECURITY_STATISTICS_LIMIT = 30  # DICT01: estatística de segurança abaixo disso
 
 # G01. Longe é mais de 300 km de todo centro habitual do pagador. Centro
-# habitual: os Pix aprovados com localização dos últimos 90 dias, até 24 h
-# antes deste (o Pix atual não ensina a si mesmo, e a rajada de hoje não
-# vira "casa"), agrupados num raio de 100 km; só conta o centro visto em
-# 2 dias distintos. Sem 10 observações em 7 dias não há padrão, e o sinal
-# fica unavailable. Viagem é comum e GPS erra: 6 pontos, e sozinho passa.
+# habitual: os Pix aprovados com localização do baseline (BASELINE_*, nas
+# janelas: 90 dias, fora das últimas 24 h), agrupados num raio de 100 km;
+# só conta o centro visto em 2 dias distintos. Sem 10 observações em 7
+# dias não há padrão, e o sinal fica unavailable. Viagem é comum e GPS
+# erra: 6 pontos, e sozinho passa.
 LOCATION_DISTANCE_THRESHOLD_KM = 300
 LOCATION_MIN_OBSERVATIONS = 10
 LOCATION_MIN_DAYS = 7
 LOCATION_MIN_DAYS_PER_CENTER = 2
 LOCATION_CLUSTER_RADIUS_KM = 100
-LOCATION_HISTORY_WINDOW = timedelta(days=90)
-LOCATION_RECENCY_GAP = timedelta(hours=24)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -310,15 +326,24 @@ CATALOG: dict[str, SignalSpec] = {
         granularity="recipient",
         cap_group="dict_security_statistics", points=32,
     ),
+    # As ocorrências de segurança do DICT contra o recebedor, uma por tipo
+    # (OccurrenceKind): cada ocorrência vigente pontua uma vez, no sinal
+    # do tipo dela, e os três dividem um teto. A ocorrência contra o
+    # PAGADOR não pontua: é só a porteira do D-REJ-PAY (RFC §7).
     "DICT02": SignalSpec(
-        name="Marcação de fraude suspeita no DICT",
+        name="Evidência de fraude no DICT",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient", cap_group="dict_security", points=20,
     ),
     "DICT03": SignalSpec(
-        name="Marcação de fraude confirmada no DICT",
+        name="Fraude confirmada no DICT",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient", cap_group="dict_security", points=25,
+    ),
+    "DICT04": SignalSpec(
+        name="Denúncia não resolvida no DICT",
+        layer=3, family="Contraparte", axis=Axis.RECIPIENT,
+        granularity="recipient", cap_group="dict_security", points=8,
     ),
 }
 
@@ -346,31 +371,33 @@ def signal_spec(code: str) -> SignalSpec:
 # nunca mais que isso — relação antiga não apaga sinal grave.
 #
 # payer_account, amount_cap e dict_security_statistics têm um sinal só, e
-# o teto é o próprio peso: não dividem teto com ninguém. dict_security tem
-# dois que nunca disparam juntos (a marcação é suspeita OU confirmada), e
-# o teto é o peso do DICT03. Mudou o peso, muda o teto.
+# o teto é o próprio peso: não dividem teto com ninguém. dict_security
+# junta as três ocorrências do DICT (DICT02 20, DICT03 25, DICT04 8) sob
+# o peso da mais grave: um documento com as três vigentes pesa como a
+# fraude confirmada, e não 53 (RFC §6).
 #
-# recipient_network em 40: a conta nova concentrando pagadores (R01 +
-# R02 + R03 + R04 = 63, ou 47 sem a rajada do R02) chega ao teto e pede
-# 2FA sozinha, pelo D-RCP; a loja madura em rajada (R02 + R03 = 36)
-# continua passando. Rejeitar de vez fica pra quando o DICT marcou o
-# destino.
+# recipient_network em 35, como a RFC (§6): a conta nova concentrando
+# pagadores (R01 + R02 + R03 + R04 = 63) para em 35 e não pede 2FA
+# sozinha — o pagador que já tem histórico e nunca pagou essa conta leva
+# o REL01 e passa dos 40 (D-RCP); o novo na base aprova. Rejeitar de vez
+# fica pra quando o DICT tem evidência contra o destino.
 CAPS: dict[str, tuple[int, int]] = {
     "limit": (0, 15),
     "amount_cap": (0, 15),
     "payer_account": (0, 10),
     "payer_velocity": (0, 25),
     "payer_behavior": (0, 45),
-    "recipient_network": (0, 40),
+    "recipient_network": (0, 35),
     "dict_security_statistics": (0, 32),
     "dict_security": (0, 25),
     "relation": (-10, 8),
 }
 
 # A nota de um eixo é a soma dos grupos dele, presa entre 0 e 100. Com
-# os tetos acima o pagador somaria até 110 e o destino até 105, e os
-# dois param em 100. Não é probabilidade: 70 pontos não são 70% de
-# chance de fraude.
+# os tetos acima o pagador somaria até 110 e o destino até 100, e o
+# pagador para em 100. Não é probabilidade: 70 pontos não são 70% de
+# chance de fraude. A conta inteira — bruto, teto e aplicado de cada
+# grupo — sai na resposta, em family_contributions.
 MIN_RISK = 0
 MAX_RISK = 100
 
@@ -397,9 +424,9 @@ class DecisionRule:
     Casa quando todos os sinais de all_triggered dispararam, nenhum dos
     de none_triggered disparou, as notas mínimas, se houver, foram
     atingidas e, se a linha pede, há restrição ativa contra alguém do
-    Pix, o DICT tem marcação de fraude contra o recebedor (suspeita ou
-    confirmada) ou o cadastro de aparelhos está fora do ar. Linha sem
-    condição nenhuma casa sempre.
+    Pix, o DICT tem evidência de fraude vigente contra o pagador ou
+    contra o recebedor (ADVERSE_KINDS) ou o cadastro de aparelhos está
+    fora do ar. Linha sem condição nenhuma casa sempre.
     """
 
     name: str
@@ -409,6 +436,7 @@ class DecisionRule:
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
     requires_restriction: bool = False
+    requires_payer_adverse: bool = False
     requires_recipient_adverse: bool = False
     requires_device_registry_unavailable: bool = False
 
@@ -416,12 +444,13 @@ class DecisionRule:
 # Em ordem, vale a primeira linha que casar. A restrição vem na frente de
 # tudo: é o banco dizendo que esta pessoa, ou esta conta, está bloqueada,
 # e nota nenhuma discute isso. Depois as rejeições, antes de qualquer
-# 2FA, e duas delas pedem a marcação de fraude do recebedor no DICT: a
-# marcação é a porteira da rejeição, e não ponto — os pontos dela já
-# estão no DICT02 e no DICT03. Sem marcação, nota alta continua dando
-# 2FA. É o lado que segura o falso positivo: rejeitar de vez fica pra
-# quem o sistema Pix inteiro já marcou, ou pra tomada de conta com todos
-# os sinais juntos.
+# 2FA, e três delas pedem evidência de fraude vigente no DICT — contra o
+# pagador numa, contra o recebedor nas outras duas: a evidência é a
+# porteira da rejeição, e não ponto. A do recebedor já pontuou no DICT02
+# ou no DICT03; a do pagador não pontua nunca (RFC §7). Sem evidência,
+# nota alta continua dando 2FA. É o lado que segura o falso positivo:
+# rejeitar de vez fica pra quem o sistema Pix inteiro já apontou, ou pra
+# tomada de conta com todos os sinais juntos.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
     DecisionRule("D-RESTRICT-SIM", PixStatus.REJECTED, requires_restriction=True),
     # Aparelho sem cadastro, rajada, valor atípico e destinos inéditos ao
@@ -431,13 +460,21 @@ DECISION_TABLE: tuple[DecisionRule, ...] = (
         "D-REJ-ATO", PixStatus.REJECTED,
         all_triggered=("P03", "P04", "P06", "P07"), min_payer_risk=70,
     ),
-    # Destino marcado no DICT recebendo rajada de muita gente.
+    # O mesmo dreno sem o aparelho estranho (o invasor pode estar no
+    # celular cadastrado), com o DICT apontando o próprio pagador: a
+    # evidência corrobora o que a rajada já diz.
+    DecisionRule(
+        "D-REJ-PAY", PixStatus.REJECTED,
+        all_triggered=("P04", "P06", "P07"), min_payer_risk=70,
+        requires_payer_adverse=True,
+    ),
+    # Destino apontado no DICT recebendo rajada de muita gente.
     DecisionRule(
         "D-REJ-RCP", PixStatus.REJECTED,
         all_triggered=("R02", "R03"), min_recipient_risk=55,
         requires_recipient_adverse=True,
     ),
-    # Destino marcado no DICT com os dois eixos já no limiar do 2FA.
+    # Destino apontado no DICT com os dois eixos já no limiar do 2FA.
     DecisionRule(
         "D-REJ-CROSS", PixStatus.REJECTED,
         min_payer_risk=40, min_recipient_risk=40,

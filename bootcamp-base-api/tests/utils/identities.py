@@ -39,9 +39,10 @@ def new_cpf() -> str:
 
     O schema não confere o verificador (src/schemas/post_pix_transaction.json),
     mas documento de verdade não custa nada. Repare no _distinct_digits:
-    base com todos os dígitos iguais é sorteada de novo — 99999999999 e
-    88888888888 são os documentos de demonstração do mock do DICT, e um
-    teste que caísse num deles receberia a confiança de outro roteiro.
+    base com todos os dígitos iguais é sorteada de novo — os documentos de
+    dígitos repetidos (99999999999, 77777777777, 66666666666, 55555555555,
+    88888888888) são os de demonstração do mock das fontes, e um teste
+    que caísse num deles receberia o roteiro de outro.
     """
     digits = _distinct_digits(9)
     for _ in range(2):

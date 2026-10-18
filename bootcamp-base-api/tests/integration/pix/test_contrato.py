@@ -58,9 +58,15 @@ CATALOG = {
     "DICT01": (3, "Contraparte", "recipient", "recipient", 32),
     "DICT02": (3, "Contraparte", "recipient", "recipient", 20),
     "DICT03": (3, "Contraparte", "recipient", "recipient", 25),
+    "DICT04": (3, "Contraparte", "recipient", "recipient", 8),
 }
 
 SIGNAL_KEYS = {"code", "layer", "family", "axis", "granularity", "status", "points"}
+
+# Os grupos de teto (o CAPS de src/antifraud/policy.py), por eixo: a nota
+# de cada eixo é a soma do que cada grupo dele aplicou.
+PAYER_FAMILIES = {"limit", "amount_cap", "payer_account", "payer_velocity", "payer_behavior"}
+RECIPIENT_FAMILIES = {"recipient_network", "dict_security_statistics", "dict_security", "relation"}
 
 PIX_STATUSES = {"approved", "rejected", "two_factor_required"}
 SUFFICIENCIES = {"unavailable", "low", "medium", "high"}
@@ -215,7 +221,8 @@ class TestContrato:
         destino, aberta em 10/10 às 9h, tem 7 dias e 13 horas no momento
         do Pix, e o R01 (menos de 7 dias) fica calado. É o primeiro Pix do
         pagador na base: os sinais de histórico saem unavailable, o DICT
-        responde o padrão (estatística 70, sem marcação), e sobra o L01.
+        responde o padrão (estatística 70, nenhuma ocorrência), e sobra o
+        L01.
         O CPF sorteado não está na fixture do cadastro de aparelhos: o
         cadastro responde "não cubro esse pagador", P03, L02 e P10 saem
         unavailable, e o Pix aprova mesmo assim — o fallback de 2FA é só
@@ -235,14 +242,16 @@ class TestContrato:
         assert pix.metadata["device"]["registration_status"] == "uncovered"
 
     def test_resposta_traz_key_status_e_metadata(self):
-        """O corpo da análise tem os três campos do contrato do desafio, e o metadata, os oito dele.
+        """O corpo da análise tem os três campos do contrato do desafio, e o metadata, os nove dele.
 
         key é o uuid4 da análise; metadata leva a versão da política, a
         linha da tabela, o que o cadastro disse do aparelho, as restrições
         que casaram (quase sempre nenhuma), os motivos, as duas notas, a
-        suficiência e os sinais do catálogo, na ordem dele. Os números são
-        int de verdade — um 10.0 no lugar do 10 é o mesmo valor pro Python
-        e outro JSON pro cliente.
+        suficiência, os sinais do catálogo, na ordem dele, e a conta das
+        notas grupo a grupo (family_contributions: bruto, aplicado e teto
+        dos nove grupos, e a nota de cada eixo é a soma dos aplicados
+        dele). Os números são int de verdade — um 10.0 no lugar do 10 é o
+        mesmo valor pro Python e outro JSON pro cliente.
         """
         pix = post_pix(pix_payload(new_payer(), new_recipient(), at(T0, 22), amount=150000))
 
@@ -255,11 +264,12 @@ class TestContrato:
 
         metadata = body["metadata"]
         assert set(metadata) == {
-            "policy_version", "decision_rule", "device", "restrictions", "reasons", "scores", "evidence_sufficiency", "signals",
+            "policy_version", "decision_rule", "device", "restrictions", "reasons", "scores", "evidence_sufficiency",
+            "signals", "family_contributions",
         }
         assert metadata["policy_version"] == "v0.6.0"
         assert metadata["decision_rule"] in {
-            "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2",
+            "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-PAY", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2",
             "D-PAY", "D-LIMIT", "D-SCAM", "D-DRAIN", "D-RCP", "D-DATA-UNAVAILABLE", "D-OK",
         }
         assert metadata["device"] == {"registration_status": "registered", "registration_source": "demo_seed", "previously_observed": False}
@@ -273,6 +283,24 @@ class TestContrato:
         assert set(metadata["evidence_sufficiency"].values()) <= SUFFICIENCIES
         assert [signal["code"] for signal in metadata["signals"]] == list(CATALOG)
         assert all(type(signal["points"]) is int and type(signal["layer"]) is int for signal in metadata["signals"])
+        contributions = metadata["family_contributions"]
+        assert set(contributions) == PAYER_FAMILIES | RECIPIENT_FAMILIES
+        assert all(set(contribution) == {"raw", "applied", "cap"} for contribution in contributions.values())
+        assert all(type(value) is int for contribution in contributions.values() for value in contribution.values())
+        assert sum(contributions[family]["applied"] for family in PAYER_FAMILIES) == metadata["scores"]["payer"]
+        assert sum(contributions[family]["applied"] for family in RECIPIENT_FAMILIES) == metadata["scores"]["recipient"]
+        contributions = metadata["family_contributions"]
+        assert set(contributions) == PAYER_FAMILIES | RECIPIENT_FAMILIES
+        assert all(set(contribution) == {"raw", "applied", "cap"} for contribution in contributions.values())
+        assert all(type(value) is int for contribution in contributions.values() for value in contribution.values())
+        assert sum(contributions[family]["applied"] for family in PAYER_FAMILIES) == metadata["scores"]["payer"]
+        assert sum(contributions[family]["applied"] for family in RECIPIENT_FAMILIES) == metadata["scores"]["recipient"]
+        contributions = metadata["family_contributions"]
+        assert set(contributions) == PAYER_FAMILIES | RECIPIENT_FAMILIES
+        assert all(set(contribution) == {"raw", "applied", "cap"} for contribution in contributions.values())
+        assert all(type(value) is int for contribution in contributions.values() for value in contribution.values())
+        assert sum(contributions[family]["applied"] for family in PAYER_FAMILIES) == metadata["scores"]["payer"]
+        assert sum(contributions[family]["applied"] for family in RECIPIENT_FAMILIES) == metadata["scores"]["recipient"]
 
     def test_cada_sinal_se_descreve_pelo_catalogo(self):
         """Cada sinal diz camada, família, eixo e granularidade, e só leva ponto e evidência quando dispara.
@@ -426,7 +454,9 @@ class TestContrato:
 
             P04 +20      5 tentativas em 5 min: os 4 pontuados contaram
             R02 +16      5 entradas em 10 min no mesmo titular
-            REL01 calado o par já tem Pix aprovado
+            REL01 +8     os 4 aprovados são dos últimos 4 minutos, e o
+                         baseline do par só conta até 24 h atrás: pro
+                         motor, o par ainda é inédito
 
         Se a pontuação entrasse na chave, este Pix seria de outro cliente,
         no primeiro dia dele — P04 unavailable.
@@ -444,7 +474,7 @@ class TestContrato:
         assert pix.signal_status("P04") == "triggered"
         assert pix.signal("P04")["evidence"]["attempts_5m"] == 5
         assert pix.signal_status("R02") == "triggered"
-        assert pix.signal_status("REL01") == "not_triggered"
+        assert pix.signal_status("REL01") == "triggered"
 
     @pytest.mark.parametrize("token", [None, "token-errado"], ids=["sem-token", "token-errado"])
     def test_post_sem_token_valido_volta_403(self, token):

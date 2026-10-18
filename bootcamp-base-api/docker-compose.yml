@@ -68,15 +68,15 @@ services:
       retries: 20
 
   # As tres fontes de fora, de mentira: o DICT do Banco Central (a camada
-  # 3 do motor pergunta a ele a estatistica de seguranca e a marcacao de
-  # fraude do recebedor), o cadastro de aparelhos do banco (o par
+  # 3 do motor pergunta a ele a estatistica e as ocorrencias de seguranca
+  # do recebedor e do pagador), o cadastro de aparelhos do banco (o par
   # pagador-aparelho esta cadastrado?) e as restricoes internas. Quem
   # responde pelas tres e um MockServer: um servidor HTTP que devolve o
   # que estiver combinado com ele. Cada combinado e uma expectativa (o
   # pedido que ela reconhece e a resposta que ela da), e as do
   # mockserver/sources-expectations.json sobem junto: estatistica neutra
-  # e sem marcacao pra qualquer documento, nenhum pagador no cadastro,
-  # nenhuma restricao, mais os casos de demonstracao do
+  # e nenhuma ocorrencia pra qualquer documento, nenhum pagador no
+  # cadastro, nenhuma restricao, mais os casos de demonstracao do
   # mockserver/README.md.
   #
   # Conta como infraestrutura de execucao, como o Postgres ali em cima, e

@@ -85,5 +85,6 @@ class PixTransactionDTO:
                     "recipient": pix_transaction.recipient_sufficiency,
                 },
                 "signals": signals,
+                "family_contributions": pix_transaction.family_contributions,
             },
         }
