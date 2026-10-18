@@ -110,9 +110,13 @@ Um mesmo documento pode possuir contas em bancos diferentes. Regras como P01/R01
 
 ## Restrições autoritativas
 
-As restrições são uma fonte diferente dos sinais e dos scores. Elas representam uma decisão explícita de bloqueio para um pagador, recebedor ou conta, e entram antes da pontuação na política. Se uma restrição válida existe, `D-RESTRICT-SIM` rejeita o Pix mesmo que os sinais estejam baixos ou alguma fonte de risco esteja indisponível.
+As restrições são uma fonte diferente dos sinais e dos scores. `risk_restriction` é uma blocklist operacional: uma instrução explícita de bloqueio para um pagador, titular recebedor ou conta recebedora. Ela não é inferida do histórico e não é apenas mais um sinal com pontos.
 
-Essa separação evita transformar um cadastro operacional em mais alguns pontos heurísticos: restrição é veto; histórico e DICT são evidências graduais. A consulta é temporal, então uma restrição futura ou expirada não vale para o instante de avaliação.
+Cada registro guarda escopo, origem (`provenance`), identificador da ocorrência, início/fim de validade e estado revogado ou ativo. A consulta é temporal: restrição futura, expirada ou revogada não vale para o instante de avaliação.
+
+Se uma restrição válida existe, `D-RESTRICT-SIM` rejeita o Pix mesmo que os sinais estejam baixos ou alguma fonte de risco esteja indisponível. Se a fonte de restrições estiver indisponível, o sistema não aprova silenciosamente: a avaliação falha e o receipt pode ser reassumido, porque não é seguro afirmar que não existe um veto.
+
+Essa separação evita transformar um cadastro operacional em mais alguns pontos heurísticos: restrição é veto; histórico e DICT são evidências graduais.
 
 ## O ciclo do receipt
 

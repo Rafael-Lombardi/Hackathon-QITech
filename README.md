@@ -26,6 +26,8 @@ flowchart TD
 
 As restrições são vetos explícitos e vêm antes dos scores. Os scorers são lógicos: o código compartilha o agregador, mas mantém os eixos separados. O DICT é uma fonte de evidência, não uma probabilidade de fraude. `unavailable` não significa segurança.
 
+As restrições autoritativas são vetos operacionais, avaliados antes dos scores.
+
 ## Regras
 
 As regras são sinais independentes. Cada uma produz `triggered`, `not_triggered` ou `unavailable`, com evidência e pontos. Os pontos acumulam em famílias com teto; depois são agregados nos scores do pagador e do recebedor. Pesos e limiares estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py).
@@ -100,10 +102,12 @@ pytest
 
 Os cenários estão organizados por contrato: aceitação (`test_cenarios_aceitacao.py`), decisões/rejeições (`test_decisoes.py`), fronteiras, contrato/idempotência, concorrência, histórico, DICT/geolocalização e resiliência/receipts. O relógio é fixável em `APP_ENV=test`, permitindo testar janelas sem depender da hora real.
 
-## Documentação complementar
+## Modelo de dados
 
-- [README interno completo](docs/README-interno.md): arquitetura detalhada, semântica dos relógios, receipts, indisponibilidade, modelagem do banco e limites de engenharia.
-- [Guia para contribuidores](CONTRIBUTING.md): mapa do código e onde alterar cada responsabilidade.
+O banco separa identidade (`customer`), contas (`account`), estado autoritativo, Pix analisado, receipt e os registros de explicação. A transação aponta para as contas de origem e destino; cada regra e cada evidência ficam gravadas para permitir auditoria.
+
+## Documentação operacional
+
 - [README da API](bootcamp-base-api/README.md): configuração, rotas, mock do DICT e operação local.
 - [Testes de integração](bootcamp-base-api/tests/integration/pix/README.md): catálogo dos cenários.
 
