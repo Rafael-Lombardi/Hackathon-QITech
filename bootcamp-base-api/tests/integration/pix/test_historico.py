@@ -73,7 +73,7 @@ class TestHistorico:
         """
         payer = new_payer()
         fresh = new_recipient(opening_date=T0 - timedelta(days=2))
-        dict_mock.set_trust(fresh.document, 12)
+        dict_mock.set_security_statistics(fresh.document, 12)
         seed_pix(payer, fresh, days_before(T0, 3), expect="two_factor_required")
 
         pix = post_pix(pix_payload(payer, fresh, T0), auto_register=False)

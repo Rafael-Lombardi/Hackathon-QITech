@@ -74,7 +74,7 @@ services:
     # mudaria por baixo dos testes sem ninguem pedir.
     image: mockserver/mockserver:5.15.0
     ports:
-      # A mesma porta responde como DICT (/trust-factor/...) e recebe os
+      # A mesma porta responde como DICT (/security-statistics/...) e recebe os
       # combinados dos testes (/mockserver/...). DICT_MOCK_PORT=1081 no
       # .env se a 1080 estiver ocupada.
       - "${DICT_MOCK_PORT:-1080}:1080"

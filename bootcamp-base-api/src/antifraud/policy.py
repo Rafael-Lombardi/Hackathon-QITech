@@ -90,7 +90,7 @@ RECIPIENT_PAYERS_THRESHOLD = 4  # R03 e R04
 RECURRENT_PAIR_MIN_APPROVED = 3
 RECURRENT_PAIR_MIN_DAYS = 7
 
-LOW_TRUST_LIMIT = 30  # DICT01: estatística de segurança abaixo disso
+LOW_SECURITY_STATISTICS_LIMIT = 30  # DICT01: estatística de segurança abaixo disso
 LOCATION_DISTANCE_THRESHOLD_KM = 300
 LOCATION_MIN_OBSERVATIONS = 10
 LOCATION_MIN_DAYS = 7
@@ -263,7 +263,7 @@ CATALOG: dict[str, SignalSpec] = {
         name="Estatística de segurança DICT desfavorável",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient",
-        cap_group="recipient_trust", points=32,
+        cap_group="dict_security_statistics", points=32,
     ),
     "DICT02": SignalSpec(
         name="Marcação de fraude suspeita no DICT",
@@ -300,7 +300,7 @@ def signal_spec(code: str) -> SignalSpec:
 # relation é o único que desce: histórico bom desconta até 10 pontos, e
 # nunca mais que isso — relação antiga não apaga sinal grave.
 #
-# payer_account e recipient_trust têm um sinal só, e o teto é o próprio
+# payer_account e dict_security_statistics têm um sinal só, e o teto é o próprio
 # peso: não dividem teto com ninguém. Mudou o peso, muda o teto.
 CAPS: dict[str, tuple[int, int]] = {
     "limit": (0, 15),
@@ -308,7 +308,7 @@ CAPS: dict[str, tuple[int, int]] = {
     "payer_velocity": (0, 25),
     "payer_behavior": (0, 45),
     "recipient_network": (0, 35),
-    "recipient_trust": (0, 32),
+    "dict_security_statistics": (0, 32),
     "dict_security": (0, 25),
     "relation": (-10, 8),
 }

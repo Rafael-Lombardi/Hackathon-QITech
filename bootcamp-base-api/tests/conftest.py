@@ -25,7 +25,7 @@ import time
 import pytest
 import requests
 
-from tests.utils.dict_mock import DictMock, mock_base_url, trust_factor_path
+from tests.utils.dict_mock import DictMock, mock_base_url, security_statistics_path
 from tests.utils.requisition import api_base_url
 
 # Quanto esperar a stack antes de desistir. O docker compose up --wait já
@@ -81,7 +81,7 @@ def _pending() -> list[str]:
     checks = [
         ("API", "GET", f"{api_base_url()}/health_check", _no_content),
         ("mock do DICT", "PUT", f"{mock_base_url()}/mockserver/status", _ok),
-        ("expectativa padrão do mock", "GET", f"{mock_base_url()}{trust_factor_path(PROBE_DOCUMENT)}", _high_trust),
+        ("expectativa padrão do mock", "GET", f"{mock_base_url()}{security_statistics_path(PROBE_DOCUMENT)}", _high_statistics),
     ]
     pending = []
     for piece, method, url, accept in checks:
@@ -104,7 +104,7 @@ def _ok(response) -> str | None:
     return None if response.status_code == 200 else f"HTTP {response.status_code}, esperava 200"
 
 
-def _high_trust(response) -> str | None:
+def _high_statistics(response) -> str | None:
     # Os cenários que não tratam da camada 3 contam com o DICT01 calado, e
     # isso pede a expectativa padrão de mockserver/dict-expectations.json
     # respondendo confiança de 30 pra cima (a padrão é 70) pra qualquer
@@ -113,7 +113,7 @@ def _high_trust(response) -> str | None:
         body = response.json()
     except ValueError:
         body = None
-    trust = body.get("trust_factor") if isinstance(body, dict) else None
-    if response.status_code == 200 and isinstance(trust, int) and trust >= 30:
+    statistics = body.get("security_statistics") if isinstance(body, dict) else None
+    if response.status_code == 200 and isinstance(statistics, int) and statistics >= 30:
         return None
-    return f"HTTP {response.status_code} {response.text[:80]!r}, esperava 200 com trust_factor >= 30"
+    return f"HTTP {response.status_code} {response.text[:80]!r}, esperava 200 com security_statistics >= 30"

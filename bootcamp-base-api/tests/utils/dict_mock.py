@@ -1,7 +1,7 @@
 """O roteiro do mock do DICT: o que ele responde, por documento, e o que ele recebeu.
 
 O DICT é o diretório do Banco Central; aqui é um MockServer que responde
-GET /trust-factor/{documento} com {"trust_factor": 70} para qualquer
+GET /security-statistics/{documento} com {"security_statistics": 70} para qualquer
 documento. Cada teste que trata da camada 3 escreve o roteiro do
 recebedor DELE — confiança baixa, resposta lenta, erro — e depois
 pergunta ao mock se a API ligou, para quem e quantas vezes.
@@ -44,8 +44,8 @@ def dict_timeout() -> float:
     return float(environ.get("DICT_API_TIMEOUT", "2"))
 
 
-def trust_factor_path(document: str) -> str:
-    return f"/trust-factor/{only_digits(document)}"
+def security_statistics_path(document: str) -> str:
+    return f"/security-statistics/{only_digits(document)}"
 
 
 class DictMock:
@@ -58,11 +58,11 @@ class DictMock:
     def __init__(self) -> None:
         self._created: list[str] = []
 
-    def set_trust(self, document: str, trust) -> None:
-        """O DICT responde 200 com esta confiança para o documento."""
-        self._expect(document, {"statusCode": 200, "headers": _JSON, "body": {"trust_factor": trust}})
+    def set_security_statistics(self, document: str, statistics) -> None:
+        """O DICT responde 200 com esta estatística para o documento."""
+        self._expect(document, {"statusCode": 200, "headers": _JSON, "body": {"security_statistics": statistics}})
 
-    def set_delay(self, document: str, seconds: int, trust: int = 0) -> None:
+    def set_delay(self, document: str, seconds: int, statistics: int = 0) -> None:
         """A resposta vem, mas só depois de `seconds` segundos.
 
         Repare na confiança 0 da resposta atrasada: se a API esperasse por
@@ -72,7 +72,7 @@ class DictMock:
         self._expect(document, {
             "statusCode": 200,
             "headers": _JSON,
-            "body": {"trust_factor": trust},
+            "body": {"security_statistics": statistics},
             "delay": {"timeUnit": "SECONDS", "value": seconds},
         })
 
@@ -82,7 +82,7 @@ class DictMock:
         A confiança 0 é de propósito: a API que lesse o corpo sem olhar o
         status dispararia o DICT01.
         """
-        self._expect(document, {"statusCode": status_code, "headers": _JSON, "body": {"trust_factor": 0}})
+        self._expect(document, {"statusCode": status_code, "headers": _JSON, "body": {"security_statistics": 0}})
 
     def set_body(self, document: str, body) -> None:
         """O DICT responde 200 com este corpo, torto ou não. Texto vai como está.
@@ -117,9 +117,9 @@ class DictMock:
     def _expect(self, document: str, http_response: dict) -> None:
         digits = only_digits(document)
         expectation = {
-            "id": f"trust-factor-{digits}",
+            "id": f"security-statistics-{digits}",
             "priority": PRIORITY,
-            "httpRequest": {"method": "GET", "path": trust_factor_path(digits)},
+            "httpRequest": {"method": "GET", "path": security_statistics_path(digits)},
             "httpResponse": http_response,
             "timeToLive": TIME_TO_LIVE,
         }
@@ -130,10 +130,10 @@ class DictMock:
             self._created.append(expectation["id"])
 
     def _verify(self, document: str, times: dict, expected: str) -> None:
-        request = {"httpRequest": {"method": "GET", "path": trust_factor_path(document)}, "times": times}
+        request = {"httpRequest": {"method": "GET", "path": security_statistics_path(document)}, "times": times}
         response = requests.put(f"{mock_base_url()}/mockserver/verify", json=request, timeout=_TIMEOUT)
         if response.status_code != 202:
             pytest.fail(
-                f"Esperava a API consultando GET {trust_factor_path(document)} {expected}, "
+                f"Esperava a API consultando GET {security_statistics_path(document)} {expected}, "
                 f"e o mock diz outra coisa (HTTP {response.status_code}):\n{response.text}"
             )

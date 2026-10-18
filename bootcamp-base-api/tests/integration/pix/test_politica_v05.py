@@ -19,7 +19,7 @@ def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
         pix_payload(payer, recipient, moment)
         for payer, moment in zip(payers, minutes_before(T0, 4))
     ])
-    dict_mock.set_trust(recipient.document, 12)
+    dict_mock.set_security_statistics(recipient.document, 12)
     seed_dict_security_evidence([{
         "customer_document": recipient.document,
         "axis": "recipient",
@@ -270,7 +270,7 @@ class TestPoliticaRfcV05:
             for target, moment in zip(targets, minutes_before(T0, 4))
         ])
         recipient = new_recipient()
-        dict_mock.set_trust(recipient.document, 12)
+        dict_mock.set_security_statistics(recipient.document, 12)
         seed_dict_security_evidence([{
             "customer_document": recipient.document,
             "axis": "recipient",

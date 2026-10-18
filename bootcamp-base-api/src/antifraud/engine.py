@@ -20,7 +20,7 @@ from antifraud.contract import (
     SignalStatus,
     Sufficiency,
 )
-from antifraud.layers import DecisionTreeLayer, DictSecurityLayer, InitialChecksLayer, TrustFactorLayer
+from antifraud.layers import DecisionTreeLayer, DictSecurityLayer, InitialChecksLayer, DictSecurityStatisticsLayer
 from antifraud.policy import DecisionRule
 
 # As camadas, na ordem em que rodam, uma por linha — como as cascas de
@@ -34,7 +34,7 @@ from antifraud.policy import DecisionRule
 LAYERS: tuple[Layer, ...] = (
     InitialChecksLayer(),
     DecisionTreeLayer(),
-    TrustFactorLayer(),
+    DictSecurityStatisticsLayer(),
     DictSecurityLayer(),
 )
 

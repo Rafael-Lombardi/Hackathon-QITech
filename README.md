@@ -12,13 +12,13 @@ O motor ([`src/antifraud/`](bootcamp-base-api/src/antifraud/)) mora fora do cont
 
 1. **Validações iniciais** — o que o próprio Pix diz, sem histórico: conta nova, valor alto à noite, mesmo titular.
 2. **Sinais e política** — regras determinísticas sobre o histórico, escritas à mão: sem fraude rotulada não há modelo a treinar, e cada resposta precisa caber numa frase.
-3. **Evidência de segurança do DICT** — estatísticas e marcações simuladas do recebedor. A política não usa um trust factor único; o endpoint legado do mock mantém esse nome por compatibilidade.
+3. **Evidência de segurança do DICT** — estatísticas e marcações simuladas do recebedor. O mock usa o campo `security_statistics`, alinhado ao conceito da RFC.
 
 Nenhuma camada lê o sinal de outra; quem junta é o engine, nos tetos, nas notas e na tabela de decisão. Cada sinal sai `triggered`, `not_triggered` ou `unavailable` (falta de histórico não vira ponto nem atestado); os pontos somam por grupo, com teto, em duas notas de 0 a 100 que não são probabilidade, **pagador** e **destino**, cada uma com a **suficiência das evidências**; e na **tabela de decisão** vale a primeira linha que casar. Tudo volta em `metadata` ([exemplo resolvido](#um-exemplo-resolvido)).
 
 ### Contrato do DICT nesta demonstração
 
-O DICT é consultado como fonte de evidência de segurança, não como um número universal de confiança. `DICT01` representa estatística desfavorável; `DICT02` e `DICT03`, marcações suspeita e confirmada na fixture. `clear` significa apenas que nenhuma evidência adversa conhecida foi retornada; `unavailable` significa que a fonte não respondeu ou não permitiu concluir. Nenhum dos dois estados prova legitimidade ou fraude. O mock mantém `/trust-factor/...` somente por compatibilidade.
+O DICT é consultado como fonte de evidência de segurança, não como um número universal de confiança. `DICT01` representa estatística desfavorável; `DICT02` e `DICT03`, marcações suspeita e confirmada na fixture. `clear` significa apenas que nenhuma evidência adversa conhecida foi retornada; `unavailable` significa que a fonte não respondeu ou não permitiu concluir. Nenhum dos dois estados prova legitimidade ou fraude. O mock usa `/security-statistics/...` com o mesmo nome do campo conceitual.
 
 ## Regras
 
@@ -52,7 +52,7 @@ Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (
 | **R04** Conta nova concentrando pagadores<br>camada 2 · Contraparte · destino | Conta de destino com menos de 7 dias **e** a condição do R03. | **+15** · rede do destino, teto 35 | O laranja recém-aberto que já concentra pagadores. Junta duas evidências que já existem: R01 e R03 somam 32, e o R04 só leva a rede ao teto. Nunca muda o status; fica pela nota gravada e pelo motivo legível. |
 | **REL01** Destino inédito para o pagador<br>camada 2 · Contraparte · destino | Nenhum Pix aprovado do pagador para este recebedor. | **+8** · relação, de -10 a +8 | Na falsa central, no falso parente e no QR trocado, o dinheiro vai para alguém que o cliente nunca pagou. Mas todo mundo paga alguém pela primeira vez: 8 só pesa somado ao que se sabe do recebedor. |
 | **REL02** Relação recorrente<br>camada 2 · Contraparte · destino | 3 ou mais Pix aprovados do pagador para este recebedor, o primeiro há 7 dias ou mais, **e** nenhuma rejeição nem 2FA entre os dois nos últimos 7 dias. | ≥ 3 aprovados · primeiro há ≥ 7 dias · **-8** · relação, de -10 a +8 | O aluguel, a diarista, a mesada: três Pix aprovados, o primeiro há uma semana, já são hábito: não deveriam pagar fricção. Um 2FA ou uma rejeição recente no par suspende o desconto, para não facilitar justo a tentativa seguinte. |
-| **DICT01** Estatística de segurança desfavorável<br>camada 3 · Contraparte · destino | Estatística de segurança do recebedor abaixo de 30. | < 30 · prazo de 2 s · **+32** · estatística DICT, teto 32 | O DICT fornece evidências institucionais sobre a chave/recebedor. Aqui a resposta é uma simplificação mockada: não é um trust factor universal nem prova de legitimidade. |
+| **DICT01** Estatística de segurança desfavorável<br>camada 3 · Contraparte · destino | Estatística de segurança do recebedor abaixo de 30. | < 30 · prazo de 2 s · **+32** · estatística DICT, teto 32 | O DICT fornece evidências institucionais sobre a chave/recebedor. Aqui a resposta é uma simplificação mockada, não prova de legitimidade. |
 | **DICT02** Marcação de fraude suspeita no DICT<br>camada 3 · Contraparte · destino | O DICT possui uma marcação de fraude suspeita para o recebedor. | fixture `suspicious` · **+20** · evidência DICT, teto 25 | Evidência adversa declarada, mas ainda não confirmada; participa das rejeições demonstrativas quando combinada com outros sinais. |
 | **DICT03** Marcação de fraude confirmada na fixture<br>camada 3 · Contraparte · destino | A fixture possui confirmação de fraude para o recebedor. | fixture `confirmed_in_mock` · **+25** · evidência DICT, teto 25 | Evidência mais forte da demonstração; não é confirmação regulatória nem prova produzida pelo DICT produtivo. |
 
@@ -65,7 +65,7 @@ Os grupos de teto. O pagador chega no máximo a 95, e o destino a 75; o preço d
 | rajada do pagador (`payer_velocity`) | P04, P05 | 0 a 25 | a mesma rajada vista por quantidade e por dinheiro: 35 viram 25 |
 | comportamento (`payer_behavior`) | P03, P06, P07, P08, P09, P10 | 0 a 45 | o maior grupo, porque é onde mora a tomada de conta |
 | rede do destino (`recipient_network`) | R01, R02, R03, R04 | 0 a 35 | abaixo de 40: a rede sozinha nunca pede 2FA, e a combinação completa é a rejeição (D-REJ) |
-| estatística DICT (`recipient_trust`, nome legado no código) | DICT01 | 0 a 32 | um sinal só, e o teto é o próprio peso: a evidência DICT soma por fora da rede |
+| estatística DICT (`dict_security_statistics`) | DICT01 | 0 a 32 | um sinal só, e o teto é o próprio peso: a evidência DICT soma por fora da rede |
 | relação (`relation`) | REL01, REL02, REL03 | -10 a +8 | o único que desce, e no máximo 10: relação antiga não apaga sinal grave |
 
 **Ajustes à RFC v0.3:**
@@ -156,7 +156,7 @@ Com Docker, Git e o uv ([instalação, e o caminho sem ele](bootcamp-base-api/RE
 git clone https://github.com/Rafael-Lombardi/Hackathon-QITech.git
 cd Hackathon-QITech/bootcamp-base-api
 docker compose up -d --build --wait
-until curl -sf http://localhost:1080/trust-factor/00000000000 > /dev/null; do sleep 1; done
+until curl -sf http://localhost:1080/security-statistics/00000000000 > /dev/null; do sleep 1; done
 ```
 
 A última linha espera o mock do DICT, que leva até 18 s para atender: um Pix que chegue antes sai com o DICT01 `unavailable`, e o reenvio devolve essa análise para sempre. O Pix de exemplo do desafio:

@@ -46,9 +46,9 @@ class DictConnector(RestConnector):
         # repete o endereço inteiro, documento junto.
         try:
             response = self.send(
-                endpoint=f"/trust-factor/{document_number}",
+                endpoint=f"/security-statistics/{document_number}",
                 method="GET",
-                log_as=f"/trust-factor/{masked_document}",
+                log_as=f"/security-statistics/{masked_document}",
             )
         except requests.RequestException as error:
             raise self._unavailable(masked_document, f"request failed ({type(error).__name__})") from None
@@ -59,11 +59,9 @@ class DictConnector(RestConnector):
         security_statistics = None
         if isinstance(response.json, dict):
             security_statistics = response.json.get("security_statistics")
-            if security_statistics is None:  # formato antigo do mock
-                security_statistics = response.json.get("trust_factor")
 
         # Repare no `type(...) is int` no lugar do isinstance: em Python,
-        # True é um int que vale 1, e um {"trust_factor": true} passaria
+        # True é um int que vale 1, e um {"security_statistics": true} passaria
         # como estatística DICT 1. O 70.0 e o "70" também ficam de fora — o
         # combinado é um inteiro, e resposta fora do combinado não vira
         # número por boa vontade nossa.

@@ -26,7 +26,7 @@ O uv instala com `curl -LsSf https://astral.sh/uv/install.sh | sh`.
 
 ```bash
 docker compose up -d --build --wait
-until curl -sf http://localhost:1080/trust-factor/00000000000 > /dev/null; do sleep 1; done
+until curl -sf http://localhost:1080/security-statistics/00000000000 > /dev/null; do sleep 1; done
 ```
 
 Não precisa criar nem copiar arquivo nenhum antes: toda configuração tem valor padrão no `docker-compose.yml`. Sobem três serviços:
@@ -211,7 +211,7 @@ O `default_token` só vale porque isto é um projeto de estudo, sem dado de ning
 A camada 3 consulta evidências de segurança do DICT sobre o recebedor. O serviço `dict-mock` usa o endpoint legado abaixo apenas para compatibilidade da fixture:
 
 ```
-GET /trust-factor/{documento, só dígitos}   →   200 {"trust_factor": 70}
+GET /security-statistics/{documento, só dígitos}   →   200 {"security_statistics": 70}
 ```
 
 O DICT de verdade devolve dados de chave, titularidade, estatísticas e marcações de segurança. O mock simplifica isso com uma resposta estatística compatível e fixtures de marcação. `clear` não significa legitimidade e `unavailable` não significa segurança. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa.

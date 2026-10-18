@@ -1,8 +1,8 @@
-"""Camada 3: a confiança do destino, pelo mock do DICT.
+"""Camada 3: a estatística de segurança do destino, pelo mock do DICT.
 
-A API consulta GET /trust-factor/{documento do recebedor} antes de decidir.
+A API consulta GET /security-statistics/{documento do recebedor} antes de decidir.
 Confiança abaixo de 30 dispara o DICT01 (+32, eixo do destino, no grupo
-recipient_trust, com teto próprio). Mock lento demais, com erro ou
+estatística DICT, com teto próprio). Mock lento demais, com erro ou
 respondendo torto vira DICT01 unavailable — e o Pix sai decidido pelas
 outras duas camadas, sem ponto e sem desconto.
 
@@ -25,16 +25,16 @@ from tests.utils.dict_mock import dict_timeout
 from tests.utils.identities import format_document, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed_pix
 
-LOW_TRUST = 12
+LOW_SECURITY_STATISTICS = 12
 
 
 class TestCamadaDict:
     @pytest.mark.parametrize(
-        "trust, expected, points",
+        "statistics, expected, points",
         [(29, "triggered", 32), (30, "not_triggered", 0)],
         ids=["confianca-29-dispara", "confianca-30-nao-dispara"],
     )
-    def test_fronteira_dict01_confianca_abaixo_de_30(self, dict_mock, trust, expected, points):
+    def test_fronteira_dict01_estatistica_abaixo_de_30(self, dict_mock, statistics, expected, points):
         """DICT01: confiança do destino abaixo de 30. Com 29, +32; com 30, calado.
 
         Pagador novo na base, e por isso o REL01 fica unavailable: o DICT01
@@ -43,7 +43,7 @@ class TestCamadaDict:
         de fora, sozinha, não pede 2FA. D-OK nos dois lados.
         """
         payer, recipient = new_payer(), new_recipient()
-        dict_mock.set_trust(recipient.document, trust)
+        dict_mock.set_security_statistics(recipient.document, statistics)
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 
@@ -65,7 +65,7 @@ class TestCamadaDict:
             P01 +10      conta pagadora com 1 dia
             L01 +8       3h, acima de R$ 1.000
             R01 +12      conta de destino com 1 dia
-            DICT01 +32   confiança 12 (< 30), no recipient_trust
+        DICT01 +32   estatística 12 (< 30), no grupo DICT
             pagador 18, destino 12 + 32 = 44
 
         D-RCP. O DICT01 tem teto próprio na política v0.5:
@@ -74,7 +74,7 @@ class TestCamadaDict:
         """
         payer = new_payer(opening_date=T0 - timedelta(days=1))
         recipient = new_recipient(opening_date=T0 - timedelta(days=1))
-        dict_mock.set_trust(recipient.document, LOW_TRUST)
+        dict_mock.set_security_statistics(recipient.document, LOW_SECURITY_STATISTICS)
 
         pix = post_pix(pix_payload(payer, recipient, at(T0, 3), amount=100_000_000))
 
@@ -102,7 +102,7 @@ class TestCamadaDict:
         payer, holder = new_payer(), new_recipient()
         seed_pix(payer, holder, days_ago(T0, 10, 5, 1))
         new_account = holder.with_new_account(opening_date=T0 - timedelta(days=2))
-        dict_mock.set_trust(holder.document, LOW_TRUST)
+        dict_mock.set_security_statistics(holder.document, LOW_SECURITY_STATISTICS)
 
         pix = post_pix(pix_payload(payer, new_account, T0))
 
@@ -123,7 +123,7 @@ class TestCamadaDict:
         """
         payer, recipient = new_payer(), new_recipient()
         timeout = dict_timeout()
-        dict_mock.set_delay(recipient.document, math.ceil(timeout) + 2, trust=0)
+        dict_mock.set_delay(recipient.document, math.ceil(timeout) + 2, statistics=0)
 
         started = time.monotonic()
         pix = post_pix(pix_payload(payer, recipient, T0))
@@ -153,14 +153,14 @@ class TestCamadaDict:
     @pytest.mark.parametrize(
         "body",
         [
-            {"trust_factor": 150},
-            {"trust_factor": -1},
-            {"trust_factor": "12"},
-            {"trust_factor": 12.5},
+            {"security_statistics": 150},
+            {"security_statistics": -1},
+            {"security_statistics": "12"},
+            {"security_statistics": 12.5},
             {},
             "confianca alta",
         ],
-        ids=["acima-de-100", "negativo", "em-texto", "fracionario", "sem-trust-factor", "corpo-que-nao-e-json"],
+        ids=["acima-de-100", "negativo", "em-texto", "fracionario", "sem-security-statistics", "corpo-que-nao-e-json"],
     )
     def test_resposta_torta_do_mock_vira_unavailable(self, dict_mock, body):
         """Só um inteiro de 0 a 100 é confiança. O resto é DICT indisponível.
@@ -200,7 +200,7 @@ class TestCamadaDict:
         ficaria calado.
         """
         payer, recipient = new_payer(), new_recipient()
-        dict_mock.set_trust(recipient.document, LOW_TRUST)
+        dict_mock.set_security_statistics(recipient.document, LOW_SECURITY_STATISTICS)
 
         pix = post_pix(pix_payload(payer, recipient, T0, recipient_document=format_document(recipient.document)))
 

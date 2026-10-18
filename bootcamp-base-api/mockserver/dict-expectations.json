@@ -1,43 +1,43 @@
 [
   {
-    "id": "trust-factor-default",
+    "id": "security-statistics-default",
     "priority": 0,
     "httpRequest": {
       "method": "GET",
-      "path": "/trust-factor/.*"
+      "path": "/security-statistics/.*"
     },
     "httpResponse": {
       "statusCode": 200,
       "body": {
-        "trust_factor": 70
+        "security_statistics": 70
       }
     }
   },
   {
-    "id": "trust-factor-99999999999",
+    "id": "security-statistics-99999999999",
     "priority": 10,
     "httpRequest": {
       "method": "GET",
-      "path": "/trust-factor/99999999999"
+      "path": "/security-statistics/99999999999"
     },
     "httpResponse": {
       "statusCode": 200,
       "body": {
-        "trust_factor": 12
+        "security_statistics": 12
       }
     }
   },
   {
-    "id": "trust-factor-88888888888",
+    "id": "security-statistics-88888888888",
     "priority": 10,
     "httpRequest": {
       "method": "GET",
-      "path": "/trust-factor/88888888888"
+      "path": "/security-statistics/88888888888"
     },
     "httpResponse": {
       "statusCode": 200,
       "body": {
-        "trust_factor": 70
+        "security_statistics": 70
       },
       "delay": {
         "timeUnit": "SECONDS",

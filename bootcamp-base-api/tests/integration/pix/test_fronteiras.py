@@ -599,7 +599,7 @@ class TestFronteiras:
         """O D-RCP pede destino >= 40. Com 39, aprova.
 
         O destino soma três grupos: o recipient_network (R01 12, R02 16,
-        R03 20, R04 15; teto 35), o recipient_trust (DICT01 32; teto 32) e
+        R03 20, R04 15; teto 35), a estatística DICT (DICT01 32; teto 32) e
         a relation (REL01 8, REL02 -8, REL03 -5; de -10 a 8). Perto dos 40
         dá pra chegar a 35, 36, 38, 39, 40, 42, 43 e 44. O 39 é este:
 
@@ -616,7 +616,7 @@ class TestFronteiras:
         """
         payer = new_payer()
         own_new = new_recipient(document=payer.document, opening_date=T0 - timedelta(days=2))
-        dict_mock.set_trust(payer.document, 12)
+        dict_mock.set_security_statistics(payer.document, 12)
 
         pix = post_pix(pix_payload(payer, own_new, T0))
 
@@ -641,7 +641,7 @@ class TestFronteiras:
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, new_recipient(), [T0 - timedelta(days=1)])
-        dict_mock.set_trust(recipient.document, 12)
+        dict_mock.set_security_statistics(recipient.document, 12)
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 

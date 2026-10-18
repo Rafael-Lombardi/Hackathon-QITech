@@ -7,5 +7,5 @@ as três em fila é o LAYERS, no engine.
 
 from antifraud.layers.decision_tree import DecisionTreeLayer
 from antifraud.layers.dict_security import DictSecurityLayer
+from antifraud.layers.dict_security_statistics import DictSecurityStatisticsLayer
 from antifraud.layers.initial_checks import InitialChecksLayer
-from antifraud.layers.trust_factor import TrustFactorLayer

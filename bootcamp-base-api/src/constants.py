@@ -11,8 +11,8 @@ SERVICE_NAME = os.environ.get("SERVICE_NAME", "bootcamp-api")
 DATABASE_URL = os.environ.get("DATABASE_URL")
 INTERNAL_TOKEN = os.environ.get("INTERNAL_TOKEN")
 
-# O DICT do Banco Central (no compose, o mock dele): de onde vem o trust
-# factor do recebedor. Quem usa é o src/connectors/dict_connector.py.
+# O DICT do Banco Central (no compose, o mock dele): de onde vem a estatística
+# de segurança do recebedor. Quem usa é o src/connectors/dict_connector.py.
 DICT_API_URL = os.environ.get("DICT_API_URL", "http://localhost:1080")
 DICT_API_INTERNAL_TOKEN = os.environ.get("DICT_API_INTERNAL_TOKEN", "default_token")
 
