@@ -6,11 +6,11 @@
 
 O serviço recebe um Pix, valida o contrato, consulta o estado autoritativo e o histórico, avalia evidências do DICT e produz uma decisão determinística antes da autorização: `approved`, `two_factor_required` ou `rejected`.
 
-O controller coordena receipt/idempotência, locks, histórico e persistência. O pacote `antifraud` recebe um `Context` pronto e devolve sinais, scores separados para pagador e recebedor e a regra que decidiu. O resultado completo fica gravado e pode ser consultado pelo `GET`.
+O controller coordena idempotência por `external_id`, locks, histórico e persistência. O pacote `antifraud` recebe um `Context` pronto e devolve sinais, scores separados para pagador e recebedor e a regra que decidiu. O resultado completo fica gravado e pode ser consultado pelo `GET`.
 
 ```mermaid
 flowchart TD
-    A[POST /pix/transaction] --> B[Validação + receipt]
+    A[POST /pix/transaction] --> B[Validação + busca external_id]
     B --> C[DICT + locks + Context]
     C --> D[Restrições autoritativas]
     C --> E[Camadas de sinais]
@@ -83,6 +83,63 @@ until curl -sf http://localhost:1080/security-statistics/00000000000 >/dev/null;
 
 Envie um Pix para `POST /pix/transaction` com `INTERNAL-TOKEN: default_token`. A resposta nova é `201`; o mesmo payload/idempotency key retorna `200`; o mesmo `id` com outro payload retorna `409`.
 
+### Casos manuais com `curl`
+
+O serviço desativa as páginas automáticas Swagger/OpenAPI; o contrato de entrada está em [`post_pix_transaction.json`](bootcamp-base-api/src/schemas/post_pix_transaction.json). Este caso cria um Pix simples e imprime a análise:
+
+```bash
+PIX_ID="manual-$(date +%s)"
+NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+curl -i -X POST http://localhost:3000/pix/transaction \
+  -H "INTERNAL-TOKEN: default_token" \
+  -H "Content-Type: application/json" \
+  -d "{\
+    \"id\": \"$PIX_ID\",\
+    \"amount\": 150000,\
+    \"transaction_date\": \"$NOW\",\
+    \"source_account\": {\
+      \"branch\": \"0001\", \"account_number\": \"88213\",\
+      \"opening_date\": \"2020-03-02T10:00:00-03:00\",\
+      \"owner\": {\"document_number\": \"12345678909\"}\
+    },\
+    \"destination_account\": {\
+      \"participant\": \"60701190\", \"branch\": \"3675\", \"account_number\": \"10442\",\
+      \"opening_date\": \"2020-03-02T10:00:00-03:00\",\
+      \"owner\": {\"document_number\": \"98765432100\"}\
+    },\
+    \"source\": {\
+      \"device_id\": \"manual-device\", \"channel\": \"app\",\
+      \"ip\": \"198.51.100.23\"\
+    }\
+  }"
+```
+
+Guarde o valor de `PIX_ID` e rode os casos seguintes:
+
+```bash
+# 1. Consulta a análise persistida; não reavalia nem chama o DICT novamente.
+curl -i "http://localhost:3000/pix/transaction/$PIX_ID" \
+  -H "INTERNAL-TOKEN: default_token"
+
+# 2. Reenvio idêntico: retorna 200 e o mesmo corpo da análise.
+#    Reexecute o POST anterior mantendo PIX_ID, NOW e o payload iguais.
+
+# 3. Mesmo id com payload diferente: retorna 409.
+curl -i -X POST http://localhost:3000/pix/transaction \
+  -H "INTERNAL-TOKEN: default_token" \
+  -H "Content-Type: application/json" \
+  -d "{\"id\":\"$PIX_ID\",\"amount\":1}"
+
+# 4. Corpo inválido: retorna 400 antes de consultar banco ou motor.
+curl -i -X POST http://localhost:3000/pix/transaction \
+  -H "INTERNAL-TOKEN: default_token" \
+  -H "Content-Type: application/json" \
+  -d '{"id":"manual-invalid"}'
+```
+
+Casos de rejeição e 2FA dependem de histórico, cadastro e evidências seedadas; por isso estão reproduzidos como cenários de integração em `bootcamp-base-api/tests/integration/pix/`, onde cada caso monta seu próprio estado.
+
 ```bash
 curl -s http://localhost:3000/pix/transaction/<id> \
   -H "INTERNAL-TOKEN: default_token"
@@ -100,11 +157,61 @@ APP_ENV=test docker compose up -d --build --force-recreate --wait
 pytest
 ```
 
-Os cenários estão organizados por contrato: aceitação (`test_cenarios_aceitacao.py`), decisões/rejeições (`test_decisoes.py`), fronteiras, contrato/idempotência, concorrência, histórico, DICT/geolocalização e resiliência/receipts. O relógio é fixável em `APP_ENV=test`, permitindo testar janelas sem depender da hora real.
+Os cenários estão organizados por contrato: aceitação (`test_cenarios_aceitacao.py`), decisões/rejeições (`test_decisoes.py`), fronteiras, contrato/idempotência, concorrência, histórico, DICT/geolocalização e indisponibilidade. O relógio é fixável em `APP_ENV=test`, permitindo testar janelas sem depender da hora real.
+
+### Explorar e selecionar um cenário
+
+Para listar exatamente o que o pytest encontrou:
+
+```bash
+pytest --collect-only -q tests/integration/pix
+```
+
+Para executar um caso específico com nome e progresso detalhados:
+
+```bash
+pytest -vv tests/integration/pix/test_decisoes.py::TestDecisoes::test_rejeicao_ato_exige_combinacao_completa
+```
+
+Os nomes dos testes são o catálogo dos cenários. Por exemplo:
+
+```bash
+pytest -vv tests/integration/pix/test_concorrencia.py
+pytest -vv tests/integration/pix/test_historico.py
+pytest -vv tests/integration/pix/test_resiliencia.py
+```
+
+Cada cenário cria suas próprias identidades e histórico com helpers em `tests/utils/`; não existe uma única database fixture compartilhada com todos os casos. Depois de um teste, é possível inspecionar o estado persistido:
+
+```bash
+docker compose exec db psql -U bootcamp -d bootcamp -c \
+  "SELECT id, external_id, decision_rule, payer_risk, recipient_risk, received_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
+
+docker compose exec db psql -U bootcamp -d bootcamp -c \
+  "SELECT pix_transaction_id, rule_name, axis, signal_status_id, points FROM pix_transaction_rule_result ORDER BY id DESC LIMIT 30;"
+
+docker compose exec db psql -U bootcamp -d bootcamp -c \
+  "SELECT external_id, status_id, received_at, evaluated_at FROM pix_transaction ORDER BY id DESC LIMIT 10;"
+```
+
+O banco começa com os catálogos de status; contas, Pix, devices, restrições e evidências são criados pelo cenário que está rodando. Para voltar a um banco vazio, use `docker compose down -v` e suba a stack novamente.
 
 ## Modelo de dados
 
-O banco separa identidade (`customer`), contas (`account`), estado autoritativo, Pix analisado, receipt e os registros de explicação. A transação aponta para as contas de origem e destino; cada regra e cada evidência ficam gravadas para permitir auditoria.
+O banco usa um modelo account-scoped: cada `account` combina documento e conta bancária concreta. Não existe `customer` separado: regras que precisam de visão de titular agregam contas pelo documento; regras de conta usam o `account_id` exato.
+
+| Tabela | Papel no domínio |
+|---|---|
+| `account` | identidade usada como origem/destino; documento, participante, agência, número e data de abertura |
+| `device_registry` | cadastro autoritativo de devices confiáveis e revogações; um Pix observado não cadastra device |
+| `risk_restriction` | veto temporal explícito para pagador, titular recebedor ou conta recebedora; avaliado antes dos scores |
+| `external_risk_assessment` | snapshot de inteligência externa/DICT por eixo (`payer`/`recipient`); não é histórico nem ground truth |
+| `pix_transaction` | fato observado, payload original, relógios, scores, regra vencedora e decisão final; `UNIQUE(external_id)` dá idempotência |
+| `pix_transaction_rule_result` | uma linha por regra, incluindo `unavailable`, com status, família, eixo, pontos e evidência observada |
+| `pix_transaction_risk_evidence` | cópia imutável das restrições e avaliações externas usadas naquela decisão |
+| `pix_transaction_status` / `pix_signal_status` | catálogos dos três estados finais e dos três estados de cada regra |
+
+`pix_transaction` aponta para as contas de origem e destino. A decisão e suas duas coleções de explicação são gravadas na mesma transação; não há `receipt`, `lease`, fila ou estado intermediário persistido. Assim, o `GET` só encontra análises completas e cada Pix continua auditável mesmo se as fontes externas mudarem depois.
 
 ## Documentação operacional
 

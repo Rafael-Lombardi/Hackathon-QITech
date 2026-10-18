@@ -1,5 +1,4 @@
 import json
-import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from sqlalchemy.exc import SQLAlchemyError
@@ -12,15 +11,12 @@ from dtos import PixTransactionDTO
 from errors import (
     DictUnavailable,
     InvalidSchema,
-    PixTransactionEvaluationFailed,
     PixTransactionIdConflict,
     PixTransactionNotFound,
-    PixTransactionProcessing,
 )
-from models import Account, Customer, PixTransaction
+from models import Account, PixTransaction
 from repositories import (
     AccountRepository,
-    CustomerRepository,
     DeviceRegistryRepository,
     PixHistoryRepository,
     PixTransactionRepository,
@@ -42,7 +38,6 @@ class PixTransactionController(BaseController):
 
     def __init__(self) -> None:
         super().__init__(__name__)
-        self.customer_repository = CustomerRepository(self.context)
         self.account_repository = AccountRepository(self.context)
         self.pix_transaction_repository = PixTransactionRepository(self.context)
         self.pix_history_repository = PixHistoryRepository(self.context)
@@ -65,9 +60,8 @@ class PixTransactionController(BaseController):
           3. pergunta ao DICT pelo recebedor ANTES de travar qualquer
              linha. A consulta pode levar os 2 s do prazo, e um pagador
              travado esse tempo todo seguraria todos os Pix dele;
-          4. cria customers e contas na primeira aparição;
-          5. trava o pagador — a linha do customer, porque as regras do
-             pagador contam pelo documento, somando as contas dele — e
+          4. cria as contas (a conta carrega também o documento) na primeira aparição;
+          5. trava o documento do pagador e depois as contas envolvidas — e
              procura o id de novo: outro POST do mesmo Pix pode ter gravado
              enquanto este esperava;
           6. conta o histórico, monta o Context e roda o motor;
@@ -83,54 +77,11 @@ class PixTransactionController(BaseController):
             return replayed, False
 
         received_at = test_received_at or datetime.now(timezone.utc)
-        receipt, claimed = self.pix_transaction_repository.claim_receipt(
-            external_id=pix_request.external_id, payload=pix_request.payload, now=received_at,
-        )
-        if not claimed:
-            if receipt.payload != pix_request.payload:
-                raise PixTransactionIdConflict(pix_request.external_id)
-            # A completed receipt normally has a transaction and was caught by
-            # the replay above. An active claim is deliberately not a verdict.
-            if receipt.pix_transaction_id is None:
-                replayed = self._wait_for_replay(pix_request)
-                if replayed is not None:
-                    return replayed, False
-                self._raise_receipt_state(pix_request.external_id)
-            replayed = self._replay_if_recorded(pix_request)
-            if replayed is not None:
-                return replayed, False
-            raise PixTransactionIdConflict(pix_request.external_id)
-        owner_token = receipt.owner_token
-        received_at = receipt.received_at
         self._validate_transaction_date(pix_request.transaction_date, received_at)
-        # Make the claim durable before external I/O or risk evaluation.
-        self.session.commit()
+        return self._process_new(pix_request, received_at)
 
-        try:
-            return self._process_claimed(pix_request, received_at, receipt, owner_token)
-        except Exception as error:
-            self.session.rollback()
-            failed = self.pix_transaction_repository.get_receipt(pix_request.external_id)
-            if failed is not None:
-                self.pix_transaction_repository.mark_receipt_failed(
-                    failed, owner_token=owner_token, reason=str(error)
-                )
-                self.session.commit()
-            raise
-
-    def _wait_for_replay(self, pix_request: PixRequest) -> dict | None:
-        """Wait briefly for the owner of an active receipt to commit."""
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            self.session.rollback()
-            replayed = self._replay_if_recorded(pix_request)
-            if replayed is not None:
-                return replayed
-            time.sleep(0.01)
-        return None
-
-    def _process_claimed(
-        self, pix_request: PixRequest, received_at: datetime, receipt, owner_token: str,
+    def _process_new(
+        self, pix_request: PixRequest, received_at: datetime,
     ) -> tuple[dict, bool]:
 
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
@@ -143,18 +94,16 @@ class PixTransactionController(BaseController):
             pix_request.destination_account.document_number
         )
 
-        self.customer_repository.lock_for_pix_document(
+        self.account_repository.lock_for_pix_document(
             document_number=pix_request.source_account.document_number
         )
-        payer, recipient = self._get_or_create_customers(pix_request)
-        source_account = self._get_or_create_account(payer, pix_request.source_account)
-        destination_account = self._get_or_create_account(recipient, pix_request.destination_account)
+        source_account, destination_account = self._get_or_create_accounts(pix_request)
 
-        self.customer_repository.lock_for_pix_many(customer_ids=(payer.id, recipient.id))
+        self.account_repository.lock_for_pix_many(account_ids=(source_account.id, destination_account.id))
 
         evaluated_at = self.pix_history_repository.next_evaluation_time(
-            payer_customer_id=payer.id,
-            recipient_customer_id=recipient.id,
+            payer_account_id=source_account.id,
+            recipient_account_id=destination_account.id,
             requested_at=received_at,
         )
 
@@ -163,15 +112,14 @@ class PixTransactionController(BaseController):
             return replayed, False
 
         context, risk_evidence, context_snapshot = self._build_context(
-            pix_request, payer, recipient, dict_security_statistics, destination_account.id, evaluated_at
+            pix_request, source_account, destination_account, dict_security_statistics, destination_account.id, evaluated_at
         )
         analysis = evaluate(context)
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
-        # DOIS pagadores. Esse caso o banco resolve: o INSERT ... ON
-        # CONFLICT (external_id) DO NOTHING espera o outro commitar, desiste
-        # sem erro e devolve None. Aí a análise do outro já está gravada, e
-        # este responde como num reenvio — 200 ou 409, nunca 500.
+        # DOIS pagadores. O banco ainda protege o INSERT com UNIQUE(external_id):
+        # se outra avaliação ganhar a corrida, o INSERT devolve None e este
+        # responde como reenvio — 200 ou 409.
         pix_transaction = self._create_pix_transaction(
             pix_request, analysis, source_account, destination_account,
             received_at=received_at, evaluated_at=evaluated_at, evaluation_context=context_snapshot,
@@ -198,15 +146,6 @@ class PixTransactionController(BaseController):
         )
 
         pix_transaction_dto = self._recorded_analysis(pix_transaction)
-        completed = self.pix_transaction_repository.mark_receipt_completed(
-            receipt, owner_token=owner_token, transaction_id=pix_transaction.id, now=evaluated_at
-        )
-        if not completed:
-            self.session.rollback()
-            replayed = self._wait_for_replay(pix_request)
-            if replayed is not None:
-                return replayed, False
-            raise PixTransactionIdConflict(pix_request.external_id)
         self.session.commit()
 
         return pix_transaction_dto, True
@@ -224,20 +163,9 @@ class PixTransactionController(BaseController):
         pix_transaction = self.pix_transaction_repository.get_by_external_id(external_id=external_id)
 
         if pix_transaction is None:
-            receipt = self.pix_transaction_repository.get_receipt(external_id)
-            if receipt is None:
-                raise PixTransactionNotFound(external_id)
-            if receipt.state == "processing":
-                raise PixTransactionProcessing(external_id)
-            raise PixTransactionEvaluationFailed(external_id)
+            raise PixTransactionNotFound(external_id)
 
         return self._recorded_analysis(pix_transaction)
-
-    def _raise_receipt_state(self, external_id: str) -> None:
-        receipt = self.pix_transaction_repository.get_receipt(external_id)
-        if receipt is not None and receipt.state == "failed":
-            raise PixTransactionEvaluationFailed(external_id)
-        raise PixTransactionProcessing(external_id)
 
     def _validate_transaction_date(self, transaction_date: datetime, received_at: datetime) -> None:
         skew = abs(transaction_date - received_at)
@@ -280,51 +208,44 @@ class PixTransactionController(BaseController):
         except DictUnavailable:
             return None
 
-    def _get_or_create_customers(self, pix_request: PixRequest) -> tuple[Customer, Customer]:
-        """Os customers do pagador e do recebedor, criados na primeira aparição.
-
-        Repare na ordem: a do número do documento, menor primeiro, e não
-        pagador primeiro. Dois Pix cruzados de gente nova — A paga B
-        enquanto B paga A — criariam os dois customers em ordens opostas,
-        cada um esperando o INSERT do outro terminar: deadlock, e um dos
-        dois vira 500. Na mesma ordem, o segundo só espera o primeiro
-        commitar. Reproduzido com 100 pares cruzados: pagador primeiro, 73
-        POSTs com 500; em ordem de documento, nenhum.
-
-        Pagador e recebedor podem ser o mesmo documento (Pix pra si mesmo,
-        o REL03), e aí é um customer só.
-        """
-        payer_document = pix_request.source_account.document_number
-        recipient_document = pix_request.destination_account.document_number
-
-        customers = {}
-        for document_number in sorted({payer_document, recipient_document}):
-            customers[document_number] = self.customer_repository.get_or_create(document_number=document_number)
-
-        return customers[payer_document], customers[recipient_document]
-
-    def _get_or_create_account(self, customer: Customer, account_data: AccountData) -> Account:
-        return self.account_repository.get_or_create(
-            customer_id=customer.id,
-            participant=account_data.participant,
-            branch=account_data.branch,
-            account_number=account_data.account_number,
-            opening_date=account_data.opening_date,
-        )
+    def _get_or_create_accounts(self, pix_request: PixRequest) -> tuple[Account, Account]:
+        """Cria/recupera as duas contas em ordem determinística."""
+        source = pix_request.source_account
+        destination = pix_request.destination_account
+        specs = [
+            (source.document_number, source),
+            (destination.document_number, destination),
+        ]
+        accounts: dict[tuple, Account] = {}
+        for document_number, account_data in sorted(
+            specs,
+            key=lambda item: (item[0], item[1].participant or "", item[1].branch, item[1].account_number),
+        ):
+            key = (document_number, account_data.participant, account_data.branch, account_data.account_number)
+            accounts[key] = self.account_repository.get_or_create(
+                document_number=document_number,
+                participant=account_data.participant,
+                branch=account_data.branch,
+                account_number=account_data.account_number,
+                opening_date=account_data.opening_date,
+            )
+        source_key = (source.document_number, source.participant, source.branch, source.account_number)
+        destination_key = (destination.document_number, destination.participant, destination.branch, destination.account_number)
+        return accounts[source_key], accounts[destination_key]
 
     def _build_context(
         self,
         pix_request: PixRequest,
-        payer: Customer,
-        recipient: Customer,
+        payer: Account,
+        recipient: Account,
         dict_security_statistics: int | None,
         recipient_account_id: int,
         received_at: datetime,
     ) -> tuple[Context, list[dict], dict]:
         """O Context do motor: o Pix normalizado, o histórico contado e o DICT.
 
-        O histórico é contado por documento (o customer), com as janelas
-        do policy.py: o repository conta, o motor decide. E é contado
+        O histórico é contado pelo documento armazenado na conta, com as
+        janelas do policy.py: o repository conta, o motor decide. E é contado
         DEPOIS da trava — o Pix do mesmo pagador que chegou junto, e
         passou na frente, já está gravado e entra na contagem, venha ele
         da conta que vier.
@@ -337,8 +258,8 @@ class PixTransactionController(BaseController):
         history_time = received_at
 
         payer_history = self.pix_history_repository.get_payer_features(
-            payer_customer_id=payer.id,
-            recipient_customer_id=recipient.id,
+            payer_account_id=payer.id,
+            recipient_account_id=recipient.id,
             device_id=pix_request.device_id,
             ip=pix_request.ip,
             transaction_date=history_time,
@@ -347,20 +268,20 @@ class PixTransactionController(BaseController):
             new_destinations_window=policy.NEW_DESTINATIONS_WINDOW,
         )
         location_distance_km = self.pix_history_repository.get_location_distance_km(
-            payer_customer_id=payer.id,
+            payer_account_id=payer.id,
             transaction_date=history_time,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
         )
         device_history = self.pix_history_repository.get_device_features(
             device_id=pix_request.device_id,
-            payer_customer_id=payer.id,
+            payer_account_id=payer.id,
             transaction_date=history_time,
             payers_window=policy.DEVICE_PAYERS_WINDOW,
         )
         recipient_history = self.pix_history_repository.get_recipient_features(
-            recipient_customer_id=recipient.id,
-            payer_customer_id=payer.id,
+            recipient_account_id=recipient.id,
+            payer_account_id=payer.id,
             transaction_date=history_time,
             attempts_window=policy.RECIPIENT_ATTEMPTS_WINDOW,
             payers_window=policy.RECIPIENT_PAYERS_WINDOW,
@@ -368,19 +289,19 @@ class PixTransactionController(BaseController):
             days_cap=policy.HIGH_SUFFICIENCY_MIN_DAYS,
         )
         pair_history = self.pix_history_repository.get_pair_features(
-            payer_customer_id=payer.id,
-            recipient_customer_id=recipient.id,
+            payer_account_id=payer.id,
+            recipient_account_id=recipient.id,
             transaction_date=history_time,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
         try:
             device_trusted = self.device_registry_repository.is_trusted(
-                customer_id=payer.id,
+                account_id=payer.id,
                 device_id=pix_request.device_id,
                 at=history_time,
             )
             unregistered_device_day_amount = self.device_registry_repository.unregistered_device_day_amount(
-                customer_id=payer.id,
+                account_id=payer.id,
                 at=history_time,
             )
             device_registry_available = True
@@ -408,9 +329,8 @@ class PixTransactionController(BaseController):
         )
 
         risk_inputs = self._get_risk_inputs(
-            payer_customer_id=payer.id,
-            recipient_customer_id=recipient.id,
-            recipient_account_id=recipient_account_id,
+            payer_account_id=payer.id,
+            recipient_account_id=recipient.id,
             transaction_date=history_time,
             captured_at=received_at,
         )
@@ -440,8 +360,7 @@ class PixTransactionController(BaseController):
     def _get_risk_inputs(
         self,
         *,
-        payer_customer_id: int,
-        recipient_customer_id: int,
+        payer_account_id: int,
         recipient_account_id: int,
         transaction_date: datetime,
         captured_at: datetime,
@@ -449,16 +368,15 @@ class PixTransactionController(BaseController):
         """Lê DICT security evidence uma vez e congela flags para o motor."""
         try:
             restriction = self.risk_repository.active_restriction(
-                payer_customer_id=payer_customer_id,
-                recipient_customer_id=recipient_customer_id,
+                payer_account_id=payer_account_id,
                 recipient_account_id=recipient_account_id,
                 at=transaction_date,
             )
             payer_assessment = self.risk_repository.dict_security_evidence(
-                customer_id=payer_customer_id, axis="payer", at=transaction_date,
+                account_id=payer_account_id, axis="payer", at=transaction_date,
             )
             recipient_assessment = self.risk_repository.dict_security_evidence(
-                customer_id=recipient_customer_id, axis="recipient", at=transaction_date,
+                account_id=recipient_account_id, axis="recipient", at=transaction_date,
             )
         except SQLAlchemyError:
             return {

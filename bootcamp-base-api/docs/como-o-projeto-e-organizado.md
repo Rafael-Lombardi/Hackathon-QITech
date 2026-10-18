@@ -29,7 +29,7 @@ Toda requisição atravessa as mesmas camadas, sempre na mesma ordem. Este é o 
         ↓
   src/controllers/     a ordem do caso de uso. pix_request.py converte o
         ↓              payload; o controller confere a idempotência, pergunta
-        ↓              ao DICT, cria customer e account, trava o pagador,
+        ↓              ao DICT, cria as accounts, trava o pagador,
         ↓              conta o histórico, chama o motor, grava e dá o commit
         ↓
         ├──→ src/connectors/     o DICT, lá fora: endereço, prazo e log
@@ -107,7 +107,7 @@ Motor, DTO e connector não chegam nem perto dele. O `/` e o `/health_check` nã
 | **mudar o que a resposta devolve** | `src/dtos/pix_transaction_dto.py` | é o único lugar; se o campo ainda não existe no banco, antes `database/database.sql` e `src/models/` |
 | **consultar o banco de outro jeito** (filtrar, contar, somar) | `src/repositories/` | o controller chama o método novo |
 | **criar uma tabela** | `database/database.sql` | depois `src/models/` e o `__init__.py` da pasta, e `docker compose down -v` |
-| **criar um erro novo** | `src/errors/custom_errors.py` | exportar em `src/errors/__init__.py`; o próximo código livre é o `QIT001004` |
+| **criar um erro novo** | `src/errors/custom_errors.py` | exportar em `src/errors/__init__.py`; usar o próximo código livre da família `QIT001xxx` |
 | **trocar o mock pelo DICT de verdade** | `DICT_API_URL` e `src/connectors/dict_connector.py` | o DICT real devolve contadores, e não uma nota (Manual do DICT, cap. 18): o connector desembrulha outra resposta, e a conta da nota, que é regra, vai para a camada 3 |
 | **fazer algo em toda requisição** | `src/middlewares/` | registrar em `src/app.py`, na posição certa |
 | **chamar outro serviço** | `src/connectors/` | quem chama o connector é o controller, nunca o resource nem o motor |

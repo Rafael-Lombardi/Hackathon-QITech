@@ -3,7 +3,7 @@
 from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String, UniqueConstraint
 
 from models.base import Base
-from models.customer import Customer
+from models.account import Account
 
 
 class DictSecurityEvidence(Base):
@@ -12,7 +12,7 @@ class DictSecurityEvidence(Base):
     __tablename__ = "external_risk_assessment"
 
     id = Column(BigInteger, primary_key=True)
-    customer_id = Column(BigInteger, ForeignKey(Customer.id), nullable=False)
+    account_id = Column(BigInteger, ForeignKey(Account.id), nullable=False)
     axis = Column(String(10), nullable=False)
     assessment = Column(String(30), nullable=False)
     valid_from = Column(DateTime(timezone=True), nullable=False)
@@ -25,7 +25,7 @@ class DictSecurityEvidence(Base):
 
     __table_args__ = (
         UniqueConstraint("occurrence_id"),
-        Index("external_risk_customer_axis_idx", "customer_id", "axis", "valid_from"),
+        Index("external_risk_account_axis_idx", "account_id", "axis", "valid_from"),
     )
 
 

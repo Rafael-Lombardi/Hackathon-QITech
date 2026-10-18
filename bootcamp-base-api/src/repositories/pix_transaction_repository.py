@@ -1,12 +1,11 @@
-from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import Context
-from models import PixSignalStatus, PixTransaction, PixTransactionReceipt, PixTransactionRuleResult, PixTransactionStatus
+from models import PixSignalStatus, PixTransaction, PixTransactionRuleResult, PixTransactionStatus
 
 
 class PixTransactionRepository:
@@ -36,87 +35,6 @@ class PixTransactionRepository:
             .options(joinedload(PixTransaction.status, innerjoin=True))
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
-
-    def get_receipt(self, external_id: str) -> PixTransactionReceipt | None:
-        return self.session.scalar(
-            select(PixTransactionReceipt).where(PixTransactionReceipt.external_id == external_id)
-        )
-
-    def claim_receipt(self, *, external_id: str, payload: dict, now: datetime) -> tuple[PixTransactionReceipt, bool]:
-        """Claim the durable intake record; return (receipt, claimed_by_us)."""
-        token = str(uuid4())
-        lease_until = now + timedelta(minutes=2)
-        created = self.session.scalars(
-            insert(PixTransactionReceipt)
-            .values(
-                external_id=external_id,
-                payload=payload,
-                state="processing",
-                owner_token=token,
-                lease_until=lease_until,
-                received_at=now,
-            )
-            .on_conflict_do_nothing(index_elements=[PixTransactionReceipt.external_id])
-            .returning(PixTransactionReceipt)
-        ).one_or_none()
-        if created is not None:
-            return created, True
-
-        receipt = self.session.scalars(
-            select(PixTransactionReceipt)
-            .where(PixTransactionReceipt.external_id == external_id)
-            .with_for_update()
-        ).one()
-        if receipt.payload != payload:
-            return receipt, False
-        if receipt.state == "completed":
-            return receipt, False
-        if receipt.state == "processing" and receipt.lease_until > now:
-            return receipt, False
-        receipt.state = "processing"
-        receipt.owner_token = token
-        receipt.lease_until = lease_until
-        receipt.failure_reason = None
-        receipt.evaluated_at = None
-        receipt.pix_transaction_id = None
-        return receipt, True
-
-    def mark_receipt_failed(
-        self, receipt: PixTransactionReceipt, *, owner_token: str, reason: str,
-    ) -> bool:
-        result = self.session.execute(
-            update(PixTransactionReceipt)
-            .where(
-                PixTransactionReceipt.id == receipt.id,
-                PixTransactionReceipt.owner_token == owner_token,
-                PixTransactionReceipt.state == "processing",
-            )
-            .values(
-                state="failed",
-                failure_reason=reason[:1000],
-                evaluated_at=datetime.now(timezone.utc),
-            )
-        )
-        return result.rowcount == 1
-
-    def mark_receipt_completed(
-        self, receipt: PixTransactionReceipt, *, owner_token: str, transaction_id: int, now: datetime,
-    ) -> bool:
-        result = self.session.execute(
-            update(PixTransactionReceipt)
-            .where(
-                PixTransactionReceipt.id == receipt.id,
-                PixTransactionReceipt.owner_token == owner_token,
-                PixTransactionReceipt.state == "processing",
-            )
-            .values(
-                state="completed",
-                pix_transaction_id=transaction_id,
-                evaluated_at=now,
-                failure_reason=None,
-            )
-        )
-        return result.rowcount == 1
 
     def create(self, **fields) -> PixTransaction | None:
         """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.

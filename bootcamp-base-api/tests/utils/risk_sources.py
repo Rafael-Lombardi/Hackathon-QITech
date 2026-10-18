@@ -6,6 +6,7 @@ observadas pelo motor, não eventos que devem alterar o histórico.
 
 from os import environ
 from uuid import uuid4
+from datetime import datetime, timezone
 
 from sqlalchemy import create_engine, text
 
@@ -19,17 +20,23 @@ def _engine():
     )
 
 
-def _customer(connection, document: str) -> int:
+def _account(connection, document: str, account: dict | None = None, opening_date=None) -> int:
+    account = account or {"participant": None, "branch": "0001", "account_number": "seed-" + document[-8:]}
+    opening_date = opening_date or datetime.now(timezone.utc)
     return connection.execute(
         text(
             """
-            INSERT INTO customer (customer_key, document_number)
-            VALUES (:key, :document)
-            ON CONFLICT (document_number) DO UPDATE SET document_number = EXCLUDED.document_number
+            INSERT INTO account
+                (account_key, document_number, participant, branch, account_number, opening_date)
+            VALUES (:key, :document, :participant, :branch, :account_number, :opening_date)
+            ON CONFLICT (participant, branch, account_number, document_number)
+            DO UPDATE SET document_number = EXCLUDED.document_number
             RETURNING id
             """
         ),
-        {"key": str(uuid4()), "document": document},
+        {"key": str(uuid4()), "document": document,
+         "participant": account.get("participant"), "branch": account["branch"],
+         "account_number": account["account_number"], "opening_date": opening_date},
     ).scalar_one()
 
 
@@ -48,60 +55,22 @@ def seed_restrictions(restrictions: list[dict]) -> None:
         for restriction in restrictions:
             scope = restriction["scope"]
             document = restriction.get("payer_document") or restriction.get("recipient_document")
-            customer_id = _customer(connection, document) if document else None
-            account_id = None
+            account_id = _account(connection, document) if document else None
             account = restriction.get("account")
             if scope == "recipient_account":
                 if not account or not restriction.get("recipient_document"):
                     raise ValueError("recipient_account exige recipient_document e account")
-                customer_id = _customer(connection, restriction["recipient_document"])
-                account_id = connection.execute(
-                    text(
-                        """
-                        SELECT id FROM account
-                        WHERE customer_id = :customer_id
-                          AND participant IS NOT DISTINCT FROM :participant
-                          AND branch = :branch AND account_number = :account_number
-                        LIMIT 1
-                        """
-                    ),
-                    {
-                        "customer_id": customer_id,
-                        "participant": account.get("participant"),
-                        "branch": account["branch"],
-                        "account_number": account["account_number"],
-                    },
-                ).scalar()
-                if account_id is None:
-                    account_id = connection.execute(
-                        text(
-                            """
-                            INSERT INTO account
-                                (account_key, customer_id, participant, branch, account_number, opening_date)
-                            VALUES (:key, :customer_id, :participant, :branch, :account_number, :opening_date)
-                            RETURNING id
-                            """
-                        ),
-                        {
-                            "key": str(uuid4()),
-                            "customer_id": customer_id,
-                            "participant": account.get("participant"),
-                            "branch": account["branch"],
-                            "account_number": account["account_number"],
-                            "opening_date": restriction["active_from"],
-                        },
-                    ).scalar_one()
+                account_id = _account(connection, restriction["recipient_document"], account, restriction["active_from"])
             connection.execute(
                 text(
                     """
                     INSERT INTO risk_restriction
-                        (scope, customer_id, account_id, active_from, active_until,
+                        (scope, account_id, active_from, active_until,
                          status, provenance, occurrence_id)
-                    VALUES (:scope, :customer_id, :account_id, :active_from, :active_until,
+                    VALUES (:scope, :account_id, :active_from, :active_until,
                             :status, :provenance, :occurrence_id)
                     ON CONFLICT (occurrence_id) DO UPDATE SET
                         scope = EXCLUDED.scope,
-                        customer_id = EXCLUDED.customer_id,
                         account_id = EXCLUDED.account_id,
                         active_from = EXCLUDED.active_from,
                         active_until = EXCLUDED.active_until,
@@ -111,7 +80,6 @@ def seed_restrictions(restrictions: list[dict]) -> None:
                 ),
                 {
                     "scope": scope,
-                    "customer_id": customer_id,
                     "account_id": account_id,
                     "active_from": restriction["active_from"],
                     "active_until": restriction.get("active_until"),
@@ -130,17 +98,17 @@ def seed_dict_security_evidence(assessments: list[dict]) -> None:
     engine = _engine()
     with engine.begin() as connection:
         for assessment in assessments:
-            customer_id = _customer(connection, assessment["customer_document"])
+            account_id = _account(connection, assessment["document"])
             connection.execute(
                 text(
                     """
                     INSERT INTO external_risk_assessment
-                        (customer_id, axis, assessment, valid_from, valid_until,
+                        (account_id, axis, assessment, valid_from, valid_until,
                          provenance, occurrence_id, severity, source_version, observed_at)
-                    VALUES (:customer_id, :axis, :assessment, :valid_from, :valid_until,
+                    VALUES (:account_id, :axis, :assessment, :valid_from, :valid_until,
                             :provenance, :occurrence_id, :severity, :source_version, :observed_at)
                     ON CONFLICT (occurrence_id) DO UPDATE SET
-                        customer_id = EXCLUDED.customer_id,
+                        account_id = EXCLUDED.account_id,
                         axis = EXCLUDED.axis,
                         assessment = EXCLUDED.assessment,
                         valid_from = EXCLUDED.valid_from,
@@ -152,7 +120,7 @@ def seed_dict_security_evidence(assessments: list[dict]) -> None:
                     """
                 ),
                 {
-                    "customer_id": customer_id,
+                    "account_id": account_id,
                     "axis": assessment["axis"],
                     "assessment": assessment["assessment"],
                     "valid_from": assessment["valid_from"],

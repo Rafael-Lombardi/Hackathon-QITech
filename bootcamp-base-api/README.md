@@ -176,8 +176,6 @@ São, na ordem, o POST sem o `participant` do destino, o POST sem o `INTERNAL-TO
 | 404 | `QIT000404` | a rota não existe |
 | 405 | `QIT000405` | a rota existe, mas não aceita esse método |
 | 409 | `QIT001002` | o mesmo `id` chegou com outro conteúdo |
-| 409 | `QIT001004` | o mesmo `id` ainda está sendo avaliado; traz `Retry-After: 2` |
-| 503 | `QIT001005` | uma avaliação desse `id` falhou; pode ser tentada novamente conforme a política do cliente |
 | 500 | `QIT000500` | erro que ninguém nomeou. Tudo é desfeito, inclusive o registro do Pix: reenvie com o mesmo `id` |
 
 Repare na ordem: sem o token, toda rota que não é pública responde 403, inclusive as que não existem. A porta vem antes do roteador, e o 404 e o 405 só aparecem para quem passou por ela. O teto de 16 KiB é quase quatro vezes o maior Pix válido medido (4,2 KiB), e é conferido pelo `Content-Length`, antes de ler um byte do corpo.
@@ -244,7 +242,7 @@ A stack precisa estar de pé em `APP_ENV=test`, pois só esse ambiente aceita o 
 
 Todos são de integração. A maioria fala HTTP com a API, como um cliente faria;
 os testes de resiliência também usam controller/repositories reais e sessões
-PostgreSQL para simular falha de infraestrutura e expiração de lease. Cada
+PostgreSQL para simular falha de infraestrutura. Cada
 teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios),
 monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O
 que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um cenário de aceitação, consulte o catálogo de testes desse diretório.
@@ -261,9 +259,9 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
                                  outro conteúdo: 409. Sem DICT, sem contar nada
 3. pergunta ao DICT              pelo recebedor, ANTES de travar qualquer linha,
                                  e com a conexão de volta ao pool durante a espera
-4. cria customer e account       na primeira aparição, em ordem de documento:
-                                 dois Pix cruzados não esperam um pelo outro
-5. trava pagador e recebedor     advisory lock do pagador, depois customers em
+4. cria as contas                 na primeira aparição, em ordem de documento:
+                                 cada account carrega documento e conta bancária
+5. trava pagador e recebedor     advisory lock do pagador, depois accounts em
                                  ordem determinística; procura o id de novo
 6. fixa o corte de avaliação     depois das travas, monotônico por pagador ou
                                  recebedor; monta o Context e roda o motor
@@ -272,7 +270,7 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
 
-O histórico usa um corte monotônico derivado de `received_at` depois das travas: uma requisição concluída nunca desaparece porque outra capturou o relógio antes de esperar. `transaction_date` é o relógio de negócio, aceito dentro de ±5 minutos. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. O recibo preserva o primeiro `received_at`; `processing` e `failed` são estados explícitos, e `owner_token` impede um avaliador com lease vencido de concluir o recibo de outro.
+O histórico usa um corte monotônico derivado de `received_at` depois das travas: uma requisição concluída nunca desaparece porque outra capturou o relógio antes de esperar. `transaction_date` é o relógio de negócio, aceito dentro de ±5 minutos. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. O processamento é síncrono; não há estado persistido de `processing` ou `failed`. Se o processo morrer antes do commit, o próximo POST pode tentar novamente; depois do commit, `UNIQUE(external_id)` devolve a análise.
 
 Quem fala com o banco, o DICT e o motor é o controller, e só ele. O mapa das pastas, o que cada uma pode e não pode e onde mexer para cada mudança estão em [`docs/como-o-projeto-e-organizado.md`](docs/como-o-projeto-e-organizado.md).
 
@@ -314,7 +312,7 @@ Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--
 | Um processo da API | ~85 a 100 Pix/s |
 | 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
 | Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 195 testes (tempo varia por máquina e Docker) |
+| Suíte de testes | 187 testes (tempo varia por máquina e Docker) |
 | Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
 
 - **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.
@@ -330,7 +328,7 @@ Próximos passos: `--workers` no lugar do `--reload` fora do desenvolvimento; `p
 
 Os de antifraude estão no [README da raiz](../README.md#limites-conhecidos). Os daqui:
 
-- **CNPJ alfanumérico:** o novo formato da Receita ainda não é aceito; pede mudar junto o schema, o CHECK de `customer` e a normalização do documento.
+- **CNPJ alfanumérico:** o novo formato da Receita ainda não é aceito; pede mudar junto o schema, o CHECK de `account` e a normalização do documento.
 - **Corridas aceitas:** a trava segura um pagador por vez. Dois pagadores no mesmo aparelho ou no mesmo recebedor, no mesmo instante, contam o histórico sem o Pix um do outro: um sinal de rajada pode chegar um Pix atrasado.
 - **Idempotência pelo payload cru e reenvio depois de um 500**, descritos na seção 2: o mesmo Pix com o CPF agora mascarado volta 409, e o Pix que deu 500 não fica no histórico.
 

@@ -12,28 +12,19 @@ from sqlalchemy import (
 )
 
 from models.base import Base
-from models.customer import Customer
-
-
 class Account(Base):
-    """Uma conta de um customer, em qualquer banco.
+    """Identidade e conta bancária do pagador/recebedor.
 
-    O titular faz parte da identidade: o UNIQUE é (participant, branch,
-    account_number, customer_id), e uma conta conjunta vira uma linha por
-    titular. O porquê disso, e de participant ficar None na conta de
-    origem (daí o NULLS NOT DISTINCT), está no database.sql. Repare que o
-    postgresql_nulls_not_distinct daqui só muda o DDL que o SQLAlchemy
-    geraria; quem garante a regra é o UNIQUE do database.sql, e é nele que
-    o ON CONFLICT do upsert se apoia.
-
-    opening_date é a da PRIMEIRA aparição.
+    O domínio deliberadamente é account-scoped: uma linha identifica o
+    documento e a conta usada no Pix; não existe uma entidade de titular
+    separada no fluxo principal.
     """
 
     __tablename__ = "account"
 
     id = Column(BigInteger, primary_key=True)
     account_key = Column(CHAR(36), nullable=False)
-    customer_id = Column(BigInteger, ForeignKey(Customer.id), nullable=False)
+    document_number = Column(String(14), nullable=False)
     participant = Column(CHAR(8))
     branch = Column(String(10), nullable=False)
     account_number = Column(String(20), nullable=False)
@@ -42,7 +33,8 @@ class Account(Base):
 
     __table_args__ = (
         UniqueConstraint("account_key"),
-        UniqueConstraint("participant", "branch", "account_number", "customer_id", postgresql_nulls_not_distinct=True),
+        UniqueConstraint("participant", "branch", "account_number", "document_number", postgresql_nulls_not_distinct=True),
         CheckConstraint("participant IS NULL OR participant ~ '^[0-9]{8}$'"),
-        Index("account_customer_id_idx", "customer_id"),
+        CheckConstraint("document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$'"),
+        Index("account_document_number_idx", "document_number"),
     )

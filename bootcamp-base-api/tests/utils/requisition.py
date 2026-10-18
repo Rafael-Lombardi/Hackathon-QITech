@@ -44,13 +44,13 @@ class ClientRequisition:
         if headers is None:
             headers = dict()
 
-        # Test clock injection: tests control the server receipt timestamp via
+        # Test clock injection: tests control the server received timestamp via
         # an internal-only header; production ignores it outside local/test.
         if method.upper() == "POST" and isinstance(payload, dict):
             transaction_date = payload.get("transaction_date")
             if transaction_date and "X-Test-Received-At" not in headers:
                 # Distinct requests with the same business timestamp still
-                # need an ordered server receipt time so the second one can
+                # need an ordered server received time so the second one can
                 # observe the first after the payer lock is released.
                 with _TEST_CLOCK_LOCK:
                     occurrence = _TEST_CLOCK_OCCURRENCES.get(transaction_date, 0)

@@ -21,12 +21,12 @@ O motor ([`src/antifraud/`](../bootcamp-base-api/src/antifraud/)) mora fora do c
 ```mermaid
 flowchart TD
     client[Cliente] --> post[POST /pix/transaction]
-    post --> receipt[Validação e receipt idempotente]
-    receipt -->|análise concluída| replay[Resposta gravada · 200]
-    receipt -->|novo ou reassumido| dict[Consulta à evidência DICT]
+    post --> idem[Consulta por external_id]
+    idem -->|análise gravada| replay[Resposta persistida · 200]
+    idem -->|novo| dict[Consulta à evidência DICT]
     dict --> locks[Locks de pagador e recebedor<br/>corte monotônico de avaliação]
 
-    db[(PostgreSQL<br/>estado autoritativo + histórico)] --> receipt
+    db[(PostgreSQL<br/>estado autoritativo + histórico)] --> idem
     db --> locks
     db --> context[Context Builder<br/>estado + histórico + features + DICT]
     dict --> context
@@ -45,7 +45,7 @@ flowchart TD
     recipient --> policy
     db --> restrictions[Restrições autoritativas<br/>pagador · recebedor · conta]
     restrictions --> policy
-    policy --> persist[Persiste análise, sinais,<br/>evidências e receipt]
+    policy --> persist[Persiste análise, sinais<br/>e evidências]
     persist --> db
     persist --> created[Resposta nova · 201]
 
@@ -74,10 +74,10 @@ O ambiente local tem três serviços Docker, com responsabilidades separadas:
 | Serviço | Papel | Estado que mantém |
 |---|---|---|
 | `api` | expõe os endpoints Pix e executa o motor | nenhum estado local durável; usa banco e DICT |
-| `db` | PostgreSQL autoritativo | clientes, contas, histórico Pix, receipts, sinais, evidências e análise |
+| `db` | PostgreSQL autoritativo | contas, histórico Pix, sinais, evidências e análise |
 | `dict-mock` | simula a fonte externa de evidência do DICT | expectativas HTTP seedadas para estatísticas e marcações |
 
-O fluxo normal é síncrono: a API recebe o Pix, consulta o mock do DICT, adquire as travas necessárias, monta o contexto com o histórico, calcula a análise e persiste o resultado no PostgreSQL. O `GET` não reavalia o risco; ele lê a análise gravada. Se a mesma requisição for reenviada, o receipt/idempotência devolve o resultado persistido.
+O fluxo normal é síncrono: a API recebe o Pix, procura o `external_id` persistido, consulta o mock do DICT se for novo, adquire as travas necessárias, monta o contexto com o histórico, calcula a análise e persiste o resultado no PostgreSQL. O `GET` não reavalia o risco; ele lê a análise gravada.
 
 O mock não é uma segunda API de negócio: ele existe apenas para tornar determinísticas as respostas da fonte externa. Em produção, essa fronteira seria substituída por um connector para o DICT real, sem mudar o contrato do motor.
 
@@ -87,8 +87,7 @@ O motor não analisa apenas o JSON isolado. Ele cruza o Pix com algumas identida
 
 | Conceito | O que representa | Por que existe |
 |---|---|---|
-| **Customer** | pessoa ou empresa identificada pelo documento | agrega todas as contas do mesmo titular para calcular comportamento de pagador/recebedor |
-| **Account** | uma conta bancária específica, com banco, agência, número e titular | preserva a identidade da conta usada no Pix; idade de conta e concentração de recebimentos não podem ser confundidas com a pessoa |
+| **Account** | identidade account-scoped: documento + banco/agência/número | é a unidade usada pelo cadastro, restrições e avaliação; o histórico pode agregar linhas com o mesmo documento |
 | **Device registry** | vínculo autoritativo entre pagador e `device_id`, com início e revogação | diz se o aparelho está cadastrado; não é inferido automaticamente porque um device apareceu em algum Pix |
 | **DICT** | fonte externa sobre a chave/recebedor e evidências de segurança | adiciona evidência institucional ao eixo do recebedor; não substitui o histórico nem decide sozinho |
 | **Risk restriction** | bloqueio explícito e temporal para pagador, recebedor ou conta | funciona como veto prioritário, antes dos scores |
@@ -104,9 +103,9 @@ O DICT não é o motor antifraude e não produz uma “probabilidade de fraude�
 
 Uma resposta `clear` significa apenas que aquela consulta não trouxe evidência adversa conhecida. Uma resposta `unavailable` significa que não foi possível consultar ou interpretar a fonte. O histórico local, as restrições e o DICT continuam sendo fontes diferentes, com semânticas diferentes.
 
-### Por que customer e account são separados
+### Por que o domínio é account-scoped
 
-Um mesmo documento pode possuir contas em bancos diferentes. Regras como P01/R01 olham a conta específica usada no Pix; regras como R02/R03 e REL01 agregam o comportamento do titular entre suas contas. Sem as duas entidades, o sistema confundiria “conta recém-aberta” com “cliente recém-criado” e perderia a concentração de recebimentos em várias contas do mesmo recebedor.
+Não existe uma entidade `customer` separada. Uma linha de `account` carrega documento e dados bancários juntos; fontes autoritativas apontam para a conta e consultas de comportamento podem agregar linhas pelo documento quando a regra pede visão de titular. Isso mantém o esquema simples sem perder a semântica de documento.
 
 ## Restrições autoritativas
 
@@ -114,23 +113,20 @@ As restrições são uma fonte diferente dos sinais e dos scores. `risk_restrict
 
 Cada registro guarda escopo, origem (`provenance`), identificador da ocorrência, início/fim de validade e estado revogado ou ativo. A consulta é temporal: restrição futura, expirada ou revogada não vale para o instante de avaliação.
 
-Se uma restrição válida existe, `D-RESTRICT-SIM` rejeita o Pix mesmo que os sinais estejam baixos ou alguma fonte de risco esteja indisponível. Se a fonte de restrições estiver indisponível, o sistema não aprova silenciosamente: a avaliação falha e o receipt pode ser reassumido, porque não é seguro afirmar que não existe um veto.
+Se uma restrição válida existe, `D-RESTRICT-SIM` rejeita o Pix mesmo que os sinais estejam baixos ou alguma fonte de risco esteja indisponível. Se a fonte de restrições estiver indisponível, o sistema não aprova silenciosamente: a avaliação falha sem gravar uma análise, porque não é seguro afirmar que não existe um veto.
 
 Essa separação evita transformar um cadastro operacional em mais alguns pontos heurísticos: restrição é veto; histórico e DICT são evidências graduais.
 
-## O ciclo do receipt
+## Idempotência do POST
 
-O receipt é o registro durável da entrada, criado antes da consulta ao DICT e da avaliação de risco. Ele existe para que duas requisições concorrentes não processem o mesmo `id` duas vezes e para que uma falha no meio não fique parecendo uma análise concluída.
+O serviço assume processamento síncrono, sem fila e sem estado persistido de `processing` ou `failed`. A idempotência é resolvida diretamente em `pix_transaction`: `external_id` é único e o payload original fica em `pix_transaction_data`.
 
-| Estado | Significado | Comportamento |
-|---|---|---|
-| `processing` | uma requisição reivindicou o `id` e recebeu um lease | outra requisição igual espera brevemente; com lease expirado, pode reassumir |
-| `completed` | a análise e o Pix foram persistidos | reenvio idêntico devolve a análise gravada com `200` |
-| `failed` | a avaliação falhou antes de produzir uma análise | a falha fica registrada; um novo POST idêntico pode reassumir o processamento |
+- reenvio com o mesmo `external_id` e payload igual: devolve a análise gravada com `200`;
+- mesmo `external_id` com payload diferente: devolve `409`;
+- processo interrompido antes do commit: não deixa registro intermediário; um novo POST pode tentar a avaliação novamente;
+- processo interrompido depois do commit: o próximo POST encontra a análise e não reexecuta o motor.
 
-Cada receipt guarda o payload original, o primeiro `received_at`, o `owner_token`, o vencimento do lease e, quando existe, o Pix analisado. O `owner_token` funciona como uma cerca: um avaliador cujo lease expirou não pode marcar como concluído o receipt que outro avaliador reassumiu. Se o mesmo `id` chegar com conteúdo diferente, a API responde `409`, porque idempotência não significa aceitar duas transações sob a mesma identidade.
-
-O receipt não é mais uma decisão antifraude. Ele protege a entrada e a recuperação do fluxo; o resultado de risco continua sendo a análise persistida em `pix_transaction` e suas tabelas de sinais/evidências.
+Não há lease nem `owner_token`. Isso é deliberado: o desafio não exige uma fila distribuída ou recuperação de worker. O custo é que duas requisições concorrentes podem repetir parte do trabalho antes do `UNIQUE` resolver o conflito; a implantação de demonstração assume uma única execução síncrona.
 
 ## Matriz de indisponibilidade
 
@@ -141,7 +137,7 @@ O receipt não é mais uma decisão antifraude. Ele protege a entrada e a recupe
 | histórico insuficiente | regras dependentes dele ficam `unavailable` e somam zero | outras regras continuam; primeira observação pode ser aprovada |
 | DICT indisponível ou `clear` | `DICT01`/`DICT02`/`DICT03` ficam `unavailable` ou `not_triggered`, sem pontos adversos | a decisão segue sem evidência DICT; uma rejeição já comprovável não é apagada |
 | cadastro de devices indisponível | L02/P03/P09/P10 podem ficar `unavailable` | se nenhuma restrição/rejeição puder decidir, sai `D-DATA-UNAVAILABLE` e `two_factor_required` |
-| restrições indisponíveis | não é seguro afirmar que não há veto | a análise não recebe veredicto; o receipt falha para retry, em vez de aprovar silenciosamente |
+| restrições indisponíveis | não é seguro afirmar que não há veto | a requisição falha; não é gravado um veredicto intermediário nem uma aprovação silenciosa |
 | payload inválido ou data fora da tolerância | não é indisponibilidade de evidência | a validação rejeita a requisição com erro de contrato (`400`) |
 
 O princípio é assimétrico: falta de uma fonte opcional reduz a evidência; falta da fonte que pode conter um veto impede uma decisão otimista.
@@ -239,12 +235,12 @@ Há três tempos diferentes porque eles respondem a perguntas diferentes:
 | Tempo | Quem define | Para que serve |
 |---|---|---|
 | `transaction_date` | cliente, dentro do payload | hora de negócio do Pix: período noturno, idade das contas e auditoria |
-| `received_at` | servidor, ao registrar o receipt | instante confiável de chegada; valida o payload em uma tolerância de ±5 minutos e ancora as janelas de histórico |
+| `received_at` | servidor, ao iniciar a avaliação | instante confiável de chegada; valida o payload em uma tolerância de ±5 minutos e ancora as janelas de histórico |
 | `evaluated_at` | servidor, depois dos locks | corte efetivo usado para consultar histórico, cadastro e evidências temporais; é monotônico por pagador/recebedor |
 
 O fluxo de concorrência é intencional:
 
-1. o servidor captura `received_at` e grava/reivindica o receipt;
+1. o servidor captura `received_at` e procura o `external_id` já persistido;
 2. valida `transaction_date` contra esse instante;
 3. consulta o DICT sem segurar a conexão de banco;
 4. adquire as travas do pagador e do recebedor;
@@ -253,7 +249,7 @@ O fluxo de concorrência é intencional:
 
 Assim, uma requisição que chegou antes, mas ficou esperando uma trava, não perde uma transação que terminou antes dela ser avaliada. O `transaction_date` do cliente nunca pode mover o corte do histórico para o futuro.
 
-O serviço também usa `time.monotonic()` apenas para prazos de espera, como timeout do DICT e recuperação de receipts. Esse relógio não é gravado nem usado para regra de risco; ele só mede duração e não sofre com ajustes do relógio civil da máquina.
+O serviço também usa o relógio monotônico apenas para prazos internos do connector HTTP. Esse relógio não é gravado nem usado para regra de risco; ele só mede duração e não sofre com ajustes do relógio civil da máquina.
 
 Nos testes, o ambiente `APP_ENV=test` aceita `X-Test-Received-At`, enquanto o payload continua fornecendo `transaction_date`. Isso fixa os dois relógios relevantes sem depender da hora real; em produção, o cabeçalho é ignorado e `received_at` sempre vem do servidor.
 
@@ -421,7 +417,7 @@ APP_ENV=test docker compose up -d --build --force-recreate --wait
 pytest
 ```
 
-Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre 195 testes: cenários de aceitação e regressões; fronteiras; G01; cadastro de aparelhos; DICT; recibos; auditabilidade por grupo; e concorrência, inclusive a inversão entre ordem de chegada e ordem de avaliação. Mapa: [`tests/integration/pix/README.md`](../bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](../bootcamp-base-api/README.md#7-quando-dá-errado).
+Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre cenários de aceitação e regressões; fronteiras; G01; cadastro de aparelhos; DICT; indisponibilidade; auditabilidade por grupo; e concorrência, inclusive a inversão entre ordem de chegada e ordem de avaliação. Mapa: [`tests/integration/pix/README.md`](../bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](../bootcamp-base-api/README.md#7-quando-dá-errado).
 
 ### Como os testes são organizados
 
@@ -436,37 +432,30 @@ Os testes não são uma coleção de chamadas isoladas: cada cenário monta um p
 | `test_concorrencia.py` | locks, ordem de avaliação e duas requisições simultâneas |
 | `test_historico.py` | janelas, status observados, aprovações, relações e contas múltiplas |
 | `test_camada_dict.py` / `test_geolocalizacao.py` | fontes externas e sinais opcionais |
-| `test_resiliencia.py` | indisponibilidade, falhas, lease e recuperação de receipt |
+| `test_resiliencia.py` | indisponibilidade da fonte autoritativa e fallback da política |
 
 Os helpers em `tests/utils/` controlam o relógio, criam identidades e semeiam histórico. Isso permite testar uma regra como “cinco tentativas em cinco minutos” ou “três aprovações em sete dias” sem depender do relógio real. O teste de integração é deliberado: uma regra pode estar correta no Python e ainda estar errada se a consulta SQL contar o status ou a janela incorretos.
 
 ## Modelagem de dados
 
-Onze tabelas, em [`database.sql`](../bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
+Nove tabelas, em [`database.sql`](../bootcamp-base-api/database/database.sql), cada uma com o porquê comentado:
 
 ```mermaid
 erDiagram
-    CUSTOMER ||--o{ ACCOUNT : possui
-    CUSTOMER ||--o{ DEVICE_REGISTRY : cadastra
-    CUSTOMER o|--o{ RISK_RESTRICTION : recebe
-    ACCOUNT o|--o{ RISK_RESTRICTION : recebe
-    CUSTOMER ||--o{ EXTERNAL_RISK_ASSESSMENT : possui
+    ACCOUNT ||--o{ DEVICE_REGISTRY : cadastra
+    ACCOUNT ||--o{ RISK_RESTRICTION : recebe
+    ACCOUNT ||--o{ EXTERNAL_RISK_ASSESSMENT : possui
 
     ACCOUNT ||--o{ PIX_TRANSACTION : origem
     ACCOUNT ||--o{ PIX_TRANSACTION : destino
     PIX_TRANSACTION_STATUS ||--o{ PIX_TRANSACTION : classifica
-    PIX_TRANSACTION ||--o| PIX_TRANSACTION_RECEIPT : receipt
     PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RULE_RESULT : gera
     PIX_SIGNAL_STATUS ||--o{ PIX_TRANSACTION_RULE_RESULT : estado
     PIX_TRANSACTION ||--o{ PIX_TRANSACTION_RISK_EVIDENCE : congela
 
-    CUSTOMER {
-        bigint id PK
-        string document_number UK
-    }
     ACCOUNT {
         bigint id PK
-        bigint customer_id FK
+        string document_number
         string participant
         string branch
         string account_number
@@ -474,21 +463,20 @@ erDiagram
     }
     DEVICE_REGISTRY {
         bigint id PK
-        bigint customer_id FK
+        bigint account_id FK
         string device_id
         datetime registered_at
         datetime revoked_at
     }
     RISK_RESTRICTION {
         bigint id PK
-        bigint customer_id FK
         bigint account_id FK
         datetime active_from
         datetime active_until
     }
     EXTERNAL_RISK_ASSESSMENT {
         bigint id PK
-        bigint customer_id FK
+        bigint account_id FK
         string axis
         string assessment
         datetime valid_from
@@ -501,13 +489,6 @@ erDiagram
         datetime received_at
         datetime evaluated_at
         json evaluation_context
-    }
-    PIX_TRANSACTION_RECEIPT {
-        bigint id PK
-        string external_id UK
-        string state
-        datetime lease_until
-        bigint pix_transaction_id FK
     }
     PIX_TRANSACTION_RULE_RESULT {
         bigint id PK
@@ -534,23 +515,52 @@ erDiagram
     }
 ```
 
-Como ler o modelo: `customer` é a identidade do titular; `account` é a conta concreta usada na origem ou destino. `pix_transaction` guarda o fato analisado e aponta para as duas contas. Os resultados das regras e as evidências ficam em tabelas filhas para que uma análise possa ser explicada sem reexecutar o motor. O `pix_transaction_receipt` começa existindo antes da análise e pode ficar sem transação associada enquanto o processamento está em andamento ou falhou.
+Como ler o modelo: `account` combina documento e conta concreta usada na origem ou destino. `pix_transaction` guarda o fato analisado e aponta para as duas contas. Os resultados das regras e as evidências ficam em tabelas filhas para que uma análise possa ser explicada sem reexecutar o motor. A própria `pix_transaction` também guarda o payload original e o `external_id` único, que resolvem o reenvio.
 
-| Tabela | O que guarda |
-|---|---|
-| `pix_transaction_status` | os três status do contrato |
-| `pix_signal_status` | os três estados de um sinal |
-| `customer` | quem paga ou recebe, um por documento (só dígitos, `UNIQUE`); é a linha que a trava segura |
-| `account` | uma conta de um customer, em qualquer banco: `UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, customer_id)`. Conta conjunta vira uma linha por titular, e o ISPB fica `NULL` na origem, que o contrato não traz |
-| `device_registry` | vínculos autoritativos entre pagador e aparelho, com período de validade |
-| `risk_restriction` | restrições duras, prioritárias à pontuação |
-| `external_risk_assessment` | evidência externa de risco usada pelas camadas adicionais |
-| `pix_transaction` | um Pix: payload, relógios de recebimento/avaliação, contexto, decisão, notas e contribuições por grupo. `UNIQUE(external_id)` reforça a idempotência |
-| `pix_transaction_receipt` | ciclo idempotente `processing`/`failed`/`completed`, lease, primeiro recebimento e erro |
-| `pix_transaction_rule_result` | um sinal avaliado por linha, 22 por Pix, com estado, pontos e evidência: é o `metadata.signals` |
-| `pix_transaction_risk_evidence` | snapshot normalizado das evidências usadas em cada eixo |
+### Como interpretar as tabelas que mais confundem
 
-**Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `received_at`, mais `account(customer_id)`, que leva das contas ao documento.
+- **`account`:** unidade account-scoped com documento, participante, agência e número. Evita uma segunda identidade implícita no domínio; cada regra deixa explícito quando conta a conta concreta ou agrega contas pelo documento.
+- **`pix_transaction_status`:** resultado final do Pix: `approved`, `rejected` ou `two_factor_required`.
+- **`pix_signal_status`:** resultado de uma regra individual: `triggered`, `not_triggered` ou `unavailable`. Um Pix tem um status final, mas tem uma linha de status para cada sinal.
+- **`pix_transaction_rule_result`:** explicação de cada regra executada — código, eixo, família, pontos e evidência observada. São as linhas que formam `metadata.signals`.
+- **`pix_transaction_risk_evidence`:** snapshot das fontes externas/autoritativas consultadas. `source_type` só aceita `restriction` (veto operacional, com `scope`) ou `dict_security` (avaliação do DICT, com `axis`/sujeito `payer` ou `recipient`). `family` não fica aqui: pertence ao resultado individual de regra. Não é outra regra; registra qual fonte estava válida para que a análise continue auditável mesmo depois que a fonte mudar.
+- **`axis` na evidência (risk subject):** o nome legado da coluna indica a identidade de risco à qual a fonte se aplica: `payer` ou `recipient`. Não é eixo geométrico nem score; serve para não aplicar evidência do pagador ao recebedor. Em uma evolução de schema, `risk_subject` seria um nome mais claro.
+
+| Tabela | O que guarda | Por que existe |
+|---|---|---|
+| `pix_transaction_status` | catálogo dos três veredictos finais | evita gravar texto livre e mantém o contrato estável |
+| `pix_signal_status` | catálogo de `triggered`, `not_triggered` e `unavailable` | distingue ausência de sinal de falta de dados |
+| `account` | documento + conta concreta, com unicidade por identidade bancária | é a unidade do domínio sem uma entidade `customer` paralela |
+| `device_registry` | vínculo autoritativo entre conta/documento e aparelho, com validade | cadastro externo; não é inferido só porque um device apareceu num Pix |
+| `risk_restriction` | veto operacional temporal, por pagador, titular ou conta de destino | permite bloquear antes da pontuação e auditar a origem do veto |
+| `external_risk_assessment` | snapshot vigente de avaliação externa/DICT | separa inteligência externa do histórico observado |
+| `pix_transaction` | payload, relógios, contexto, decisão, notas e contribuições | é o fato antifraude persistido e consultável pelo GET |
+| `pix_transaction_rule_result` | uma regra por linha, 22 por Pix, com estado, pontos e evidência | constrói `metadata.signals` e torna a decisão explicável |
+| `pix_transaction_risk_evidence` | snapshots `restriction`/`dict_security` usados na avaliação | conserva a evidência externa mesmo se a fonte mudar depois |
+
+### Dicionário operacional: quem escreve, quem lê e o que a linha significa
+
+| Modelo | Natureza | Quem grava | Quem consulta | Regra de interpretação |
+|---|---|---|---|---|
+| `pix_transaction_status` | catálogo | `database.sql` na criação do banco | `pix_transaction` e DTO | três veredictos finais; não é histórico de mudanças |
+| `pix_signal_status` | catálogo | `database.sql` na criação do banco | `pix_transaction_rule_result` e DTO | estado de uma regra (`triggered`, `not_triggered`, `unavailable`), não estado do Pix |
+| `account` | identidade account-scoped | controller no primeiro uso; seeds de fontes | locks, histórico, cadastro e restrições | documento + conta concreta; não representa um cliente separado |
+| `device_registry` | cadastro autoritativo | seed/serviço de identidade | regras P03, L02 e P08 | só um vínculo explicitamente cadastrado é confiável; aparecer num Pix não cadastra device |
+| `risk_restriction` | veto autoritativo temporal | seed/integração de lista | política antes dos scores | bloqueio explícito por pagador, titular recebedor ou conta recebedora; não soma pontos |
+| `external_risk_assessment` | inteligência externa vigente | seed/integração DICT | regras DICT01–03 | snapshot aplicável ao eixo; não é Pix observado nem ground truth |
+| `pix_transaction` | fato observado + decisão | controller, uma vez por `external_id` | histórico, GET e auditoria | uma linha já decidida; payload original e campos derivados ficam juntos para reprocessamento/auditoria |
+| `pix_transaction_rule_result` | explicação por regra | controller, uma linha por regra | DTO e auditoria | 22 linhas esperadas por análise; `points` não deve ser somado sem aplicar tetos/famílias |
+| `pix_transaction_risk_evidence` | snapshot da evidência usada | controller, durante a análise | auditoria | copia o estado externo consultado; mudanças posteriores na fonte não alteram decisão passada |
+
+O fluxo de escrita é intencionalmente curto: fontes autoritativas existem antes do POST; o POST lê essas fontes, calcula a decisão e grava `pix_transaction` com suas duas tabelas filhas na mesma transação. Não existe tabela de `receipt`, `lease`, fila ou estado intermediário: antes do `commit`, nenhuma análise é consultável; depois dele, todas as partes da explicação estão disponíveis juntas.
+
+As FKs de `pix_transaction` apontam para as contas concreta de origem e destino. A mesma conta pode aparecer em muitos Pix e nos dois papéis em momentos diferentes. Consultas por titular usam `account.document_number` quando a regra pede visão agregada; consultas por conta usam `account.id`. Essa distinção evita confundir “mesmo documento” com “mesma conta bancária”.
+
+`pix_transaction_rule_result` e `pix_transaction_risk_evidence` são append-only na prática: não corrigimos uma análise antiga sobrescrevendo suas linhas. Se uma fonte ou política mudar, o próximo Pix recebe nova captura e nova `policy_version`; a análise anterior continua reproduzível com o contexto e os snapshots que já guardou.
+
+No código, esses modelos ficam separados pelo papel que desempenham: `Account` e as fontes (`DeviceRegistry`, `RiskRestriction`, `DictSecurityEvidence`) representam estado autoritativo; `PixTransaction` representa o fato observado, o payload original e a decisão produzida; `PixTransactionRuleResult` e `PixTransactionRiskEvidence` representam a explicação imutável daquela decisão. O fluxo não cria um objeto intermediário de processamento: antes do commit, ainda não existe análise consultável.
+
+**Por que account-scoped.** O esquema usa uma única entidade concreta, mas o documento continua armazenado para normalização e para regras explicitamente document-based, como concentração de recebimentos. Não há uma entidade paralela nem uma FK `customer_id` escondida.
 
 ## Limites conhecidos
 

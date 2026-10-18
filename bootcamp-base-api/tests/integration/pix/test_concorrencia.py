@@ -106,7 +106,7 @@ class TestConcorrencia:
         do id. Quem perde não vê 500 — lê a análise de quem ganhou, que
         tem outro conteúdo, e responde 409. O GET devolve a do 201.
 
-        Customers e contas são criados antes, pelas sementes: sem isso, o
+        Contas são criadas antes, pelas sementes: sem isso, o
         primeiro Pix de cada um criaria as linhas, e a criação já poria os
         dois em fila antes do INSERT — a corrida nem aconteceria.
         """
@@ -132,7 +132,7 @@ class TestConcorrencia:
     def test_pix_cruzados_de_gente_nova_ao_mesmo_tempo_voltam_201(self):
         """50 pares de gente nova, A pagando B enquanto B paga A, 16 de cada vez: os 100 voltam 201.
 
-        No primeiro Pix de cada um, a API cria o customer. Criando na ordem
+        No primeiro Pix de cada um, a API cria a conta. Criando na ordem
         do Pix — pagador primeiro —, A→B e B→A esperariam um pelo outro,
         cada um segurando a linha que o outro quer: deadlock, e um 500. A
         API cria na ordem do documento, e o segundo só espera o primeiro.

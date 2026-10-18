@@ -21,7 +21,6 @@ class PixTransactionNotFound(QIException):
         translation = f"O Pix com id {external_id} não foi encontrado."
         super().__init__(title, self.code, http_status, description, translation)
 
-
 class PixTransactionIdConflict(QIException):
     """O mesmo id chegou de novo com outro conteúdo.
 
@@ -63,30 +62,3 @@ class DictUnavailable(QIException):
         description = f"DICT security evidence could not be obtained: {reason}."
         translation = "Não foi possível consultar a evidência de segurança do DICT."
         super().__init__(title, self.code, http_status, description, translation)
-
-
-class PixTransactionProcessing(QIException):
-    code = "QIT001004"
-
-    def __init__(self, external_id) -> None:
-        super().__init__(
-            "Pix Transaction Processing",
-            self.code,
-            409,
-            f"Pix transaction with id {external_id} is still being evaluated.",
-            f"O Pix com id {external_id} ainda está sendo avaliado.",
-            headers={"Retry-After": "2"},
-        )
-
-
-class PixTransactionEvaluationFailed(QIException):
-    code = "QIT001005"
-
-    def __init__(self, external_id) -> None:
-        super().__init__(
-            "Pix Transaction Evaluation Failed",
-            self.code,
-            503,
-            f"Pix transaction with id {external_id} could not be evaluated.",
-            f"O Pix com id {external_id} não pôde ser avaliado.",
-        )

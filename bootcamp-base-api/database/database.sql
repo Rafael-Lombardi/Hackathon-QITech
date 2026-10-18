@@ -1,9 +1,7 @@
 -- O antifraude Pix, nas tabelas de contrato, histórico e fontes:
 --   pix_transaction_status       os três veredictos do contrato.
 --   pix_signal_status            os três estados de um sinal.
---   customer                     quem paga ou recebe: um por CPF ou CNPJ (o
---                                owner do payload).
---   account                      uma conta de um customer, em qualquer banco.
+--   account                      identidade account-scoped: documento + conta.
 --   pix_transaction              uma linha por Pix: payload + decisão
 --                                explicada, com FK pra conta de origem e
 --                                de destino.
@@ -12,7 +10,7 @@
 --                                metadata.signals.
 -- Os índices são um por pergunta de regra (conta de origem, conta de
 -- destino, aparelho), todos terminando em transaction_date, mais um em
--- account(customer_id) pra ir das contas ao documento.
+-- account(document_number) para localizar a identidade.
 
 -- As três decisões do contrato, e só elas. O Pix já nasce decidido (o
 -- controller roda as regras antes do INSERT): não há pendente, e não há
@@ -47,50 +45,18 @@ INSERT INTO pix_signal_status (enumerator) VALUES
 ('not_triggered'),
 ('unavailable');
 
--- Quem paga ou recebe, um por documento. Separado de account porque um
--- documento tem contas em bancos diferentes: o laranja com três contas em
--- três bancos é um documento só, e as regras por pessoa agrupam por aqui.
---
--- É também a linha que o controller trava: SELECT ... FOR NO KEY UPDATE
--- no customer do pagador, depois dos upserts e na mesma transação do
--- INSERT do Pix — a estante da biblioteca: ninguém conta os livros
--- sem segurar a estante. A trava é no customer, e não na conta de origem,
--- porque as regras do pagador contam pelo documento, somando as contas:
--- dois Pix do mesmo CPF por contas diferentes também passam um de cada
--- vez. Repare no NO KEY: o INSERT de uma conta confere a FK com um FOR KEY
--- SHARE no customer, e um FOR UPDATE comum brigaria com ele — conta nova
--- de customer travado esperaria, e dois Pix cruzados que abrem conta (A
--- paga B, B paga A) dariam deadlock. O resto da história mora no
--- controller.
---
--- Ninguém cadastra customer nem account neste serviço. Os dois nascem na
--- primeira vez que aparecem num payload, por INSERT ... ON CONFLICT DO
--- NOTHING no controller — é isso que o resto deste arquivo chama de
--- upsert, e são até quatro por Pix: customer e account, origem e destino
--- — e a linha não muda depois.
+-- A conta é a unidade de identidade do domínio. O controller serializa o
+-- documento do pagador com advisory lock, faz o upsert das contas e trava
+-- as contas envolvidas em ordem determinística antes de contar histórico.
 --
 -- document_number é só dígitos: 11 (CPF) ou 14 (CNPJ), sem máscara. O
 -- UNIQUE nele é a chave do histórico, e "123.456.789-09" e "12345678909"
--- são o mesmo documento — se a máscara entrasse, virariam dois customers
+-- são o mesmo documento — se a máscara entrasse, virariam duas identidades
 -- e toda regra por documento contaria metade. O controller tira a máscara
 -- antes de gravar e de consultar; o JSON Schema aceita as duas formas. O
 -- CHECK é o que impede uma máscara de escapar e furar o agrupamento:
 -- VARCHAR(14) sozinho ainda deixaria passar "123.456.789-0".
-CREATE TABLE customer(
-    id                              BIGSERIAL PRIMARY KEY,
-    customer_key                    CHAR(36) NOT NULL,
-    document_number                 VARCHAR(14) NOT NULL,
-    created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(customer_key),
-    UNIQUE(document_number),
-    CHECK(document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$')
-);
-
--- Uma conta, de qualquer banco, de um customer. O titular faz parte da
--- identidade — o UNIQUE inclui customer_id —, e uma conta conjunta vira
--- uma linha por titular. Pagador e recebedor são o documento, e o
--- histórico vai da conta a ele por customer_id: com a conta presa ao
--- primeiro titular, o Pix do segundo entraria no histórico do primeiro.
+-- Uma linha combina o documento e a conta concreta usada no Pix.
 -- Nenhuma regra conta por conta (a idade do P01 e do R01 sai da
 -- opening_date do payload), e a divisão não custa nada ao motor.
 --
@@ -103,42 +69,42 @@ CREATE TABLE customer(
 CREATE TABLE account(
     id                              BIGSERIAL PRIMARY KEY,
     account_key                     CHAR(36) NOT NULL,
-    customer_id                     BIGINT NOT NULL REFERENCES customer(id),
+    document_number                 VARCHAR(14) NOT NULL,
     participant                     CHAR(8),
     branch                          VARCHAR(10) NOT NULL,
     account_number                  VARCHAR(20) NOT NULL,
     opening_date                    TIMESTAMPTZ NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(account_key),
-    UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, customer_id),
-    CHECK(participant IS NULL OR participant ~ '^[0-9]{8}$')
+    UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, document_number),
+    CHECK(participant IS NULL OR participant ~ '^[0-9]{8}$'),
+    CHECK(document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$')
 );
 
--- Das contas ao documento: "muitos pagadores pro mesmo documento de
--- destino" e "quantas contas este documento já usou" são JOIN
--- account → customer, e passam por aqui. Não há índice em participant
+-- O índice permite localizar rapidamente todas as linhas account-scoped do
+-- documento. Não há índice em participant
 -- nem em (branch, account_number) além do UNIQUE: o upsert procura pelas
 -- quatro colunas dele, e o UNIQUE já é esse índice.
-CREATE INDEX account_customer_id_idx
-    ON account (customer_id);
+CREATE INDEX account_document_number_idx
+    ON account (document_number);
 
 -- Cadastro independente de aparelhos confiáveis. Pix aprovado não insere
 -- aqui: a linha só vem de um seed/serviço de identidade e pode ser revogada.
 CREATE TABLE device_registry(
     id                              BIGSERIAL PRIMARY KEY,
-    customer_id                     BIGINT NOT NULL REFERENCES customer(id),
+    account_id                      BIGINT NOT NULL REFERENCES account(id),
     device_id                      VARCHAR(255) NOT NULL,
     registered_at                  TIMESTAMPTZ NOT NULL,
     revoked_at                     TIMESTAMPTZ,
     provenance                     VARCHAR(50) NOT NULL,
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
-    UNIQUE(customer_id, device_id),
+    UNIQUE(account_id, device_id),
     CHECK(revoked_at IS NULL OR revoked_at > registered_at),
     CHECK(provenance <> '')
 );
 
-CREATE INDEX device_registry_customer_device_idx
-    ON device_registry (customer_id, device_id);
+CREATE INDEX device_registry_account_device_idx
+    ON device_registry (account_id, device_id);
 
 -- Fontes autoritativas seedadas para a política v0.5. Não são histórico de
 -- Pix: representam o snapshot recebido de listas de restrição e inteligência
@@ -146,8 +112,7 @@ CREATE INDEX device_registry_customer_device_idx
 CREATE TABLE risk_restriction(
     id                              BIGSERIAL PRIMARY KEY,
     scope                           VARCHAR(30) NOT NULL,
-    customer_id                    BIGINT REFERENCES customer(id),
-    account_id                     BIGINT REFERENCES account(id),
+    account_id                     BIGINT NOT NULL REFERENCES account(id),
     active_from                    TIMESTAMPTZ NOT NULL,
     active_until                   TIMESTAMPTZ,
     status                          VARCHAR(20) NOT NULL DEFAULT('active'),
@@ -155,21 +120,18 @@ CREATE TABLE risk_restriction(
     occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
     CHECK(scope IN ('payer', 'recipient_holder', 'recipient_account')),
-    CHECK((scope = 'recipient_account' AND account_id IS NOT NULL)
-          OR (scope <> 'recipient_account' AND customer_id IS NOT NULL)),
+    CHECK(account_id IS NOT NULL),
     CHECK(active_until IS NULL OR active_until > active_from),
     CHECK(status IN ('active', 'revoked')),
     CHECK(provenance <> '')
 );
 
-CREATE INDEX risk_restriction_customer_idx
-    ON risk_restriction (customer_id, active_from);
 CREATE INDEX risk_restriction_account_idx
     ON risk_restriction (account_id, active_from);
 
 CREATE TABLE external_risk_assessment(
     id                              BIGSERIAL PRIMARY KEY,
-    customer_id                    BIGINT NOT NULL REFERENCES customer(id),
+    account_id                     BIGINT NOT NULL REFERENCES account(id),
     axis                            VARCHAR(10) NOT NULL,
     assessment                     VARCHAR(30) NOT NULL,
     valid_from                     TIMESTAMPTZ NOT NULL,
@@ -186,8 +148,8 @@ CREATE TABLE external_risk_assessment(
     CHECK(provenance <> '')
 );
 
-CREATE INDEX external_risk_customer_axis_idx
-    ON external_risk_assessment (customer_id, axis, valid_from);
+CREATE INDEX external_risk_account_axis_idx
+    ON external_risk_assessment (account_id, axis, valid_from);
 
 -- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
 --
@@ -291,25 +253,6 @@ CREATE TABLE pix_transaction(
     CHECK(longitude IS NULL OR longitude BETWEEN -180 AND 180)
 );
 
--- Receipt durável para processamento, falha e recuperação com lease.
-CREATE TABLE pix_transaction_receipt(
-    id                              BIGSERIAL PRIMARY KEY,
-    external_id                    VARCHAR(255) NOT NULL UNIQUE,
-    payload                        JSONB NOT NULL,
-    state                          VARCHAR(20) NOT NULL,
-    owner_token                    VARCHAR(36) NOT NULL,
-    lease_until                    TIMESTAMPTZ NOT NULL,
-    received_at                    TIMESTAMPTZ NOT NULL,
-    evaluated_at                   TIMESTAMPTZ,
-    failure_reason                 TEXT,
-    pix_transaction_id             BIGINT REFERENCES pix_transaction(id),
-    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
-    CHECK(state IN ('processing', 'failed', 'completed')),
-    CHECK(jsonb_typeof(payload) = 'object')
-);
-CREATE INDEX pix_transaction_receipt_lease_idx
-    ON pix_transaction_receipt (state, lease_until);
-
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
 -- em received_at porque a pergunta é sempre "deste X, numa janela de
 -- tempo". O relógio do histórico é o recebimento do servidor; o instante
@@ -320,15 +263,14 @@ CREATE INDEX pix_transaction_receipt_lease_idx
 -- nunca usou. Esta última não precisa de índice pelo par (origem,
 -- destino) enquanto o histórico de uma conta for pequeno; quando a regra
 -- existir e doer, o índice entra com CREATE INDEX CONCURRENTLY — sem
--- travar a tabela — e não mexe em mais nada. A mesma pergunta por
--- documento soma as contas do customer, via account_customer_id_idx.
+-- travar a conta — e não mexe em mais nada. A pergunta por documento é
+-- respondida diretamente por account.document_number.
 CREATE INDEX pix_transaction_source_account_id_idx
     ON pix_transaction (source_account_id, received_at);
 
 -- Conta de destino: muitos pagadores distintos pro mesmo destino em
--- janela curta (robô multiplicador, loja falsa, conta laranja). Por conta
--- aqui; por documento é o JOIN com account → customer — o laranja de
--- customer, lá em cima.
+-- janela curta (robô multiplicador, loja falsa, conta laranja). A consulta
+-- usa a conta concreta indicada no Pix.
 CREATE INDEX pix_transaction_destination_account_id_idx
     ON pix_transaction (destination_account_id, received_at);
 

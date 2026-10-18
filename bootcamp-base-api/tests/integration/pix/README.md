@@ -3,7 +3,7 @@
 Pela porta da frente na maioria dos casos: os testes falam HTTP com a API de pé,
 montam histórico com POSTs de data escolhida e conferem a decisão. Os dois
 testes de resiliência usam também controller/repositories reais e duas sessões
-PostgreSQL para simular falhas e expiração de lease; nenhum é unitário isolado.
+PostgreSQL para simular falhas de fonte; nenhum é unitário isolado.
 
 ## Como rodar
 
@@ -16,7 +16,7 @@ APP_ENV=test docker compose up -d --build --wait
 .venv/bin/pytest
 ```
 
-A suíte cobre 195 testes: cenários principais de aceitação, regressões,
+A suíte cobre 187 testes: cenários principais de aceitação, regressões,
 fronteiras, contrato, concorrência e cenários adicionais da política v0.5. O mais lento espera
 de propósito o timeout do DICT. Se a stack não estiver de pé, a suíte para no
 começo com uma mensagem só, e o comando que resolve. Mudou o
@@ -35,7 +35,7 @@ Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteado
 | `test_decisoes.py` | restrição prioritária e as rejeições demonstrativas com evidências DICT seedadas |
 | `test_contrato.py` | 201, 200, 400, 403, 404 e 409, o corpo da resposta, GET igual ao POST nos mesmos bytes, corpo que nem é JSON, documento com e sem pontuação |
 | `test_concorrencia.py` | POSTs ao mesmo tempo: a trava por pagador, inversão entre chegada e avaliação, o mesmo id em corrida (200 ou 409, nunca 500) e Pix cruzados de gente nova |
-| `test_resiliencia.py` | Restrição ativa vence indisponibilidade do cadastro de devices; owner expirado não sobrescreve receipt reassumido; GET distingue receipt em processamento e falho |
+| `test_resiliencia.py` | Restrição ativa vence indisponibilidade do cadastro de devices; fallback da política continua determinístico |
 | `test_geolocalizacao.py` | G01: cobertura insuficiente, viagem distante, múltiplos centros habituais, limiar de 300 km, janela de 24h e combinações de 2FA/rejeição |
 
 Os nomes dos cenários seguem o catálogo de aceitação do projeto. O cenário de reenvio está dividido: `test_reenvio_devolve_mesma_analise` e `test_mesmo_id_payload_diferente_409` em `test_contrato.py`, e `test_concorrencia_mesmo_pagador_conta_uma_vez` em `test_concorrencia.py`.

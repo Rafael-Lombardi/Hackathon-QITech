@@ -14,7 +14,7 @@ O controller coordena o caso de uso; o pacote `antifraud` calcula uma análise a
 | Política | `src/antifraud/policy.py` | versão, catálogo, pesos, janelas, tetos e tabela de decisão |
 | Camadas | `src/antifraud/layers/` | avaliar condições independentes e produzir sinais |
 | Engine | `src/antifraud/engine.py` | executar camadas, agregar famílias, calcular scores e decidir |
-| Persistência | `src/repositories/`, `src/models/`, `database/database.sql` | ler histórico e gravar análise, sinais, evidências e receipt |
+| Persistência | `src/repositories/`, `src/models/`, `database/database.sql` | ler histórico e gravar análise, sinais e evidências |
 | Resposta | `src/dtos/pix_transaction_dto.py` | transformar a análise persistida no JSON público |
 
 ### Sinal, família, score e decisão

@@ -21,32 +21,35 @@ def seed_devices(devices: list[dict]) -> None:
     engine = create_engine(database_url)
     with engine.begin() as connection:
         for device in devices:
-            customer_id = connection.execute(
+            account_id = connection.execute(
                 text(
                     """
-                    INSERT INTO customer (customer_key, document_number)
-                    VALUES (:key, :document)
-                    ON CONFLICT (document_number) DO UPDATE
-                        SET document_number = EXCLUDED.document_number
+                    INSERT INTO account
+                        (account_key, document_number, participant, branch, account_number, opening_date)
+                    VALUES (:key, :document, NULL, '0001', :account_number, :registered_at)
+                    ON CONFLICT (participant, branch, account_number, document_number)
+                    DO UPDATE SET document_number = EXCLUDED.document_number
                     RETURNING id
                     """
                 ),
-                {"key": str(uuid4()), "document": device["payer_document"]},
+                {"key": str(uuid4()), "document": device["payer_document"],
+                 "account_number": "device-seed-" + device["payer_document"][-8:],
+                 "registered_at": device["registered_at"]},
             ).scalar_one()
             connection.execute(
                 text(
                     """
                     INSERT INTO device_registry
-                        (customer_id, device_id, registered_at, revoked_at, provenance)
-                    VALUES (:customer_id, :device_id, :registered_at, :revoked_at, :provenance)
-                    ON CONFLICT (customer_id, device_id) DO UPDATE SET
+                        (account_id, device_id, registered_at, revoked_at, provenance)
+                    VALUES (:account_id, :device_id, :registered_at, :revoked_at, :provenance)
+                    ON CONFLICT (account_id, device_id) DO UPDATE SET
                         registered_at = EXCLUDED.registered_at,
                         revoked_at = EXCLUDED.revoked_at,
                         provenance = EXCLUDED.provenance
                     """
                 ),
                 {
-                    "customer_id": customer_id,
+                    "account_id": account_id,
                     "device_id": device["device_id"],
                     "registered_at": device["registered_at"],
                     "revoked_at": device.get("revoked_at"),

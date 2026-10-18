@@ -3,7 +3,7 @@
 O mesmo CPF pode chegar de dois jeitos — "123.456.789-09" e "12345678909"
 — e o JSON Schema aceita os dois. Pro histórico, os dois precisam ser UM:
 toda regra por pessoa agrupa pelo documento, e se a máscara entrasse na
-chave, o mesmo pagador viraria dois customers e cada contagem enxergaria
+chave, o mesmo pagador viraria duas identidades e cada contagem enxergaria
 metade. Por isso o documento vira só dígitos uma vez, logo depois do
 schema, e é assim que ele chega ao banco, às consultas e ao DICT, o
 diretório de chaves Pix do Banco Central.
@@ -18,7 +18,7 @@ import re
 # Dígito é de 0 a 9 e mais nada. Repare que um linter de editor (o
 # SonarLint, regra S6353) sugere \D no lugar de [^0-9], e erra: no Python,
 # \d é qualquer algarismo Unicode, e o "٣" arábico passaria daqui pro CHECK
-# da tabela customer, que o recusa com um 500. O str.isdigit() cai na mesma
+# da tabela account, que o recusa com um 500. O str.isdigit() cai na mesma
 # armadilha.
 NON_DIGIT = re.compile("[^0-9]")
 

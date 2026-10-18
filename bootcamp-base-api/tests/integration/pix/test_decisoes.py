@@ -21,7 +21,7 @@ def _recipient_network_with_external(assessment: str, dict_mock: DictMock):
     ])
     dict_mock.set_security_statistics(recipient.document, 12)
     seed_dict_security_evidence([{
-        "customer_document": recipient.document,
+        "document": recipient.document,
         "axis": "recipient",
         "assessment": assessment,
         "valid_from": T0.replace(hour=0),
@@ -141,7 +141,7 @@ class TestDecisoes:
             expect=["approved", "approved", "approved", "two_factor_required"],
         )
         seed_dict_security_evidence([{
-            "customer_document": payer.document,
+            "document": payer.document,
             "axis": "payer",
             "assessment": "suspicious",
             "valid_from": T0.replace(hour=0),
@@ -272,7 +272,7 @@ class TestDecisoes:
         recipient = new_recipient()
         dict_mock.set_security_statistics(recipient.document, 12)
         seed_dict_security_evidence([{
-            "customer_document": recipient.document,
+            "document": recipient.document,
             "axis": "recipient",
             "assessment": "confirmed_in_mock",
             "valid_from": T0.replace(hour=0),

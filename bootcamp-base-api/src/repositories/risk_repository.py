@@ -11,7 +11,7 @@ from datetime import datetime
 from sqlalchemy import case, or_, select
 
 from database import Context
-from models import DictSecurityEvidence, RiskRestriction
+from models import Account, DictSecurityEvidence, RiskRestriction
 
 
 @dataclass(frozen=True)
@@ -45,8 +45,7 @@ class RiskRepository:
     def active_restriction(
         self,
         *,
-        payer_customer_id: int,
-        recipient_customer_id: int,
+        payer_account_id: int,
         recipient_account_id: int,
         at: datetime,
     ) -> RestrictionSnapshot | None:
@@ -56,16 +55,19 @@ class RiskRepository:
         conta estão simultaneamente restritas: a conta exata vence o titular,
         que vence o pagador.
         """
+        payer_document = select(Account.document_number).where(Account.id == payer_account_id).scalar_subquery()
+        recipient_document = select(Account.document_number).where(Account.id == recipient_account_id).scalar_subquery()
         rows = self.session.scalars(
             select(RiskRestriction)
+            .join(Account, Account.id == RiskRestriction.account_id)
             .where(
                 RiskRestriction.status == "active",
                 RiskRestriction.active_from <= at,
                 or_(RiskRestriction.active_until.is_(None), RiskRestriction.active_until > at),
                 or_(
-                    (RiskRestriction.scope == "payer") & (RiskRestriction.customer_id == payer_customer_id),
+                    (RiskRestriction.scope == "payer") & (Account.document_number == payer_document),
                     (RiskRestriction.scope == "recipient_holder")
-                    & (RiskRestriction.customer_id == recipient_customer_id),
+                    & (Account.document_number == recipient_document),
                     (RiskRestriction.scope == "recipient_account")
                     & (RiskRestriction.account_id == recipient_account_id),
                 ),
@@ -87,15 +89,17 @@ class RiskRepository:
     def dict_security_evidence(
         self,
         *,
-        customer_id: int,
+        account_id: int,
         axis: str,
         at: datetime,
     ) -> DictSecurityEvidenceSnapshot | None:
         """Retorna evidência de segurança DICT vigente para o eixo."""
+        document = select(Account.document_number).where(Account.id == account_id).scalar_subquery()
         row = self.session.scalar(
             select(DictSecurityEvidence)
+            .join(Account, Account.id == DictSecurityEvidence.account_id)
             .where(
-                DictSecurityEvidence.customer_id == customer_id,
+                Account.document_number == document,
                 DictSecurityEvidence.axis == axis,
                 DictSecurityEvidence.valid_from <= at,
                 or_(

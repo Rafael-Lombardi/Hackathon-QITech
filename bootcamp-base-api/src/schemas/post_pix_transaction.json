@@ -97,7 +97,7 @@
       "required": ["document_number"],
       "properties": {
         "document_number": {
-          "$comment": "CPF ou CNPJ: só os dígitos (11 ou 14) ou com a máscara, como '123.456.789-09' e '12.345.678/0001-90'. Sem conferir dígito verificador — o pagador é cliente nosso e o recebedor veio do DICT, o diretório de chaves Pix do Banco Central, os dois já conferidos na origem; e um CPF sintético de teste não pode virar 400. A máscara cai em src/utils/document_number.py, antes de qualquer gravação. O CNPJ alfanumérico da Receita ainda não entra: pediria mudar junto o CHECK de customer no database.sql e o document_number.py.",
+          "$comment": "CPF ou CNPJ: só os dígitos (11 ou 14) ou com a máscara, como '123.456.789-09' e '12.345.678/0001-90'. Sem conferir dígito verificador — o pagador é cliente nosso e o recebedor veio do DICT, o diretório de chaves Pix do Banco Central, os dois já conferidos na origem; e um CPF sintético de teste não pode virar 400. A máscara cai em src/utils/document_number.py, antes de qualquer gravação. O CNPJ alfanumérico da Receita ainda não entra: pediria mudar junto o CHECK de account no database.sql e o document_number.py.",
           "type": "string",
           "pattern": "^([0-9]{11}|[0-9]{14}|[0-9]{3}\\.[0-9]{3}\\.[0-9]{3}-[0-9]{2}|[0-9]{2}\\.[0-9]{3}\\.[0-9]{3}/[0-9]{4}-[0-9]{2})$(?!\\n)"
         }
