@@ -124,8 +124,8 @@ class Transaction:
 class PayerHistory:
     """O passado do pagador, pelo documento: todas as contas dele somadas.
 
-    Anterior é o que já estava gravado com transaction_date até a do Pix
-    atual. O Pix atual ainda não foi gravado (isso só acontece depois da
+    Anterior é o que já estava gravado com received_at antes do instante de
+    avaliação do servidor. O Pix atual ainda não foi gravado (isso só acontece depois da
     decisão), e a regra que precisa dele soma o atual uma vez. A exceção
     são as contagens de distintos, que já chegam contando o atual; o
     comentário do campo avisa.

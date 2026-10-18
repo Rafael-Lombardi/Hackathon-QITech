@@ -35,8 +35,8 @@ class DeviceRegistryRepository:
             select(DeviceRegistry.id).where(
                 DeviceRegistry.customer_id == customer_id,
                 DeviceRegistry.device_id == PixTransaction.device_id,
-                DeviceRegistry.registered_at <= PixTransaction.transaction_date,
-                or_(DeviceRegistry.revoked_at.is_(None), DeviceRegistry.revoked_at > PixTransaction.transaction_date),
+                DeviceRegistry.registered_at <= PixTransaction.received_at,
+                or_(DeviceRegistry.revoked_at.is_(None), DeviceRegistry.revoked_at > PixTransaction.received_at),
             )
         )
         amount = self.session.scalar(
@@ -44,8 +44,8 @@ class DeviceRegistryRepository:
             .join(Account, Account.id == PixTransaction.source_account_id)
             .where(
                 Account.customer_id == customer_id,
-                PixTransaction.transaction_date >= day_start,
-                PixTransaction.transaction_date <= at,
+                PixTransaction.received_at >= day_start,
+                PixTransaction.received_at < at,
                 ~registered_at_transaction,
             )
         )

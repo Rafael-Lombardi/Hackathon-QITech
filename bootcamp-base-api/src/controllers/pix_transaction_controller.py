@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -44,7 +43,7 @@ class PixTransactionController(BaseController):
         self.risk_repository = RiskRepository(self.context)
         self.dict_connector = DictConnector()
 
-    def create(self, payload: dict) -> tuple[dict, bool]:
+    def create(self, payload: dict, *, test_received_at: datetime | None = None) -> tuple[dict, bool]:
         """Analisa um Pix novo, ou devolve a análise que ele já tem.
 
         Devolve o corpo da resposta e se a análise nasceu agora: o
@@ -76,7 +75,7 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
-        received_at = datetime.now(timezone.utc)
+        received_at = test_received_at or datetime.now(timezone.utc)
         receipt, claimed = self.pix_transaction_repository.claim_receipt(
             external_id=pix_request.external_id, payload=pix_request.payload, now=received_at,
         )
@@ -280,9 +279,11 @@ class PixTransactionController(BaseController):
         da conta que vier.
         """
         transaction_date = pix_request.transaction_date
-        # Local scenarios intentionally use the payload clock so they remain
-        # reproducible; deployed evaluations use the server receipt clock.
-        history_time = transaction_date if os.getenv("APP_ENV", "local") == "local" else received_at
+        # Histórico e janelas antifraude usam o relógio confiável do servidor.
+        # A data declarada no payload continua sendo o instante de negócio do
+        # Pix (hora local, idade das contas e auditoria), mas não pode mover
+        # artificialmente velocity ou baselines.
+        history_time = received_at
 
         payer_history = self.pix_history_repository.get_payer_features(
             payer_customer_id=payer.id,

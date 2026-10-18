@@ -1,5 +1,7 @@
 import json
+from datetime import datetime, timedelta
 from os import environ
+from threading import Lock
 
 from requests import request, Response
 from requests.exceptions import ConnectionError as RequestsConnectionError
@@ -15,6 +17,8 @@ API_OFFLINE = (
 # silêncio; com ele, o teste cai com nome. 30 s é folga de sobra: o Pix
 # mais lento da suíte espera os 2 s do DICT lento.
 REQUEST_TIMEOUT = 30
+_TEST_CLOCK_LOCK = Lock()
+_TEST_CLOCK_OCCURRENCES: dict[str, int] = {}
 
 
 def api_base_url() -> str:
@@ -39,6 +43,27 @@ class ClientRequisition:
 
         if headers is None:
             headers = dict()
+
+        # RFC clock injection: tests control the server receipt timestamp via
+        # an internal-only header; production ignores it outside local/test.
+        if method.upper() == "POST" and isinstance(payload, dict):
+            transaction_date = payload.get("transaction_date")
+            if transaction_date and "X-Test-Received-At" not in headers:
+                # Distinct requests with the same business timestamp still
+                # need an ordered server receipt time so the second one can
+                # observe the first after the payer lock is released.
+                with _TEST_CLOCK_LOCK:
+                    occurrence = _TEST_CLOCK_OCCURRENCES.get(transaction_date, 0)
+                    _TEST_CLOCK_OCCURRENCES[transaction_date] = occurrence + 1
+                try:
+                    parsed = datetime.fromisoformat(transaction_date)
+                except ValueError:
+                    # Let the API schema own invalid-date errors (400).
+                    _TEST_CLOCK_OCCURRENCES.pop(transaction_date, None)
+                else:
+                    headers["X-Test-Received-At"] = (
+                        parsed + timedelta(microseconds=occurrence)
+                    ).isoformat()
 
         base_url = api_base_url()
         url = f"{base_url}{endpoint}"
