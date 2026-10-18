@@ -23,8 +23,10 @@ pela trava, e o segundo precisa enxergar o primeiro. "Nos últimos X" é a
 janela (t - X, t]. Dia é o dia civil de São Paulo, cortado no SQL com AT
 TIME ZONE e o LOCAL_TIMEZONE do motor: o banco roda em UTC, e um Pix às
 22h de São Paulo já é o dia seguinte lá. Pagador e recebedor são o
-DOCUMENTO: as contas do customer saem de account_customer_id_idx, e os
-Pix de cada conta, dos índices de conta de origem e de conta de destino.
+DOCUMENTO, e o documento é a lista de contas dele: o pagador e o par
+recebem a lista pronta do controller (AccountRepository.ids_of), o
+recebedor resolve as suas no SQL, e os Pix de cada conta saem dos
+índices de conta de origem, de conta de destino e do par.
 
 count(*) FILTER (WHERE ...) conta só as linhas que passam no WHERE, e
 várias contagens assim saem da mesma leitura. percentile_cont(0.5) é a
@@ -47,14 +49,18 @@ from models import PixTransactionStatus
 from repositories.pix_transaction_repository import PixTransactionRepository
 
 # payer_pix lê o histórico inteiro do pagador uma vez, e cada campo é um
-# agregado sobre ela. A linha leva a conta de destino, e não o documento
-# do recebedor: ir de conta a documento custa uma busca por linha, e só
-# new_destinations precisa disso. Ali o caminho é o contrário: primeiro
-# as contas dos candidatos, que são poucas, e depois os approved
-# anteriores à janela pra alguma delas. Repare no MATERIALIZED: sem ele o
-# Postgres embute candidate_account na consulta, reordena o JOIN e volta
-# a buscar a conta de cada approved — medido num pagador com 3 mil Pix,
-# 7.916 páginas em vez de 215.
+# agregado sobre ela. As contas do pagador chegam como lista
+# (:payer_accounts), e não por JOIN com account: com os ids à vista o
+# planejador estima o tamanho certo do histórico (pelo JOIN ele chutava
+# a média, 26 Pix, pra um pagador de 5 mil), e o índice cobrindo da conta
+# de origem responde sem ir ao heap. A linha leva a conta de destino, e
+# não o documento do recebedor: ir de conta a documento custa uma busca
+# por linha, e só new_destinations precisa disso. Ali o caminho é o
+# contrário: primeiro as contas dos candidatos, que são poucas, e depois
+# os approved anteriores à janela pra alguma delas. Repare no
+# MATERIALIZED: sem ele o Postgres embute candidate_account na consulta,
+# reordena o JOIN e volta a buscar a conta de cada approved — medido num
+# pagador com 3 mil Pix, 7.916 páginas em vez de 215.
 _PAYER_QUERY = text("""
     WITH payer_pix AS (
         SELECT pix.transaction_date,
@@ -64,9 +70,8 @@ _PAYER_QUERY = text("""
                pix.device_id,
                pix.ip,
                pix.destination_account_id
-        FROM account payer
-        JOIN pix_transaction pix ON pix.source_account_id = payer.id
-        WHERE payer.customer_id = :payer_customer_id
+        FROM pix_transaction pix
+        WHERE pix.source_account_id = ANY(:payer_accounts)
           AND pix.transaction_date <= :t
     ),
     candidates AS (
@@ -209,16 +214,19 @@ _RECIPIENT_QUERY = text("""
            (SELECT count(*) FROM payers_in_window) AS distinct_payers_1h
 """)
 
+# As contas dos dois documentos vêm como lista: é o que deixa o par sair
+# do índice do par numa descida só. Pelo JOIN com account, o Postgres lia
+# o histórico inteiro do pagador e buscava a conta de cada Pix pra saber
+# o documento do destino — 20 mil páginas num pagador de 5 mil Pix; assim
+# são 19.
 _PAIR_QUERY = text("""
     SELECT count(*) FILTER (WHERE pix.status_id = :approved) AS prior_approved,
            min(pix.transaction_date) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
            count(*) FILTER (WHERE pix.status_id IN (:rejected, :two_factor_required)
                               AND pix.transaction_date > :anomaly_since) > 0 AS recent_anomaly
-    FROM account payer
-    JOIN pix_transaction pix ON pix.source_account_id = payer.id
-    JOIN account recipient ON recipient.id = pix.destination_account_id
-    WHERE payer.customer_id = :payer_customer_id
-      AND recipient.customer_id = :recipient_customer_id
+    FROM pix_transaction pix
+    WHERE pix.source_account_id = ANY(:payer_accounts)
+      AND pix.destination_account_id = ANY(:recipient_accounts)
       AND pix.transaction_date <= :t
 """)
 
@@ -304,7 +312,7 @@ class PixHistoryRepository:
     def get_payer_features(
         self,
         *,
-        payer_customer_id: int,
+        payer_accounts: list[int],
         recipient_customer_id: int,
         device_id: str,
         ip: str,
@@ -315,10 +323,11 @@ class PixHistoryRepository:
     ) -> PayerHistory:
         """O pagador: os Pix anteriores de todas as contas do documento.
 
-        O porquê de cada campo está no PayerHistory, no contrato do motor.
+        payer_accounts são os ids dessas contas, prontos. O porquê de cada
+        campo está no PayerHistory, no contrato do motor.
         """
         row = self.session.execute(_PAYER_QUERY, {
-            "payer_customer_id": payer_customer_id,
+            "payer_accounts": payer_accounts,
             "recipient_customer_id": recipient_customer_id,
             "device_id": device_id,
             "ip": ip,
@@ -407,12 +416,12 @@ class PixHistoryRepository:
     def get_pair_features(
         self,
         *,
-        payer_customer_id: int,
-        recipient_customer_id: int,
+        payer_accounts: list[int],
+        recipient_accounts: list[int],
         at: datetime,
         anomaly_window: timedelta,
     ) -> PairHistory:
-        """O par pagador→recebedor, documento a documento.
+        """O par pagador→recebedor, documento a documento: todas as contas de um pra todas as do outro.
 
         O SQL devolve o primeiro approved do par, e os dias saem aqui, com
         a conta da idade das contas: (transaction_date - primeiro).days.
@@ -420,8 +429,8 @@ class PixHistoryRepository:
         """
         status_id = self.pix_transaction_repository.get_status_id
         row = self.session.execute(_PAIR_QUERY, {
-            "payer_customer_id": payer_customer_id,
-            "recipient_customer_id": recipient_customer_id,
+            "payer_accounts": payer_accounts,
+            "recipient_accounts": recipient_accounts,
             "t": at,
             "anomaly_since": at - anomaly_window,
             "approved": status_id(PixTransactionStatus.APPROVED),

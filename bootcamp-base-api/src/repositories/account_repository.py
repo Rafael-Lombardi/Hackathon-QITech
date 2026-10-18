@@ -1,3 +1,4 @@
+from collections.abc import Collection
 from datetime import datetime
 from uuid import uuid4
 
@@ -13,6 +14,29 @@ class AccountRepository:
 
     def __init__(self, context: Context) -> None:
         self.session = context.db_session
+
+    def ids_of(self, *, customer_ids: Collection[int]) -> dict[int, list[int]]:
+        """Os ids das contas de cada customer: {customer_id: [account_id, ...]}, numa consulta só.
+
+        É assim que o histórico vai do documento às contas. As consultas
+        do pagador e do par recebem estas listas prontas, em vez de chegar
+        às contas por JOIN: com os ids à vista, o planejador do Postgres
+        estima quantos Pix o pagador tem de verdade (pelo JOIN, chutava a
+        média da tabela) e o par sai do índice numa descida — medido num
+        pagador com 5 mil Pix, 20 mil páginas viraram 19. Customer sem
+        conta não aparece no dicionário; no caminho do Pix isso não
+        acontece, porque as duas contas já foram criadas.
+        """
+        rows = self.session.execute(
+            select(Account.customer_id, Account.id)
+            .where(Account.customer_id.in_(customer_ids))
+            .order_by(Account.id)
+        ).tuples().all()
+
+        accounts: dict[int, list[int]] = {}
+        for customer_id, account_id in rows:
+            accounts.setdefault(customer_id, []).append(account_id)
+        return accounts
 
     def get_or_create(
         self,

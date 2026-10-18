@@ -1,10 +1,25 @@
 import json
+import threading
 import time
 from abc import ABCMeta
 
 import requests
 
 from utils.logger import get_logger
+
+# Uma requests.Session por thread, e não uma por processo: a Session
+# reaproveita a conexão TCP entre chamadas (keep-alive), e com um DICT de
+# verdade, atrás de TLS, isso poupa um handshake por Pix; mas ela não é
+# segura entre threads, e o resource roda numa por requisição.
+_sessions = threading.local()
+
+
+def _session() -> requests.Session:
+    session = getattr(_sessions, "session", None)
+    if session is None:
+        session = requests.Session()
+        _sessions.session = session
+    return session
 
 
 class RestConnector(metaclass=ABCMeta):
@@ -29,7 +44,10 @@ class RestConnector(metaclass=ABCMeta):
       • TODA ida e volta aparece no log, com o tempo que levou — e a ida
         que não voltou também. Quando algo der errado entre dois
         serviços, são estas linhas que contam de que lado está o
-        problema.
+        problema;
+
+      • a CONEXÃO é reaproveitada entre chamadas, pela Session de cada
+        thread (o porquê está no _session, acima).
     """
 
     def __init__(self, class_name: str, base_url: str, timeout: float, internal_token: str) -> None:
@@ -71,7 +89,7 @@ class RestConnector(metaclass=ABCMeta):
         # pra outro lugar, e seguir um 302 levaria o INTERNAL-TOKEN pra
         # outro host e aceitaria a resposta de lá. O 3xx volta como veio.
         try:
-            response = requests.request(
+            response = _session().request(
                 method.upper(),
                 url,
                 json=payload,

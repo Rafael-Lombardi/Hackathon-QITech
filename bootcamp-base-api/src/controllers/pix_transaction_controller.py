@@ -215,12 +215,15 @@ class PixTransactionController(BaseController):
         está no pix_history_repository.py): o repository conta, o motor
         decide. E é contado DEPOIS da trava — o Pix do mesmo pagador que
         chegou junto, e passou na frente, já está gravado e entra na
-        contagem, venha ele da conta que vier.
+        contagem, venha ele da conta que vier. As contas dos dois
+        documentos vão prontas pras consultas do pagador e do par; o
+        porquê está no AccountRepository.ids_of.
         """
         transaction_date = pix_request.transaction_date
+        accounts = self.account_repository.ids_of(customer_ids={payer.id, recipient.id})
 
         payer_history = self.pix_history_repository.get_payer_features(
-            payer_customer_id=payer.id,
+            payer_accounts=accounts[payer.id],
             recipient_customer_id=recipient.id,
             device_id=pix_request.device_id,
             ip=pix_request.ip,
@@ -251,8 +254,8 @@ class PixTransactionController(BaseController):
             days_cap=policy.HIGH_SUFFICIENCY_MIN_DAYS,
         )
         pair_history = self.pix_history_repository.get_pair_features(
-            payer_customer_id=payer.id,
-            recipient_customer_id=recipient.id,
+            payer_accounts=accounts[payer.id],
+            recipient_accounts=accounts[recipient.id],
             at=transaction_date,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
