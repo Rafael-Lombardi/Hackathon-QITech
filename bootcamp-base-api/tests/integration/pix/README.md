@@ -13,7 +13,11 @@ docker compose up -d --build --wait
 .venv/bin/pytest
 ```
 
-São 168 testes (162 do Pix e 6 do health check), em uns 12 s. O mais lento espera de propósito os 2 s do DICT lento. Se a stack não estiver de pé, a suíte para no começo com uma mensagem só, e o comando que resolve. Mudou o `database/database.sql`: `docker compose down -v` antes de subir.
+A suíte cobre os 18 cenários principais, regressões, fronteiras, contrato,
+concorrência e os cenários adicionais da política v0.5. O mais lento espera
+de propósito o timeout do DICT. Se a stack não estiver de pé, a suíte para no
+começo com uma mensagem só, e o comando que resolve. Mudou o
+`database/database.sql`: `docker compose down -v` antes de subir.
 
 Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteados —, e por isso a suíte roda de novo sem limpar o banco.
 
@@ -39,14 +43,32 @@ Os nomes dos cenários são os da tabela da RFC §9. O cenário 15 está dividid
 `expected` (oráculo independente). O runner envia cada item de `history` pela
 API, nunca faz INSERT direto no banco, e depois compara o POST com o GET.
 
-O seed de `authoritative.devices` grava somente o cadastro autoritativo de
-dispositivos; ele não cria Pix nem transforma uma aprovação em confiança.
-Assim, o banco recebe somente os eventos de entrada, os cadastros explícitos e a análise persistida;
-os resultados esperados ficam no teste. Uma execução válida prova os dois
+Os seeds de `authoritative.devices`, `authoritative.restrictions` e
+`authoritative.external_risk` gravam fontes autoritativas separadas; eles não
+criam Pix nem transformam uma aprovação em confiança. Assim, o banco recebe
+eventos de entrada, cadastros explícitos de fonte e a análise persistida; os
+resultados esperados ficam no teste. Uma execução válida prova os dois
 comportamentos: a decisão foi calculada e o mesmo resultado foi gravado.
-Quando cadastro de dispositivos, reputação ou restrições entrar no serviço,
-`authoritative` deve ser ligado aos seeds correspondentes sem mudar o formato
-do oráculo.
+
+## Cenários adicionais da política v0.5
+
+Além dos 18 cenários da RFC, `test_politica_v05.py` documenta as combinações
+que podem rejeitar e os negativos que devem permanecer em 2FA:
+
+| Cenário | Preparação | Resultado |
+|---|---|---|
+| ATO completo | P03 + P04 + P06 + P07, score do pagador ≥70 | `D-REJ-ATO` |
+| ATO incompleto | P03 + P06, sem P07 | `D-ATO-1` |
+| PAY com inteligência | P04 + P06 + P07, score ≥70, fonte `suspicious` no pagador | `D-REJ-PAY` |
+| Restrição ativa | Restrição vigente no pagador | `D-RESTRICT-SIM` |
+| Restrição temporal | Restrição futura ou expirada | `D-OK` |
+| RCP com inteligência | R02 + R03, DICT baixo, score do destino ≥55, fonte `suspicious` | `D-REJ-RCP` |
+| RCP sem evidência adversa | Mesmo caso com fonte `clear` ou `unavailable` | `D-RCP` / 2FA |
+| CROSS | Risco do pagador e destino ≥40, fonte `confirmed_in_mock` no destino | `D-REJ-CROSS` |
+
+Cada cenário confere status, regra decisora e score; os casos negativos
+também verificam que a evidência ausente, clara ou expirada não é convertida
+automaticamente em rejeição.
 
 ## Como ler a conta dos docstrings
 
