@@ -1,8 +1,8 @@
 """O contrato do motor antifraude: os tipos que as peças trocam entre si.
 
-Entra um Context — o Pix normalizado e o histórico já contado pelo
-controller. Cada camada devolve uma lista de Signal, e o engine junta
-tudo numa Analysis. Nenhum desses tipos sabe o que é banco, HTTP,
+Entra um Context — o Pix normalizado, o histórico já contado e o que as
+fontes de fora responderam, tudo montado pelo controller. Cada camada
+devolve uma lista de Signal, e o engine junta tudo numa Analysis. Nenhum desses tipos sabe o que é banco, HTTP,
 variável de ambiente ou relógio: a mesma entrada dá sempre a mesma
 análise.
 """
@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 # fuso de quem mandou e o banco guarda o instante em UTC — nenhum dos
 # dois diz que horas eram para o cliente. A regra noturna (L01) converte
 # pra cá antes de olhar a hora, e os repositories cortam o dia civil com
-# este mesmo fuso (prior_days, device_day_amount).
+# este mesmo fuso (prior_days, unregistered_device_day_amount).
 LOCAL_TIMEZONE = ZoneInfo("America/Sao_Paulo")
 
 
@@ -86,6 +86,34 @@ class FraudMarker(StrEnum):
     CONFIRMED = "confirmed"
 
 
+class RegistrationStatus(StrEnum):
+    """O que o cadastro de aparelhos do banco diz do par pagador–aparelho.
+
+    Os dois primeiros são respostas: o cadastro conhece o pagador, e o
+    aparelho está cadastrado e vigente neste instante, ou não está. Os
+    dois últimos são falta de resposta, e a RFC manda não confundir
+    nenhum deles com unregistered: uncovered é o pagador fora da fixture
+    do cadastro (dado parcial, e ausência em dado parcial não é
+    não-cadastro); unavailable é a fonte que não respondeu. Nos dois o
+    P03 sai unavailable; só o unavailable troca o D-OK pelo
+    D-DATA-UNAVAILABLE, porque aí a fonte que devia responder não
+    respondeu.
+    """
+
+    REGISTERED = "registered"
+    UNREGISTERED = "unregistered"
+    UNCOVERED = "uncovered"
+    UNAVAILABLE = "unavailable"
+
+
+class RestrictionScope(StrEnum):
+    """De quem é uma restrição: do pagador, do titular do destino ou da conta exata de destino."""
+
+    PAYER = "payer"
+    RECIPIENT_HOLDER = "recipient_holder"
+    RECIPIENT_ACCOUNT = "recipient_account"
+
+
 # O que a regra viu e com que limite comparou. Vai pra rule_result_data
 # e volta em metadata.signals, então só leva tipo que o JSON entende — e
 # nunca documento.
@@ -94,15 +122,73 @@ Evidence = dict[str, EvidenceValue]
 
 
 @dataclass(frozen=True)
+class DeviceRegistration:
+    """O aparelho do Pix, pelo cadastro do banco e pelo histórico.
+
+    status e source são o que o cadastro respondeu (source é a
+    proveniência que ele declarou, demo_seed na fixture; None quando ele
+    não respondeu ou não cobre o pagador). previously_observed vem do
+    histórico, não do cadastro: o par já apareceu em alguma tentativa
+    anterior, de qualquer status. São perguntas diferentes, e a RFC pede
+    as duas separadas — tentativa não cadastra aparelho, e um 2FA que
+    ninguém confirmou não pode virar familiaridade.
+    """
+
+    status: RegistrationStatus
+    source: str | None
+    previously_observed: bool
+
+
+@dataclass(frozen=True)
+class Restriction:
+    """Uma restrição interna, como a fonte a descreve.
+
+    scope diz de quem ela é e identity_key diz qual: o documento do
+    pagador ou do titular, ou ispb:agência:conta da conta exata. A
+    vigência tem três datas, e active_at junta as três do jeito que a RFC
+    escreve (§7). identity_key fica fora do repr e da resposta: é
+    documento.
+    """
+
+    restriction_id: str
+    scope: RestrictionScope
+    identity_key: str = field(repr=False)
+    reason: str
+    evidence_ref: str
+    provenance: str
+    effective_at: datetime
+    expires_at: datetime | None
+    revoked_at: datetime | None
+
+    def active_at(self, moment: datetime) -> bool:
+        """Vale em `moment`: já começou, não venceu e não foi revogada."""
+        return (
+            self.effective_at <= moment
+            and (self.expires_at is None or moment < self.expires_at)
+            and (self.revoked_at is None or moment < self.revoked_at)
+        )
+
+    def applies_to(self, *, payer_document: str, recipient_document: str, recipient_account_key: str) -> bool:
+        """Fala de alguém desta transação: o pagador, o titular do destino ou a conta exata."""
+        identities = {
+            RestrictionScope.PAYER: payer_document,
+            RestrictionScope.RECIPIENT_HOLDER: recipient_document,
+            RestrictionScope.RECIPIENT_ACCOUNT: recipient_account_key,
+        }
+        return identities[self.scope] == self.identity_key
+
+
+@dataclass(frozen=True)
 class Transaction:
     """O Pix atual, do jeito que a normalização do controller deixou.
 
     Só leva o que alguma regra lê. Aparelho, IP e canal o controller
-    grava direto, e pro motor eles chegam já convertidos em histórico
-    (device_known, ip_known, DeviceHistory); a geolocalização idem, como
-    a distância até os lugares de sempre (location_distance_km). Os
-    documentos ficam fora do repr: um log descuidado do Context não pode
-    vazar CPF inteiro.
+    grava direto, e pro motor eles chegam de outro jeito: o IP como
+    histórico (ip_known), o aparelho como o cadastro do banco o vê
+    (DeviceRegistration) e como o histórico o viu (DeviceHistory); a
+    geolocalização idem, como a distância até os lugares de sempre
+    (location_distance_km). Os documentos ficam fora do repr: um log
+    descuidado do Context não pode vazar CPF inteiro.
     """
 
     amount: int  # centavos
@@ -158,22 +244,27 @@ class PayerHistory:
     compara com limiar, e contar além dele é consulta à toa; o teto é a
     própria constante, então mudou o limiar, muda o teto. Repare que o
     approved_count tem dois leitores, o lastro do P06 e a pré-condição
-    de aparelho e IP (ACCESS_MIN_APPROVED): o teto precisa ficar no
-    maior dos dois limiares, hoje o MEDIAN_MIN_APPROVED (10). O resto
-    precisa ser exato: prior_attempts vira payer_prior_tx na evidência e
-    no motivo do D-ATO-2, e as janelas e new_destinations_10m saem na
-    evidência do jeito que foram contados.
+    do IP (ACCESS_MIN_APPROVED): o teto precisa ficar no maior dos dois
+    limiares, hoje o MEDIAN_MIN_APPROVED (10). O resto precisa ser
+    exato: prior_attempts vira payer_prior_tx na evidência e no motivo do
+    D-ATO-2, e as janelas e new_destinations_10m saem na evidência do
+    jeito que foram contados.
     """
 
     prior_attempts: int
     prior_days: int  # dias civis distintos, em São Paulo
     # Conhecido é já ter sido usado num Pix aprovado deste pagador, e não
     # só visto. Um 2FA que ninguém confirmou não pode ensinar o motor que
-    # o aparelho é do cliente, senão a segunda tentativa do invasor passa
-    # limpa. Nas evidências, device_seen_before e ip_seen_before (os
-    # nomes do exemplo da RFC) querem dizer isto.
-    device_known: bool
+    # o IP é do cliente, senão a segunda tentativa do invasor passa
+    # limpa. Na evidência, ip_seen_before (o nome do exemplo da RFC) quer
+    # dizer isto.
     ip_known: bool
+    # O par pagador–aparelho já apareceu em alguma tentativa anterior, de
+    # qualquer status. Não diz que o aparelho é do cliente — isso é o
+    # cadastro do banco, em DeviceRegistration —; vai pra resposta como
+    # previously_observed, pra que "visto" e "cadastrado" nunca se
+    # confundam.
+    device_previously_observed: bool
     attempts_5m: int
     amount_1h: int  # centavos
     approved_count: int
@@ -185,9 +276,14 @@ class PayerHistory:
     # Recebedores distintos sem Pix aprovado deste pagador antes da
     # janela, contando o recebedor atual.
     new_destinations_10m: int
-    # Pix aprovado com este aparelho antes da 0h de hoje, em São Paulo
-    device_known_before_today: bool
-    device_day_amount: int  # hoje, com este aparelho, qualquer status
+    # A soma de hoje (dia civil de São Paulo) das tentativas do pagador,
+    # de qualquer status, feitas de aparelho que NA HORA não estava
+    # cadastrado — pelo status gravado em cada tentativa, e não pelo
+    # cadastro de agora: cadastrar o aparelho à tarde não apaga o que
+    # saiu dele de manhã. Em todos os aparelhos, e não só no atual: o
+    # limite diário do Banco Central é por cliente, e dois celulares não
+    # dividem o teto. O L02 soma o Pix atual por cima.
+    unregistered_device_day_amount: int  # centavos
 
 
 @dataclass(frozen=True)
@@ -242,9 +338,10 @@ class PairHistory:
 class Context:
     """Tudo o que o motor sabe de um Pix.
 
-    Quem monta é o controller: o histórico vem dos repositories, e a
-    estatística de segurança e a marcação de fraude do recebedor vêm do
-    connector do DICT, numa consulta só. O motor só lê.
+    Quem monta é o controller: o histórico vem dos repositories, o
+    cadastro do aparelho e as restrições vêm dos connectors de cada
+    fonte, e a estatística de segurança e a marcação de fraude do
+    recebedor vêm do connector do DICT, numa consulta só. O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem
     exatos da própria definição. Pagador sem Pix anterior
@@ -260,6 +357,11 @@ class Context:
     device: DeviceHistory
     recipient: RecipientHistory
     pair: PairHistory
+    device_registration: DeviceRegistration
+    # Só as que valem neste instante e falam deste pagador, deste titular
+    # de destino ou desta conta exata: o controller filtra, e qualquer
+    # uma aqui rejeita (D-RESTRICT-SIM). Quase sempre vazia.
+    restrictions: tuple[Restriction, ...]
     # Os dois vêm da mesma resposta do DICT sobre o recebedor, e os dois
     # ficam None quando o DICT falhou: a camada 3 inteira sai unavailable.
     dict_security_statistics: int | None

@@ -1,7 +1,8 @@
 from datetime import datetime, timezone
 
-from antifraud import Analysis, Context, Transaction, evaluate, policy
-from connectors import DictConnector
+from antifraud import Analysis, Context, DeviceRegistration, Restriction, Transaction, evaluate, policy
+from connectors import DeviceRegistryConnector, DictConnector, RestrictionsConnector
+from connectors.device_registry_connector import DeviceRegistryRecord
 from connectors.dict_connector import DictSecurityInformation
 from controllers.base_controller import BaseController
 from controllers.pix_request import AccountData, PixRequest, parse_pix_request
@@ -18,9 +19,9 @@ class PixTransactionController(BaseController):
     A regra de risco não mora aqui. Ela é o motor, em src/antifraud/, que
     recebe um Context pronto e devolve a decisão sem tocar em banco nem
     em rede. O que mora aqui é tudo em volta dele, na ordem certa:
-    idempotência, DICT, trava, histórico, gravação e commit. É a única
-    peça que fala com as outras três — os repositories (banco), o
-    connector (DICT) e o motor.
+    idempotência, fontes, trava, histórico, gravação e commit. É a única
+    peça que fala com as outras três — os repositories (banco), os
+    connectors (as fontes de fora) e o motor.
     """
 
     def __init__(self) -> None:
@@ -29,6 +30,8 @@ class PixTransactionController(BaseController):
         self.account_repository = AccountRepository(self.context)
         self.pix_transaction_repository = PixTransactionRepository(self.context)
         self.pix_history_repository = PixHistoryRepository(self.context)
+        self.restrictions_connector = RestrictionsConnector()
+        self.device_registry_connector = DeviceRegistryConnector()
         self.dict_connector = DictConnector()
 
     def create(self, payload: dict) -> tuple[dict, bool]:
@@ -41,17 +44,20 @@ class PixTransactionController(BaseController):
 
           1. converte o payload — data impossível é 400, antes de tudo;
           2. procura o id: reenvio idêntico devolve a análise gravada, id
-             repetido com outro conteúdo é 409. Sem DICT, e sem contar
-             nada de novo no histórico;
-          3. pergunta ao DICT pelo recebedor ANTES de travar qualquer
-             coisa. A consulta pode levar os 2 s do prazo, e um pagador
-             travado esse tempo todo seguraria todos os Pix dele;
+             repetido com outro conteúdo é 409. Sem consultar fonte
+             nenhuma, e sem contar nada de novo no histórico;
+          3. consulta as três fontes ANTES de travar qualquer coisa: as
+             restrições primeiro, porque sem elas não há veredito (503, e
+             nada gravado), depois o cadastro de aparelhos e o DICT. Cada
+             consulta pode levar os 2 s do prazo, e um pagador travado
+             esse tempo todo seguraria todos os Pix dele;
           4. trava o pagador — pelo documento, porque as regras do
              pagador contam pelo documento, somando as contas dele — e só
              então cria customers e contas na primeira aparição;
           5. procura o id de novo: outro POST do mesmo Pix pode ter gravado
              enquanto este esperava a trava;
-          6. conta o histórico, monta o Context e roda o motor;
+          6. conta o histórico, lê o que as fontes responderam no instante
+             da avaliação, monta o Context e roda o motor;
           7. grava o Pix e os sinais, e só então commita — a não ser que o
              mesmo id tenha chegado junto por outro pagador, que a trava
              não segura, e gravado primeiro: aí este responde como num
@@ -66,9 +72,17 @@ class PixTransactionController(BaseController):
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
         # conexão ao pool, o estoque de conexões de banco que o processo
         # divide entre todas as requisições, pra outra usar enquanto este
-        # Pix espera o DICT: com o DICT lento, segurar a conexão na espera
-        # derrubava a vazão pela metade.
+        # Pix espera as fontes: com uma fonte lenta, segurar a conexão na
+        # espera derrubava a vazão pela metade.
         self.session.rollback()
+        restrictions = self.restrictions_connector.list_restrictions(
+            payer_document=pix_request.source_account.document_number,
+            recipient_document=pix_request.destination_account.document_number,
+            recipient_account_key=_account_key(pix_request.destination_account),
+        )
+        registry_record = self.device_registry_connector.get_registration(
+            pix_request.source_account.document_number, pix_request.device_id,
+        )
         dict_information = self._get_dict_security_information(
             pix_request.destination_account.document_number
         )
@@ -84,7 +98,7 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
-        context = self._build_context(pix_request, payer, recipient, dict_information)
+        context = self._build_context(pix_request, payer, recipient, registry_record, restrictions, dict_information)
         analysis = evaluate(context)
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
@@ -96,7 +110,8 @@ class PixTransactionController(BaseController):
         # received_at é só o carimbo de chegada, pra auditoria: as janelas
         # de histórico contam por transaction_date (pix_history_repository).
         pix_transaction = self._create_pix_transaction(
-            pix_request, analysis, source_account, destination_account, received_at=datetime.now(timezone.utc),
+            pix_request, analysis, context, source_account, destination_account,
+            received_at=datetime.now(timezone.utc),
         )
         if pix_transaction is None:
             replayed = self._replay_if_recorded(pix_request)
@@ -205,9 +220,11 @@ class PixTransactionController(BaseController):
         pix_request: PixRequest,
         payer: Customer,
         recipient: Customer,
+        registry_record: DeviceRegistryRecord,
+        restrictions: tuple[Restriction, ...],
         dict_information: DictSecurityInformation | None,
     ) -> Context:
-        """O Context do motor: o Pix normalizado, o histórico contado e o DICT.
+        """O Context do motor: o Pix normalizado, o histórico contado e o que as fontes disseram.
 
         O histórico é contado por documento (o customer), com as janelas
         do policy.py e o relógio do negócio, transaction_date (o porquê
@@ -217,6 +234,11 @@ class PixTransactionController(BaseController):
         contagem, venha ele da conta que vier. As contas dos dois
         documentos vão prontas pras consultas do pagador e do par; o
         porquê está no AccountRepository.ids_of.
+
+        As fontes foram consultadas antes da trava, e o que elas
+        responderam é lido AQUI, no instante da avaliação: o cadastro do
+        aparelho tem vigência, a restrição também, e as duas se resolvem
+        contra o mesmo relógio do histórico.
         """
         transaction_date = pix_request.transaction_date
         accounts = self.account_repository.ids_of(customer_ids={payer.id, recipient.id})
@@ -269,12 +291,31 @@ class PixTransactionController(BaseController):
             location_distance_km=location_distance_km,
         )
 
+        device_registration = DeviceRegistration(
+            status=registry_record.status_at(transaction_date),
+            source=registry_record.provenance,
+            previously_observed=payer_history.device_previously_observed,
+        )
+        # A fonte já foi perguntada pelos três (pagador, titular e conta
+        # exata); o filtro de alcance é a conferência de que ela respondeu
+        # o que foi perguntado, e o de vigência é o que só se resolve aqui.
+        active_restrictions = tuple(
+            restriction for restriction in restrictions
+            if restriction.applies_to(
+                payer_document=transaction.payer_document,
+                recipient_document=transaction.recipient_document,
+                recipient_account_key=_account_key(pix_request.destination_account),
+            ) and restriction.active_at(transaction_date)
+        )
+
         return Context(
             transaction=transaction,
             payer=payer_history,
             device=device_history,
             recipient=recipient_history,
             pair=pair_history,
+            device_registration=device_registration,
+            restrictions=active_restrictions,
             dict_security_statistics=None if dict_information is None else dict_information.statistics,
             dict_fraud_marker=None if dict_information is None else dict_information.fraud_marker,
         )
@@ -291,9 +332,10 @@ class PixTransactionController(BaseController):
         return max((transaction_date - account_data.opening_date).days, 0)
 
     def _create_pix_transaction(
-        self, pix_request: PixRequest, analysis: Analysis, source_account: Account, destination_account: Account,
-        *, received_at: datetime,
+        self, pix_request: PixRequest, analysis: Analysis, context: Context,
+        source_account: Account, destination_account: Account, *, received_at: datetime,
     ) -> PixTransaction | None:
+        device_registration = context.device_registration
         return self.pix_transaction_repository.create(
             status_id=self.pix_transaction_repository.get_status_id(enumerator=analysis.status),
             payer_risk=analysis.payer_risk,
@@ -314,6 +356,10 @@ class PixTransactionController(BaseController):
             ip=pix_request.ip,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
+            device_registration_status=device_registration.status.value,
+            device_registration_source=device_registration.source,
+            device_previously_observed=device_registration.previously_observed,
+            restrictions=[_restriction_row(restriction) for restriction in context.restrictions],
             received_at=received_at,
         )
 
@@ -339,3 +385,22 @@ class PixTransactionController(BaseController):
         rule_results = self.pix_transaction_repository.list_signals(pix_transaction_id=pix_transaction.id)
 
         return PixTransactionDTO.obj_to_dict(pix_transaction, rule_results)
+
+
+def _account_key(account_data: AccountData) -> str:
+    """A conta exata como a fonte de restrições a identifica: ispb:agência:conta."""
+    return f"{account_data.participant}:{account_data.branch}:{account_data.account_number}"
+
+
+def _restriction_row(restriction: Restriction) -> dict:
+    """A restrição como vai pra coluna e pra resposta: tudo menos a identity_key, que é documento."""
+    return {
+        "restriction_id": restriction.restriction_id,
+        "scope": restriction.scope.value,
+        "reason": restriction.reason,
+        "evidence_ref": restriction.evidence_ref,
+        "provenance": restriction.provenance,
+        "effective_at": restriction.effective_at.isoformat(),
+        "expires_at": None if restriction.expires_at is None else restriction.expires_at.isoformat(),
+        "revoked_at": None if restriction.revoked_at is None else restriction.revoked_at.isoformat(),
+    }

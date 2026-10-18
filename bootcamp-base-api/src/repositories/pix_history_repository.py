@@ -43,7 +43,14 @@ from math import asin, cos, radians, sin, sqrt
 from sqlalchemy import text
 
 from antifraud import policy
-from antifraud.contract import LOCAL_TIMEZONE, DeviceHistory, PairHistory, PayerHistory, RecipientHistory
+from antifraud.contract import (
+    LOCAL_TIMEZONE,
+    DeviceHistory,
+    PairHistory,
+    PayerHistory,
+    RecipientHistory,
+    RegistrationStatus,
+)
 from database import Context
 from models import PixTransactionStatus
 from repositories.pix_transaction_repository import PixTransactionRepository
@@ -68,6 +75,7 @@ _PAYER_QUERY = text("""
                pix.amount,
                pix.status_id,
                pix.device_id,
+               pix.device_registration_status,
                pix.ip,
                pix.destination_account_id
         FROM pix_transaction pix
@@ -100,8 +108,8 @@ _PAYER_QUERY = text("""
     )
     SELECT count(*) AS prior_attempts,
            count(DISTINCT local_day) AS prior_days,
-           count(*) FILTER (WHERE status_id = :approved AND device_id = :device_id) > 0 AS device_known,
            count(*) FILTER (WHERE status_id = :approved AND ip = :ip) > 0 AS ip_known,
+           count(*) FILTER (WHERE device_id = :device_id) > 0 AS device_previously_observed,
            count(*) FILTER (WHERE transaction_date > :attempts_since) AS attempts_5m,
            coalesce(sum(amount) FILTER (WHERE transaction_date > :amount_since), 0) AS amount_1h,
            count(*) FILTER (WHERE status_id = :approved) AS approved_count,
@@ -109,13 +117,9 @@ _PAYER_QUERY = text("""
            percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)
                FILTER (WHERE status_id = :approved) AS approved_median_amount,
            (SELECT count(*) FROM new_destinations) AS new_destinations_10m,
-           count(*) FILTER (WHERE status_id = :approved
-                              AND device_id = :device_id
-                              AND local_day < (:t AT TIME ZONE :local_timezone)::date) > 0
-               AS device_known_before_today,
-           coalesce(sum(amount) FILTER (WHERE device_id = :device_id
+           coalesce(sum(amount) FILTER (WHERE device_registration_status = :unregistered
                                           AND local_day = (:t AT TIME ZONE :local_timezone)::date), 0)
-               AS device_day_amount
+               AS unregistered_device_day_amount
     FROM payer_pix
 """)
 
@@ -336,6 +340,7 @@ class PixHistoryRepository:
             "amount_since": at - amount_window,
             "new_destinations_since": at - new_destinations_window,
             "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
+            "unregistered": RegistrationStatus.UNREGISTERED.value,
             "local_timezone": LOCAL_TIMEZONE.key,
         }).one()
 
@@ -346,16 +351,15 @@ class PixHistoryRepository:
         return PayerHistory(
             prior_attempts=row.prior_attempts,
             prior_days=row.prior_days,
-            device_known=row.device_known,
             ip_known=row.ip_known,
+            device_previously_observed=row.device_previously_observed,
             attempts_5m=row.attempts_5m,
             amount_1h=int(row.amount_1h),
             approved_count=row.approved_count,
             approved_days=row.approved_days,
             approved_median_amount=row.approved_median_amount,
             new_destinations_10m=row.new_destinations_10m,
-            device_known_before_today=row.device_known_before_today,
-            device_day_amount=int(row.device_day_amount),
+            unregistered_device_day_amount=int(row.unregistered_device_day_amount),
         )
 
     def get_device_features(

@@ -4,7 +4,7 @@ import requests
 
 from antifraud.contract import FraudMarker
 from connectors.rest_connector import RestConnector
-from constants import DICT_API_INTERNAL_TOKEN, DICT_API_TIMEOUT, DICT_API_URL
+from constants import DICT_API_URL, SOURCES_INTERNAL_TOKEN, SOURCES_TIMEOUT
 from errors import DictUnavailable
 from utils.document_number import mask_document
 
@@ -45,8 +45,8 @@ class DictConnector(RestConnector):
         super().__init__(
             class_name=__name__,
             base_url=DICT_API_URL,
-            timeout=DICT_API_TIMEOUT,
-            internal_token=DICT_API_INTERNAL_TOKEN,
+            timeout=SOURCES_TIMEOUT,
+            internal_token=SOURCES_INTERNAL_TOKEN,
         )
 
     def get_security_information(self, document_number: str) -> DictSecurityInformation:

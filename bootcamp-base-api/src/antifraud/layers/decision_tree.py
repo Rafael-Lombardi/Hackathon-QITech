@@ -1,5 +1,5 @@
 """Camada 2 — árvore de decisão: as regras que comparam o Pix com o
-histórico.
+histórico e com o cadastro de aparelhos do banco.
 
 Cadê a árvore? Cada regra é um galho de dois níveis: tem histórico pra
 responder? Se não tem, unavailable. Se tem, a condição vale? Todas
@@ -16,23 +16,23 @@ atual na conta (L02, P04, P05, R02) soma o atual aqui, uma vez.
 import math
 
 from antifraud import policy
-from antifraud.contract import Context, Signal
+from antifraud.contract import Context, Evidence, RegistrationStatus, Signal
 
 
 class DecisionTreeLayer:
     def evaluate(self, context: Context) -> list[Signal]:
         return [
-            _l02_new_device_over_limit(context),
+            _l02_unregistered_device_over_limit(context),
             _l03_amount_cap(context),
             _g01_unusual_location(context),
-            _p03_unknown_device(context),
+            _p03_unregistered_device(context),
             _p04_many_attempts(context),
             _p05_high_hourly_amount(context),
             _p06_atypical_amount(context),
             _p07_many_new_destinations(context),
             _p08_shared_device(context),
             _p09_unknown_ip(context),
-            _p10_unknown_device_and_ip(context),
+            _p10_unregistered_device_and_unknown_ip(context),
             _r02_many_entries(context),
             _r03_many_payers(context),
             _r04_new_account_many_payers(context),
@@ -57,13 +57,42 @@ def _g01_unusual_location(context: Context) -> Signal:
     return policy.not_triggered("G01")
 
 
-# As perguntas de histórico, uma por função. A primeira serve a L02,
-# P03, P09 e P10 e conta Pix aprovados, como o device_known e o
-# ip_known: sem 3 aprovados não há aparelho nem IP conhecido a perder.
-# É uma função só por causa do P10, que fica unavailable quando o P03 ou
-# o P09 ficam: com a mesma função os dois não têm como divergir.
-def _short_access_history(context: Context) -> bool:
-    return context.payer.approved_count < policy.ACCESS_MIN_APPROVED
+# As perguntas de aparelho e de IP, uma por função, e as de histórico,
+# logo abaixo. As duas primeiras respondem em três estados — sim, não e
+# "não sei" (None) — porque três sinais as leem (P03, L02 e P10 pro
+# aparelho; P09 e P10 pro IP) e o P10 fica unavailable quando qualquer
+# uma das duas fica: com a mesma função, os sinais não têm como divergir.
+#
+# O aparelho é o que o cadastro do banco diz. Pagador fora da fixture do
+# cadastro ou fonte fora do ar é "não sei": o motor não lê ausência como
+# não-cadastro (o porquê está em RegistrationStatus). O IP é o que o
+# histórico diz, e só vale com 3 Pix aprovados (ACCESS_MIN_APPROVED).
+def _device_unregistered(context: Context) -> bool | None:
+    status = context.device_registration.status
+    if status is RegistrationStatus.UNREGISTERED:
+        return True
+    if status is RegistrationStatus.REGISTERED:
+        return False
+    return None
+
+
+def _ip_unknown(context: Context) -> bool | None:
+    if context.payer.approved_count < policy.ACCESS_MIN_APPROVED:
+        return None
+    return not context.payer.ip_known
+
+
+# O que o P03 e o P10 contam do aparelho: o que o cadastro respondeu, de
+# onde veio, se o par já tinha aparecido e quanto histórico o pagador
+# tem — os nomes do exemplo da RFC.
+def _device_evidence(context: Context) -> Evidence:
+    registration = context.device_registration
+    evidence: Evidence = {"registration_status": registration.status.value}
+    if registration.source is not None:
+        evidence["registration_source"] = registration.source
+    evidence["previously_observed"] = registration.previously_observed
+    evidence["payer_prior_tx"] = context.payer.prior_attempts
+    return evidence
 
 
 def _payer_is_new(context: Context) -> bool:
@@ -78,28 +107,24 @@ def _recipient_is_new(context: Context) -> bool:
     return context.recipient.prior_attempts == 0
 
 
-def _l02_new_device_over_limit(context: Context) -> Signal:
-    if _short_access_history(context):
+def _l02_unregistered_device_over_limit(context: Context) -> Signal:
+    unregistered = _device_unregistered(context)
+    if unregistered is None:
         return policy.unavailable("L02")
-    # A RFC escreve "P03 disparado e (valor > R$ 200 ou soma do dia >
-    # R$ 1.000)". Com o P03 ao pé da letra (aparelho sem Pix aprovado do
-    # pagador), a soma do dia seria sempre o próprio Pix, e a segunda
-    # metade nunca decidiria nada. Aqui aparelho novo é o que não tinha
-    # Pix aprovado antes de HOJE, e a soma é a de hoje neste aparelho, de
-    # qualquer status: o limite do Banco Central pra dispositivo não
-    # cadastrado é diário, e assim o segundo e o terceiro Pix do dia no
-    # aparelho novo também entram na soma.
-    payer = context.payer
+    # "P03 disparado e (valor > R$ 200 ou soma do dia > R$ 1.000)", como a
+    # RFC escreve. A soma do dia é a de todas as tentativas de hoje feitas
+    # de aparelho sem cadastro, de qualquer status, mais esta: o limite
+    # diário do Banco Central é por cliente, e o invasor com dois
+    # celulares não divide o teto entre eles.
     amount = context.transaction.amount
-    day_amount = payer.device_day_amount + amount
+    day_amount = context.payer.unregistered_device_day_amount + amount
     over_limit = amount > policy.NEW_DEVICE_PIX_LIMIT or day_amount > policy.NEW_DEVICE_DAY_LIMIT
-    if not payer.device_known_before_today and over_limit:
+    if unregistered and over_limit:
         return policy.triggered("L02", {
             "amount": amount,
             "amount_threshold": policy.NEW_DEVICE_PIX_LIMIT,
-            "device_day_amount": day_amount,
-            "device_day_amount_threshold": policy.NEW_DEVICE_DAY_LIMIT,
-            "device_seen_before_today": False,
+            "unregistered_device_day_amount": day_amount,
+            "unregistered_device_day_amount_threshold": policy.NEW_DEVICE_DAY_LIMIT,
         })
     return policy.not_triggered("L02")
 
@@ -122,12 +147,12 @@ def _l03_amount_cap(context: Context) -> Signal:
     return policy.not_triggered("L03")
 
 
-def _p03_unknown_device(context: Context) -> Signal:
-    if _short_access_history(context):
+def _p03_unregistered_device(context: Context) -> Signal:
+    unregistered = _device_unregistered(context)
+    if unregistered is None:
         return policy.unavailable("P03")
-    payer = context.payer
-    if not payer.device_known:
-        return policy.triggered("P03", {"payer_prior_tx": payer.prior_attempts, "device_seen_before": False})
+    if unregistered:
+        return policy.triggered("P03", _device_evidence(context))
     return policy.not_triggered("P03")
 
 
@@ -203,24 +228,20 @@ def _p08_shared_device(context: Context) -> Signal:
 
 
 def _p09_unknown_ip(context: Context) -> Signal:
-    if _short_access_history(context):
+    ip_unknown = _ip_unknown(context)
+    if ip_unknown is None:
         return policy.unavailable("P09")
-    payer = context.payer
-    if not payer.ip_known:
-        return policy.triggered("P09", {"payer_prior_tx": payer.prior_attempts, "ip_seen_before": False})
+    if ip_unknown:
+        return policy.triggered("P09", {"payer_prior_tx": context.payer.prior_attempts, "ip_seen_before": False})
     return policy.not_triggered("P09")
 
 
-def _p10_unknown_device_and_ip(context: Context) -> Signal:
-    if _short_access_history(context):
+def _p10_unregistered_device_and_unknown_ip(context: Context) -> Signal:
+    unregistered, ip_unknown = _device_unregistered(context), _ip_unknown(context)
+    if unregistered is None or ip_unknown is None:
         return policy.unavailable("P10")
-    payer = context.payer
-    if not payer.device_known and not payer.ip_known:
-        return policy.triggered("P10", {
-            "payer_prior_tx": payer.prior_attempts,
-            "device_seen_before": False,
-            "ip_seen_before": False,
-        })
+    if unregistered and ip_unknown:
+        return policy.triggered("P10", {**_device_evidence(context), "ip_seen_before": False})
     return policy.not_triggered("P10")
 
 

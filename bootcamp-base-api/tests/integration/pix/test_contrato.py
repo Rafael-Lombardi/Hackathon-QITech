@@ -213,6 +213,10 @@ class TestContrato:
         do Pix, e o R01 (menos de 7 dias) fica calado. É o primeiro Pix do
         pagador na base: os sinais de histórico saem unavailable, o DICT
         responde o padrão (estatística 70, sem marcação), e sobra o L01.
+        O CPF sorteado não está na fixture do cadastro de aparelhos: o
+        cadastro responde "não cubro esse pagador", P03, L02 e P10 saem
+        unavailable, e o Pix aprova mesmo assim — o fallback de 2FA é só
+        pra fonte fora do ar.
 
             pagador 8, destino 0: D-OK, aprovado
         """
@@ -224,15 +228,18 @@ class TestContrato:
         assert pix.scores == {"payer": 8, "recipient": 0}
         assert pix.signal_status("L01") == "triggered"
         assert pix.signal_status("R01") == "not_triggered"
+        assert pix.signal_status("P03") == "unavailable"
+        assert pix.metadata["device"]["registration_status"] == "uncovered"
 
     def test_resposta_traz_key_status_e_metadata(self):
-        """O corpo da análise tem os três campos do contrato do desafio, e o metadata, os seis dele.
+        """O corpo da análise tem os três campos do contrato do desafio, e o metadata, os oito dele.
 
         key é o uuid4 da análise; metadata leva a versão da política, a
-        linha da tabela, os motivos, as duas notas, a suficiência e os
-        sinais do catálogo, na ordem dele. Os números são int de verdade —
-        um 10.0 no lugar do 10 é o mesmo valor pro Python e outro JSON pro
-        cliente.
+        linha da tabela, o que o cadastro disse do aparelho, as restrições
+        que casaram (quase sempre nenhuma), os motivos, as duas notas, a
+        suficiência e os sinais do catálogo, na ordem dele. Os números são
+        int de verdade — um 10.0 no lugar do 10 é o mesmo valor pro Python
+        e outro JSON pro cliente.
         """
         pix = post_pix(pix_payload(new_payer(), new_recipient(), at(T0, 22), amount=150000))
 
@@ -244,12 +251,16 @@ class TestContrato:
         assert body["status"] in PIX_STATUSES
 
         metadata = body["metadata"]
-        assert set(metadata) == {"policy_version", "decision_rule", "reasons", "scores", "evidence_sufficiency", "signals"}
+        assert set(metadata) == {
+            "policy_version", "decision_rule", "device", "restrictions", "reasons", "scores", "evidence_sufficiency", "signals",
+        }
         assert metadata["policy_version"] == "v0.6.0"
         assert metadata["decision_rule"] in {
-            "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2",
-            "D-PAY", "D-LIMIT", "D-SCAM", "D-DRAIN", "D-RCP", "D-OK",
+            "D-RESTRICT-SIM", "D-REJ-ATO", "D-REJ-RCP", "D-REJ-CROSS", "D-ATO-1", "D-ATO-2",
+            "D-PAY", "D-LIMIT", "D-SCAM", "D-DRAIN", "D-RCP", "D-DATA-UNAVAILABLE", "D-OK",
         }
+        assert metadata["device"] == {"registration_status": "registered", "registration_source": "demo_seed", "previously_observed": False}
+        assert metadata["restrictions"] == []
         assert isinstance(metadata["reasons"], list)
         assert metadata["reasons"]
         assert all(isinstance(reason, str) and reason for reason in metadata["reasons"])

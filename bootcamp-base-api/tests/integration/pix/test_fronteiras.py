@@ -4,7 +4,7 @@ Um par por limiar (RFC §9): o valor que ainda não dispara e o primeiro
 que dispara. É aqui que um ">" virando ">=" aparece — o cenário inteiro
 ficaria verde, e só a fronteira fica vermelha. Também moram aqui os tetos
 e o piso dos grupos, as notas 39/40 do D-PAY e do D-RCP, a pré-condição
-de histórico das regras de aparelho e IP e os degraus da suficiência.
+de histórico das regras de IP e os degraus da suficiência.
 
 Cada teste confere o sinal da fronteira, a nota que ele move e o status.
 A conta de cada lado está no docstring; onde o cenário pede histórico, as
@@ -20,7 +20,7 @@ from tests.utils.clock import (
     NINE_OVER_SEVEN_DAYS, T0, TEN_OVER_SEVEN_DAYS, TEN_OVER_SIX_DAYS,
     at, days_ago, days_before, minutes_ago, minutes_before, spread_over_days,
 )
-from tests.utils.identities import new_device, new_ip, new_payer, new_recipient
+from tests.utils.identities import DEVICE_REGISTERED_AT, new_device, new_ip, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed, seed_pix
 
 
@@ -139,12 +139,12 @@ class TestFronteiras:
         ids=["200-reais-nao-dispara", "200-reais-e-1-centavo-dispara"],
     )
     def test_fronteira_l02_valor_por_pix_em_aparelho_novo(self, amount, expected, payer_score):
-        """L02: em aparelho novo, o limite por Pix do Banco Central é R$ 200.
+        """L02: em aparelho sem cadastro, o limite por Pix do Banco Central é R$ 200.
 
-        Preparo: 3 Pix nos 3 dias anteriores, do aparelho de sempre. Pix:
-        de um aparelho novo, mesmo IP. O P03 dispara nos dois lados (+18);
-        o L02 soma +10 só acima de R$ 200. Sem IP novo e sem mediana (3
-        aprovados), nenhum D-ATO casa: pagador 18 ou 28, D-OK.
+        Preparo: 3 Pix nos 3 dias anteriores, do aparelho cadastrado. Pix:
+        de um aparelho sem cadastro, mesmo IP. O P03 dispara nos dois lados
+        (+18); o L02 soma +10 só acima de R$ 200. Sem IP novo e sem mediana
+        (3 aprovados), nenhum D-ATO casa: pagador 18 ou 28, D-OK.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, days_before(T0, 3))
@@ -157,57 +157,67 @@ class TestFronteiras:
         assert pix.scores["payer"] == payer_score
         assert pix.status == "approved"
 
-    def test_fronteira_l02_soma_do_dia_dispara_acima_de_1000(self):
-        """L02: em aparelho novo, o limite do DIA é R$ 1.000 — e conta o 2º, o 3º Pix.
+    def test_fronteira_l02_soma_do_dia_e_por_cliente_com_o_cadastro_da_hora(self, sources_mock):
+        """L02: o limite do DIA é R$ 1.000 por cliente, somando todo aparelho sem cadastro, pelo cadastro que valia na hora.
 
-        Preparo: 3 Pix nos 3 dias anteriores, do aparelho de sempre. Hoje,
-        de um aparelho novo: 5 Pix de R$ 200, de meia em meia hora.
+        Preparo: 3 Pix nos 3 dias anteriores, do aparelho cadastrado. Hoje,
+        de um aparelho A sem cadastro, 5 Pix de R$ 200 de meia em meia
+        hora; depois o banco cadastra o A. Pix: R$ 0,01 de um aparelho B,
+        também sem cadastro; e, amanhã, R$ 150 do B.
 
-            1º Pix    P03 +18 (Dispositivo sem Pix aprovado do pagador), e
-                      aprovado: daí em diante o aparelho tem Pix aprovado,
-                      mas só de HOJE
-            5º Pix    soma do dia 5 x R$ 200 = R$ 1.000 → L02 calado
-            6º Pix    R$ 0,01 a mais: R$ 1.000,01 → L02 +10
-            amanhã    R$ 500 no mesmo aparelho, agora aprovado ontem → calado
+            1º ao 5º   P03 +18 em cada um, aprovados: R$ 200 não passa dos
+                       R$ 200 por Pix, e a soma do dia para em R$ 1.000 →
+                       L02 calado
+            B, hoje    a soma é por cliente: R$ 1.000 do A + R$ 0,01 →
+                       L02 +10, mesmo com o A já cadastrado — cada tentativa
+                       entra com o cadastro que tinha na hora (RFC, L02 e
+                       F2), e cadastrar o A à tarde não reescreve a manhã
+            B, amanhã  a soma zera com o dia civil: R$ 150 → L02 calado
 
-        É o ajuste da v0.5 ao L02 da RFC: com "aparelho nunca visto" ao
-        pé da letra, a soma do dia seria sempre o próprio Pix.
+        O P03 dispara em todos: tentativa não cadastra aparelho, e o B
+        continua sem cadastro amanhã.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, days_before(T0, 3))
-        new_phone = new_device()
+        first_phone, second_phone = new_device(), new_device()
         morning = [at(T0, 9) + timedelta(minutes=30 * step) for step in range(5)]
 
-        today = seed_pix(payer, recipient, morning, amount=20000, device_id=new_phone)
-        over = post_pix(pix_payload(payer, recipient, at(T0, 11, 30), amount=1, device_id=new_phone))
-        tomorrow = post_pix(pix_payload(payer, recipient, at(T0, 10) + timedelta(days=1), amount=50000, device_id=new_phone))
+        today = seed_pix(payer, recipient, morning, amount=20000, device_id=first_phone)
+        sources_mock.register_device(payer.document, first_phone, registered_at=DEVICE_REGISTERED_AT)
+        over = post_pix(pix_payload(payer, recipient, at(T0, 11, 30), amount=1, device_id=second_phone))
+        tomorrow = post_pix(pix_payload(payer, recipient, at(T0, 10) + timedelta(days=1), amount=15000, device_id=second_phone))
 
-        assert today[0].signal_status("P03") == "triggered"
-        assert today[-1].signal_status("L02") == "not_triggered"
+        assert {pix.signal_status("P03") for pix in today} == {"triggered"}
+        assert {pix.signal_status("L02") for pix in today} == {"not_triggered"}
         assert over.http_status == 201
-        assert over.signal_status("P03") == "not_triggered"
+        assert over.signal_status("P03") == "triggered"
         assert over.signal_status("L02") == "triggered"
+        assert over.signal("L02")["evidence"]["unregistered_device_day_amount"] == 100001
         assert tomorrow.http_status == 201
+        assert tomorrow.signal_status("P03") == "triggered"
         assert tomorrow.signal_status("L02") == "not_triggered"
 
     @pytest.mark.parametrize(
-        "earlier_days, expected, payer_score, status",
-        [(2, "unavailable", 0, "approved"), (3, "triggered", 46, "two_factor_required")],
-        ids=["2-pix-aprovados-unavailable", "3-pix-aprovados-dispara"],
+        "earlier_days, ip_signals, payer_score, status, decision_rule",
+        [(2, "unavailable", 28, "approved", "D-OK"), (3, "triggered", 46, "two_factor_required", "D-ATO-2")],
+        ids=["2-pix-aprovados-ip-unavailable", "3-pix-aprovados-ip-dispara"],
     )
-    def test_l02_p03_p09_p10_pedem_3_pix_aprovados(self, earlier_days, expected, payer_score, status):
-        """Aparelho e IP inéditos só dizem algo depois de 3 Pix aprovados do pagador.
+    def test_p09_e_p10_pedem_3_pix_aprovados_e_p03_responde_desde_o_primeiro(
+        self, earlier_days, ip_signals, payer_score, status, decision_rule,
+    ):
+        """IP inédito só diz algo depois de 3 Pix aprovados; aparelho sem cadastro, desde o primeiro.
 
-        O mesmo Pix — R$ 250, de aparelho e IP novos — depois de 2 ou de 3
-        Pix aprovados nos dias anteriores. Pra quem acabou de chegar, quase
-        tudo é inédito, e com 2 os quatro sinais saem unavailable: D-OK.
-        Contam só os aprovados — o porquê está em test_historico.py. Com 3:
+        O mesmo Pix — R$ 250, de aparelho sem cadastro e IP novo — depois
+        de 2 ou de 3 Pix aprovados nos dias anteriores. O cadastro do banco
+        responde pelo aparelho sem precisar de histórico: P03 +18 e L02
+        +10 (R$ 250 > R$ 200) nos dois lados. O IP é histórico, e com 2
+        aprovados não há IP conhecido a perder: P09 e P10 unavailable,
+        pagador 28, D-OK. Contam só os aprovados — o porquê está em
+        test_historico.py. Com 3:
 
-            P03 +18    Dispositivo sem Pix aprovado do pagador
             P09 +6     IP sem Pix aprovado do pagador
-            P10 +12    os dois juntos
-            L02 +10    aparelho sem Pix aprovado antes de hoje, acima de R$ 200
-            pagador 36 (payer_behavior) + 10 (limit) = 46
+            P10 +12    aparelho sem cadastro e IP novo, juntos
+            pagador 18 + 6 + 12 (payer_behavior) + 10 (limit) = 46
 
         D-ATO-2 (P03 e P09).
         """
@@ -217,9 +227,12 @@ class TestFronteiras:
         pix = post_pix(pix_payload(payer, recipient, T0, amount=25000, device_id=new_device(), ip=new_ip()))
 
         assert pix.http_status == 201
-        assert {pix.signal_status(code) for code in ("L02", "P03", "P09", "P10")} == {expected}
+        assert pix.signal_status("P03") == "triggered"
+        assert pix.signal_status("L02") == "triggered"
+        assert {pix.signal_status(code) for code in ("P09", "P10")} == {ip_signals}
         assert pix.scores["payer"] == payer_score
         assert pix.status == status
+        assert pix.decision_rule == decision_rule
 
     @pytest.mark.parametrize(
         "amount, expected, payer_score, status, decision_rule",
@@ -426,9 +439,10 @@ class TestFronteiras:
 
         Três pagadores novos usam o mesmo aparelho, há 2 h, há 1 h e
         agora. O 1º encontra o aparelho sem histórico (unavailable); o 2º
-        vê 2 pagadores (calado); o 3º vê 3 e dispara (+12). É o primeiro
-        Pix de cada um deles, então o P03 fica unavailable e a nota do 3º
-        é só o P08: 12. Sinal de apoio, sozinho não pede 2FA.
+        vê 2 pagadores (calado); o 3º vê 3 e dispara (+12). O aparelho
+        emprestado não está cadastrado pra nenhum dos três — P03 +18 em
+        cada um —, e a nota do 3º é 18 + 12 = 30. O P08 é sinal de apoio:
+        sozinho não pede 2FA, e junto do P03 também não.
         """
         shared = new_device()
         first, second = seed([
@@ -442,7 +456,7 @@ class TestFronteiras:
         assert second.signal_status("P08") == "not_triggered"
         assert third.http_status == 201
         assert third.signal_status("P08") == "triggered"
-        assert third.scores["payer"] == 12
+        assert third.scores["payer"] == 30
         assert third.status == "approved"
 
     @pytest.mark.parametrize(
@@ -555,10 +569,10 @@ class TestFronteiras:
         """Os sinais de comportamento do pagador somam no máximo 45.
 
         Preparo: dois pagadores novos usam um aparelho há 2 h e há 1 h. O
-        pagador do teste tem 3 Pix nos dias anteriores, do aparelho dele.
-        Pix: R$ 50 desse aparelho emprestado, num IP novo.
+        pagador do teste tem 3 Pix nos dias anteriores, do aparelho
+        cadastrado dele. Pix: R$ 50 desse aparelho emprestado, num IP novo.
 
-            P03 +18    Dispositivo sem Pix aprovado do pagador
+            P03 +18    Dispositivo não cadastrado no banco (o emprestado)
             P08 +12    o aparelho já pagou por 3 documentos em 24 h
             P09 +6     IP sem Pix aprovado do pagador
             P10 +12    aparelho e IP juntos
@@ -615,8 +629,8 @@ class TestFronteiras:
             P01 +10    conta pagadora com 2 dias
             L01 +8     21h, acima de R$ 1.000
             P05 +15    R$ 8.100 em 1 h (> R$ 8.000)
-            P09 +6     IP sem Pix aprovado do pagador (o aparelho é o de
-                       sempre: sem P03, sem D-ATO-2)
+            P09 +6     IP sem Pix aprovado do pagador (o aparelho é o
+                       cadastrado: sem P03, sem D-ATO-2)
             pagador 10 + 8 + 15 + 6 = 39
 
         D-OK. O outro lado da fronteira é o teste seguinte.
@@ -636,35 +650,31 @@ class TestFronteiras:
     def test_fronteira_d_pay_40_pede_2fa(self):
         """O D-PAY pede pagador >= 40. Com 40, 2FA.
 
-        A mesma história do teste anterior, com uma peça trocada: o Pix de
-        hoje às 10h saiu de um aparelho novo, e o das 21h sai dele, no IP
-        de sempre. O aparelho já tem um Pix aprovado hoje — P03 calado —,
-        mas nenhum de antes de hoje, e é isso que o L02 olha.
+        Preparo: conta aberta há 4 dias; 3 Pix nos 3 dias anteriores, do
+        aparelho cadastrado, pro destino de sempre. Pix: R$ 50.000 às 14h,
+        pro mesmo destino.
 
-            P01 +10    conta pagadora com 2 dias
-            L01 +8     21h, acima de R$ 1.000
-            L02 +10    aparelho sem Pix aprovado antes de hoje, acima de R$ 200
-                       L01 + L02 = 18, teto do limit: 15
-            P05 +15    R$ 8.100 em 1 h
+            P01 +10    conta pagadora com 4 dias
+            P05 +15    R$ 50.000 em 1 h (> R$ 8.000)
+            L03 +15    R$ 50.000 é o teto por Pix de quem já tem Pix aprovado
             pagador 10 + 15 + 15 = 40
 
-        D-PAY: 2FA.
+        D-PAY: a linha da nota vem antes da do teto (D-LIMIT), e as duas
+        pedem o mesmo, 2FA.
         """
-        payer = new_payer(opening_date=at(T0, 9) - timedelta(days=2))
+        payer = new_payer(opening_date=T0 - timedelta(days=4))
         recipient = new_recipient()
-        new_phone = new_device()
-        seed_pix(payer, recipient, days_before(at(T0, 10), 2))
-        seed_pix(payer, recipient, [at(T0, 10)], device_id=new_phone)
+        seed_pix(payer, recipient, days_before(T0, 3))
 
-        pix = post_pix(pix_payload(payer, recipient, at(T0, 21), amount=810000, device_id=new_phone))
+        pix = post_pix(pix_payload(payer, recipient, T0, amount=5000000))
 
         assert pix.http_status == 201
-        assert pix.triggered() == {"P01", "L01", "L02", "P05"}
+        assert pix.triggered() == {"P01", "P05", "L03"}
         assert pix.scores["payer"] == 40
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-PAY"
 
-    def test_fronteira_d_rcp_39_aprova(self, dict_mock):
+    def test_fronteira_d_rcp_39_aprova(self, sources_mock):
         """O D-RCP pede destino >= 40. Com 39, aprova.
 
         O destino soma quatro grupos: o recipient_network (R01 12, R02 16,
@@ -685,7 +695,7 @@ class TestFronteiras:
         """
         payer = new_payer()
         own_new = new_recipient(document=payer.document, opening_date=T0 - timedelta(days=2))
-        dict_mock.set_security_statistics(payer.document, 12)
+        sources_mock.set_security_statistics(payer.document, 12)
 
         pix = post_pix(pix_payload(payer, own_new, T0))
 
@@ -695,7 +705,7 @@ class TestFronteiras:
         assert pix.status == "approved"
         assert pix.decision_rule == "D-OK"
 
-    def test_fronteira_d_rcp_40_pede_2fa(self, dict_mock):
+    def test_fronteira_d_rcp_40_pede_2fa(self, sources_mock):
         """O D-RCP pede destino >= 40. Com 40, 2FA: o DICT01 somado ao REL01.
 
         Preparo: o pagador tem 1 Pix de ontem, para outro destino. Pix: para
@@ -710,7 +720,7 @@ class TestFronteiras:
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, new_recipient(), [T0 - timedelta(days=1)])
-        dict_mock.set_security_statistics(recipient.document, 12)
+        sources_mock.set_security_statistics(recipient.document, 12)
 
         pix = post_pix(pix_payload(payer, recipient, T0))
 

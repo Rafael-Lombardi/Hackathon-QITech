@@ -1,6 +1,7 @@
 from sqlalchemy import (
     CHAR,
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     DateTime,
@@ -60,6 +61,10 @@ class PixTransaction(Base):
     ip = Column(String(45), nullable=False)
     latitude = Column(Numeric(9, 6))
     longitude = Column(Numeric(9, 6))
+    device_registration_status = Column(String(12), nullable=False)
+    device_registration_source = Column(String(50))
+    device_previously_observed = Column(Boolean, nullable=False)
+    restrictions = Column(JSONB, nullable=False, server_default="'[]'::jsonb")
     received_at = Column(DateTime(timezone=True), nullable=False)
     created_at = Column(DateTime, nullable=False, server_default=func.now())
 
@@ -67,6 +72,8 @@ class PixTransaction(Base):
         UniqueConstraint("pix_transaction_key"),
         UniqueConstraint("external_id"),
         CheckConstraint("jsonb_typeof(pix_transaction_data) = 'object'"),
+        CheckConstraint("device_registration_status IN ('registered', 'unregistered', 'uncovered', 'unavailable')"),
+        CheckConstraint("jsonb_typeof(restrictions) = 'array'"),
         CheckConstraint("payer_risk BETWEEN 0 AND 100"),
         CheckConstraint("recipient_risk BETWEEN 0 AND 100"),
         CheckConstraint("payer_sufficiency IN ('unavailable', 'low', 'medium', 'high')"),
@@ -80,7 +87,10 @@ class PixTransaction(Base):
         CheckConstraint("longitude IS NULL OR longitude BETWEEN -180 AND 180"),
         Index(
             "pix_transaction_source_account_id_idx", "source_account_id", "transaction_date",
-            postgresql_include=["status_id", "amount", "device_id", "ip", "destination_account_id", "latitude", "longitude"],
+            postgresql_include=[
+                "status_id", "amount", "device_id", "ip", "destination_account_id", "latitude", "longitude",
+                "device_registration_status",
+            ],
         ),
         Index(
             "pix_transaction_destination_account_id_idx", "destination_account_id", "transaction_date",

@@ -170,11 +170,11 @@ def seed(payloads: list[dict], expect: str | list[str] = "approved") -> list[Pix
     """Manda o histórico do cenário, um Pix por vez, na ordem da lista.
 
     Semente não é atalho: ela passa pelo motor como qualquer Pix, e o que
-    ela deixa no histórico depende de como terminou. Aparelho conhecido,
-    IP conhecido, par recorrente e mediana só contam Pix aprovados — uma
-    semente que voltasse 2FA deixaria o aparelho sem Pix aprovado, e o
-    teste seguinte mediria outra coisa sem avisar. Por isso cada uma é
-    conferida aqui, e a primeira que destoa derruba o teste dizendo qual.
+    ela deixa no histórico depende de como terminou. IP conhecido, par
+    recorrente e mediana só contam Pix aprovados — uma semente que
+    voltasse 2FA deixaria o IP sem Pix aprovado, e o teste seguinte
+    mediria outra coisa sem avisar. Por isso cada uma é conferida aqui, e
+    a primeira que destoa derruba o teste dizendo qual.
 
     `expect` é um status para todas ou uma lista, um por semente.
     """

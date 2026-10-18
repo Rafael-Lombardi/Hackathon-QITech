@@ -9,6 +9,12 @@ dele, que ninguém mais usou, e nenhum teste precisa limpar o banco.
 Um Payer leva documento, conta, aparelho e IP; um Recipient leva documento
 e conta (com o ISPB). Os dois são reaproveitados entre os vários Pix de um
 mesmo teste — é assim que se monta histórico.
+
+O aparelho do Payer nasce cadastrado no banco: new_payer escreve no mock
+do cadastro de aparelhos que o pagador está na fixture e que o aparelho
+dele está registrado. É fixture da fonte, e entra pela fonte — a RFC manda
+semear o cadastro por fixture, nunca por POST Pix. Qualquer outro
+aparelho que o pagador use (new_device) responde "sem cadastro".
 """
 
 from dataclasses import dataclass, replace
@@ -17,6 +23,13 @@ from random import SystemRandom
 from uuid import uuid4
 
 from tests.utils.clock import MATURE_OPENING_DATE
+from tests.utils.sources_mock import SourcesMock
+
+# Desde quando o aparelho de sempre está cadastrado: 2020, antes de
+# qualquer data que um cenário use. Cadastro tem vigência, e um cenário
+# que precise de aparelho cadastrado ontem registra o dele pelo
+# sources_mock.
+DEVICE_REGISTERED_AT = MATURE_OPENING_DATE
 
 _random = SystemRandom()
 
@@ -148,13 +161,26 @@ def new_payer(
     opening_date: datetime = MATURE_OPENING_DATE,
     document: str | None = None,
     ip: str | None = None,
+    covered: bool = True,
 ) -> Payer:
-    return Payer(
+    """Um pagador novo, coberto pelo cadastro de aparelhos e com o aparelho de sempre cadastrado.
+
+    covered=False deixa o pagador fora da fixture do cadastro: a fonte
+    responde 404 pra qualquer aparelho dele, e o P03 sai unavailable —
+    que não é "sem cadastro". O que new_payer combina com o mock fica até
+    vencer a validade (5 min): é cadastro, e precisa durar o teste.
+    """
+    payer = Payer(
         document=document or new_cpf(),
         account=new_account(opening_date),
         device_id=new_device(),
         ip=ip or new_ip(),
     )
+    if covered:
+        registry = SourcesMock()
+        registry.cover_payer(payer.document)
+        registry.register_device(payer.document, payer.device_id, registered_at=DEVICE_REGISTERED_AT)
+    return payer
 
 
 def new_recipient(

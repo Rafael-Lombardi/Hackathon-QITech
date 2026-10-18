@@ -10,17 +10,22 @@ services:
       APP_ENV: ${APP_ENV:-local}
       SERVICE_NAME: ${SERVICE_NAME:-bootcamp-api}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-default_token}
-      # O DICT (o mock dele: o servico dict-mock, la embaixo). Aqui dentro
-      # ele atende pelo nome do servico, nunca por localhost, e por isso o
-      # endereco nao tem padrao pra sobrescrever, como a DATABASE_URL.
-      # Prazo e token, sim: com DICT_API_TIMEOUT=1.5 no .env, a API desiste
-      # do DICT mais cedo.
+      # As tres fontes que a API consulta por Pix: o DICT, o cadastro de
+      # aparelhos do banco e as restricoes. Aqui dentro as tres sao o
+      # mock (o servico dict-mock, la embaixo), que atende pelo nome do
+      # servico, nunca por localhost, e por isso os enderecos nao tem
+      # padrao pra sobrescrever, como a DATABASE_URL. Prazo e token, sim:
+      # com SOURCES_TIMEOUT=1.5 no .env, a API desiste das fontes mais
+      # cedo.
       DICT_API_URL: http://dict-mock:1080
-      DICT_API_TIMEOUT: ${DICT_API_TIMEOUT:-2}
-      DICT_API_INTERNAL_TOKEN: ${DICT_API_INTERNAL_TOKEN:-default_token}
-    # O prazo do DICT nao cobre o DNS: com o mock parado e o DNS da maquina
-    # mudo (Wi-Fi de evento), cada consulta levaria 16 s so pra descobrir
-    # que o nome dict-mock sumiu. Com isto, 2 s; o "db" resolve igual.
+      DEVICE_REGISTRY_URL: http://dict-mock:1080
+      RESTRICTIONS_URL: http://dict-mock:1080
+      SOURCES_TIMEOUT: ${SOURCES_TIMEOUT:-2}
+      SOURCES_INTERNAL_TOKEN: ${SOURCES_INTERNAL_TOKEN:-default_token}
+    # O prazo das fontes nao cobre o DNS: com o mock parado e o DNS da
+    # maquina mudo (Wi-Fi de evento), cada consulta levaria 16 s so pra
+    # descobrir que o nome dict-mock sumiu. Com isto, 2 s; o "db" resolve
+    # igual.
     dns_opt:
       - timeout:1
       - attempts:1
@@ -37,9 +42,10 @@ services:
       db:
         condition: service_healthy
       # So "started", e nao "healthy": a imagem do mock nao tem shell nem
-      # curl, e nao ha com o que perguntar se ele ja responde. Nem faz
-      # falta: a API decide sem o DICT, e enquanto ele nao atende (alguns
-      # segundos depois de subir) a camada 3 sai "unavailable".
+      # curl, e nao ha com o que perguntar se ele ja responde. Enquanto
+      # ele nao atende (alguns segundos depois de subir), a camada 3 e o
+      # cadastro de aparelhos saem "unavailable" e o Pix volta 503 pela
+      # fonte de restricoes, que e obrigatoria; nada fica gravado errado.
       dict-mock:
         condition: service_started
 
@@ -61,30 +67,34 @@ services:
       timeout: 3s
       retries: 20
 
-  # O DICT do Banco Central, de mentira. A camada 3 do motor pergunta a
-  # ele a estatistica de seguranca e a marcacao de fraude do recebedor, e
-  # quem responde e um MockServer: um servidor HTTP que devolve o que
-  # estiver combinado com ele. Cada combinado e uma expectativa (o pedido
-  # que ela reconhece e a resposta que ela da), e as do
-  # mockserver/dict-expectations.json sobem junto: estatistica neutra e
-  # sem marcacao pra qualquer documento, mais os casos de demonstracao do
+  # As tres fontes de fora, de mentira: o DICT do Banco Central (a camada
+  # 3 do motor pergunta a ele a estatistica de seguranca e a marcacao de
+  # fraude do recebedor), o cadastro de aparelhos do banco (o par
+  # pagador-aparelho esta cadastrado?) e as restricoes internas. Quem
+  # responde pelas tres e um MockServer: um servidor HTTP que devolve o
+  # que estiver combinado com ele. Cada combinado e uma expectativa (o
+  # pedido que ela reconhece e a resposta que ela da), e as do
+  # mockserver/sources-expectations.json sobem junto: estatistica neutra
+  # e sem marcacao pra qualquer documento, nenhum pagador no cadastro,
+  # nenhuma restricao, mais os casos de demonstracao do
   # mockserver/README.md.
   #
   # Conta como infraestrutura de execucao, como o Postgres ali em cima, e
   # nao como mais uma API nossa: o desafio deixa "outras APIs" de fora, e
   # o mock nao tem codigo nosso, so o roteiro das respostas. Um FastAPI
-  # nosso fazendo o papel do DICT seria uma segunda API.
+  # nosso fazendo o papel das fontes seria uma segunda API.
   dict-mock:
     # Versao fixa, como no requirements.txt: com "latest", o mock
     # mudaria por baixo dos testes sem ninguem pedir.
     image: mockserver/mockserver:5.15.0
     ports:
-      # A mesma porta responde como DICT (/security-statistics/...) e recebe os
-      # combinados dos testes (/mockserver/...). DICT_MOCK_PORT=1081 no
-      # .env se a 1080 estiver ocupada.
+      # A mesma porta responde pelas tres fontes (/security-statistics/...,
+      # /device-registration/..., /restrictions) e recebe os combinados
+      # dos testes (/mockserver/...). DICT_MOCK_PORT=1081 no .env se a
+      # 1080 estiver ocupada.
       - "${DICT_MOCK_PORT:-1080}:1080"
     environment:
-      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/dict-expectations.json
+      MOCKSERVER_INITIALIZATION_JSON_PATH: /config/sources-expectations.json
       # No nivel padrao (INFO), cada consulta escreve umas 250 linhas no
       # log, e o numero cresce com cada expectativa que os testes criam:
       # ele descreve, uma por uma, as que NAO casaram. WARN deixa so o

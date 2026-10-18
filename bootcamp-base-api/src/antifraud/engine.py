@@ -16,6 +16,7 @@ from antifraud.contract import (
     EvidenceValue,
     FraudMarker,
     Layer,
+    RegistrationStatus,
     Signal,
     SignalStatus,
     Sufficiency,
@@ -67,7 +68,7 @@ def evaluate(context: Context) -> Analysis:
     return Analysis(
         status=rule.status,
         decision_rule=rule.name,
-        reasons=(_reason(rule, triggered, payer_risk, recipient_risk),),
+        reasons=(_reason(rule, triggered, payer_risk, recipient_risk, context),),
         payer_risk=payer_risk,
         recipient_risk=recipient_risk,
         payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
@@ -121,18 +122,29 @@ def _matches(
         return False
     if rule.min_recipient_risk is not None and recipient_risk < rule.min_recipient_risk:
         return False
+    if rule.requires_restriction and not context.restrictions:
+        return False
     if rule.requires_recipient_adverse and context.dict_fraud_marker not in _ADVERSE_MARKERS:
+        return False
+    if rule.requires_device_registry_unavailable and context.device_registration.status is not RegistrationStatus.UNAVAILABLE:
         return False
     return True
 
 
 # Repare que as frases leem a evidência pelo nome da chave: renomear uma
 # chave numa camada quebra o motivo aqui, com KeyError.
-def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int, recipient_risk: int) -> str:
+def _reason(
+    rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int, recipient_risk: int, context: Context,
+) -> str:
     """A frase da linha da tabela que decidiu, com números da evidência.
 
     É uma frase só: os sinais, um a um, já estão em metadata.signals.
     """
+    if rule.name == "D-RESTRICT-SIM":
+        # Havendo mais de uma, a frase cita a primeira; todas vão em
+        # metadata.restrictions.
+        restriction = context.restrictions[0]
+        return f"Restrição ativa: {restriction.reason} ({restriction.scope})"
     if rule.name == "D-REJ-ATO":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
     if rule.name == "D-REJ-RCP":
@@ -141,10 +153,10 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
         return f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com marcação de fraude no DICT"
     if rule.name == "D-ATO-1":
         ratio = triggered["P06"].evidence["ratio"]
-        return f"Dispositivo sem Pix aprovado deste pagador, com valor {_number(ratio)}x a mediana"
+        return f"Dispositivo não cadastrado no banco, com valor {_number(ratio)}x a mediana"
     if rule.name == "D-ATO-2":
         prior = triggered["P03"].evidence["payer_prior_tx"]
-        return f"Dispositivo e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
+        return f"Dispositivo não cadastrado e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
     if rule.name == "D-PAY":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
     if rule.name == "D-LIMIT":
@@ -163,6 +175,8 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
         return f"{_number(attempts)} tentativas em 5 min e {_number(destinations)} destinos inéditos em 10 min"
     if rule.name == "D-RCP":
         return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
+    if rule.name == "D-DATA-UNAVAILABLE":
+        return "Cadastro de aparelhos indisponível: confirmação em vez de aprovar no escuro"
     if rule.name == "D-OK":
         return (
             "Nenhum indício pesou o bastante para pedir 2FA "

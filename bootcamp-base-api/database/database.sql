@@ -14,6 +14,11 @@
 -- destino, aparelho, o par origem–destino), todos terminando em
 -- transaction_date, mais um em account(customer_id) pra ir das contas ao
 -- documento.
+--
+-- O cadastro de aparelhos do banco, as restrições e o DICT não têm
+-- tabela aqui: são fontes de fora, consultadas por HTTP a cada Pix
+-- (src/connectors/), e o que elas disseram naquela hora fica gravado na
+-- linha do próprio Pix.
 
 -- As três decisões do contrato, e só elas. O Pix já nasce decidido (o
 -- controller roda as regras antes do INSERT): não há pendente, e não há
@@ -182,6 +187,22 @@ CREATE INDEX account_customer_id_idx
 --   que nenhuma regra usa. latitude/longitude vêm as duas ou nenhuma, e
 --   dentro da faixa: fora dela o erro seria do tipo, e viraria 500.
 --
+-- • device_registration_status, device_registration_source e
+--   device_previously_observed são o que o cadastro de aparelhos do
+--   banco disse do par pagador–aparelho na hora da decisão — registered,
+--   unregistered, uncovered ou unavailable (o porquê de cada um está em
+--   RegistrationStatus, no motor) —, de onde veio a resposta e se o par
+--   já tinha aparecido numa tentativa anterior. Gravados por Pix, e não
+--   consultados de novo: a soma diária do L02 lê o status de CADA
+--   tentativa como ele era na hora (cadastrar o aparelho à tarde não
+--   apaga o que saiu dele de manhã), e o GET conta a história como ela
+--   foi decidida.
+--
+-- • restrictions é a lista das restrições ativas que casaram com o
+--   pagador, o titular ou a conta de destino na hora da decisão, como a
+--   fonte as descreveu, sem o documento. Quase sempre '[]'; quando não
+--   é, a decisão foi D-RESTRICT-SIM, e a lista é a prova.
+--
 -- • received_at é quando o Pix chegou aqui, pelo relógio do servidor.
 --   Fica só pra auditoria: as janelas de histórico contam por
 --   transaction_date, e o comentário dos índices, logo abaixo, diz por
@@ -208,11 +229,17 @@ CREATE TABLE pix_transaction(
     ip                              VARCHAR(45) NOT NULL,
     latitude                        NUMERIC(9, 6),
     longitude                       NUMERIC(9, 6),
+    device_registration_status      VARCHAR(12) NOT NULL,
+    device_registration_source      VARCHAR(50),
+    device_previously_observed      BOOLEAN NOT NULL,
+    restrictions                    JSONB NOT NULL DEFAULT('[]'::jsonb),
     received_at                     TIMESTAMPTZ NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
     CHECK(jsonb_typeof(pix_transaction_data) = 'object'),
+    CHECK(device_registration_status IN ('registered', 'unregistered', 'uncovered', 'unavailable')),
+    CHECK(jsonb_typeof(restrictions) = 'array'),
     CHECK(payer_risk BETWEEN 0 AND 100),
     CHECK(recipient_risk BETWEEN 0 AND 100),
     CHECK(payer_sufficiency IN ('unavailable', 'low', 'medium', 'high')),
@@ -240,12 +267,13 @@ CREATE TABLE pix_transaction(
 -- as colunas que elas leem: a consulta vira um index-only scan e não
 -- volta ao heap buscar uma página por Pix do pagador. Medido num pagador
 -- com 5 mil Pix: 15 ms e 5 mil páginas sem o INCLUDE, 7 ms e 300 com
--- ele. O preço é o índice maior, uns 94 bytes por Pix em vez de 52. A
+-- ele. O preço é o índice maior, uns 100 bytes por Pix em vez de 52. A
 -- mesma pergunta por documento soma as contas do customer: as consultas
 -- recebem a lista de contas pronta (AccountRepository.ids_of).
 CREATE INDEX pix_transaction_source_account_id_idx
     ON pix_transaction (source_account_id, transaction_date)
-    INCLUDE (status_id, amount, device_id, ip, destination_account_id, latitude, longitude);
+    INCLUDE (status_id, amount, device_id, ip, destination_account_id, latitude, longitude,
+             device_registration_status);
 
 -- Conta de destino: muitos pagadores distintos pro mesmo destino em
 -- janela curta (robô multiplicador, loja falsa, conta laranja). Por conta

@@ -19,6 +19,10 @@ class PixTransactionDTO:
     o do GET são o mesmo por construção — não existe um segundo caminho
     que possa divergir do primeiro.
 
+    device e restrictions saem da linha do Pix, como os sinais: são o que
+    as fontes disseram na hora da decisão, e o GET não consulta fonte
+    nenhuma de novo.
+
     Campo novo na resposta se acrescenta aqui — e só aqui.
     """
 
@@ -65,6 +69,12 @@ class PixTransactionDTO:
             "metadata": {
                 "policy_version": pix_transaction.policy_version,
                 "decision_rule": pix_transaction.decision_rule,
+                "device": {
+                    "registration_status": pix_transaction.device_registration_status,
+                    "registration_source": pix_transaction.device_registration_source,
+                    "previously_observed": pix_transaction.device_previously_observed,
+                },
+                "restrictions": pix_transaction.restrictions,
                 "reasons": pix_transaction.reasons,
                 "scores": {
                     "payer": pix_transaction.payer_risk,

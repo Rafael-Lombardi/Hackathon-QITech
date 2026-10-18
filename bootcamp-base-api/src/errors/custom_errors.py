@@ -63,3 +63,25 @@ class DictUnavailable(QIException):
         description = f"DICT security information could not be obtained: {reason}."
         translation = "Não foi possível consultar a informação de segurança do DICT."
         super().__init__(title, self.code, http_status, description, translation)
+
+
+class RestrictionSourceUnavailable(QIException):
+    """A fonte de restrições não respondeu, ou respondeu algo que não dá pra usar.
+
+    É a única fonte obrigatória, e o único 503 que chega ao cliente de
+    propósito: restrição ativa rejeita por cima de qualquer nota, e sem a
+    lista não há como saber se existe uma — presumir lista vazia seria
+    deixar passar justamente quem está bloqueado (RFC §7). O Pix sai sem
+    veredito e não fica gravado; quem chamou tenta de novo.
+
+    reason vai parar no log. Documento, só pelo mask_document.
+    """
+
+    code = "QIT001005"
+
+    def __init__(self, reason) -> None:
+        title = "Restriction Source Unavailable"
+        http_status = 503
+        description = f"Restrictions could not be obtained, so the Pix was not evaluated: {reason}."
+        translation = "Não foi possível consultar as restrições; o Pix não foi avaliado."
+        super().__init__(title, self.code, http_status, description, translation)

@@ -1,1 +1,3 @@
+from connectors.device_registry_connector import DeviceRegistryConnector
 from connectors.dict_connector import DictConnector
+from connectors.restrictions_connector import RestrictionsConnector

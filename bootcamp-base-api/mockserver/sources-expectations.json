@@ -1,0 +1,206 @@
+[
+  {
+    "id": "security-statistics-default",
+    "priority": 0,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/.*"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 70,
+        "fraud_marker": null
+      }
+    }
+  },
+  {
+    "id": "security-statistics-99999999999",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/99999999999"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 12,
+        "fraud_marker": "confirmed"
+      }
+    }
+  },
+  {
+    "id": "security-statistics-77777777777",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/77777777777"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 70,
+        "fraud_marker": "suspicious"
+      }
+    }
+  },
+  {
+    "id": "security-statistics-88888888888",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/security-statistics/88888888888"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "security_statistics": 70
+      },
+      "delay": {
+        "timeUnit": "SECONDS",
+        "value": 3
+      }
+    }
+  },
+  {
+    "id": "device-registration-default",
+    "priority": 0,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/device-registration/.*"
+    },
+    "httpResponse": {
+      "statusCode": 404
+    }
+  },
+  {
+    "id": "device-registration-unregistered-prefix",
+    "priority": 5,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/device-registration/.*/unregistered-.*"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "registration_status": "unregistered",
+        "provenance": "demo_seed"
+      }
+    }
+  },
+  {
+    "id": "device-registration-registry-down-prefix",
+    "priority": 5,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/device-registration/.*/registry-down-.*"
+    },
+    "httpResponse": {
+      "statusCode": 503
+    }
+  },
+  {
+    "id": "device-registration-12345678909",
+    "priority": 5,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/device-registration/12345678909/.*"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "registration_status": "unregistered",
+        "provenance": "demo_seed"
+      }
+    }
+  },
+  {
+    "id": "device-registration-12345678909-dvc-9f2c71a8",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/device-registration/12345678909/dvc-9f2c71a8"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "registration_status": "registered",
+        "registered_at": "2025-03-02T10:00:00-03:00",
+        "revoked_at": null,
+        "provenance": "demo_seed"
+      }
+    }
+  },
+  {
+    "id": "restrictions-default",
+    "priority": 0,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/restrictions"
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "restrictions": []
+      }
+    }
+  },
+  {
+    "id": "restrictions-payer-55555555555",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/restrictions",
+      "queryStringParameters": {
+        "payer": ["55555555555"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "restrictions": [
+          {
+            "restriction_id": "demo-restriction-payer",
+            "scope": "payer",
+            "identity_key": "55555555555",
+            "reason": "demo: conta com restrição simulada",
+            "evidence_ref": "demo-ref-1",
+            "provenance": "demo_seed",
+            "effective_at": "2026-01-01T00:00:00-03:00",
+            "expires_at": null,
+            "revoked_at": null
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "restrictions-recipient_holder-55555555555",
+    "priority": 10,
+    "httpRequest": {
+      "method": "GET",
+      "path": "/restrictions",
+      "queryStringParameters": {
+        "recipient_holder": ["55555555555"]
+      }
+    },
+    "httpResponse": {
+      "statusCode": 200,
+      "body": {
+        "restrictions": [
+          {
+            "restriction_id": "demo-restriction-recipient-holder",
+            "scope": "recipient_holder",
+            "identity_key": "55555555555",
+            "reason": "demo: conta com restrição simulada",
+            "evidence_ref": "demo-ref-1",
+            "provenance": "demo_seed",
+            "effective_at": "2026-01-01T00:00:00-03:00",
+            "expires_at": null,
+            "revoked_at": null
+          }
+        ]
+      }
+    }
+  }
+]

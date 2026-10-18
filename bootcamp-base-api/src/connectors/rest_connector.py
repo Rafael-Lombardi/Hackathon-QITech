@@ -2,6 +2,7 @@ import json
 import threading
 import time
 from abc import ABCMeta
+from datetime import datetime
 
 import requests
 
@@ -115,6 +116,26 @@ class RestConnector(metaclass=ABCMeta):
         # disso é o connector de cada serviço, ou a regra de negócio no
         # controller. Status é informação da resposta, não exceção.
         return BaseConnectorResponse(endpoint, method, response)
+
+
+def parse_instant(value, *, optional: bool = False) -> datetime | None:
+    """Um instante como as fontes escrevem: ISO 8601, com fuso.
+
+    É o mesmo combinado pras três fontes, e por isso mora aqui e não em
+    cada connector. Texto fora do formato, ou sem fuso, é ValueError —
+    sem fuso o instante não se compara com o relógio da avaliação —, e
+    cada connector traduz isso em "corpo fora do combinado" do jeito
+    dele. optional deixa passar None (a data que a fonte ainda não tem:
+    um cadastro não revogado, uma restrição sem prazo).
+    """
+    if value is None and optional:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("instant is not text")
+    instant = datetime.fromisoformat(value)
+    if instant.utcoffset() is None:
+        raise ValueError("instant without a timezone")
+    return instant
 
 
 class BaseConnectorResponse:

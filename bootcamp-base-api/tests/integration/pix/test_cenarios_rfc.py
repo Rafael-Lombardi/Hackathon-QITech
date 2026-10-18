@@ -19,20 +19,25 @@ Montante, Perfil...); o grupo de teto é o de src/antifraud/policy.py
 (CAPS) e junta os sinais que olham o mesmo padrão: o payer_velocity, por
 exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 
-A tabela, em ordem, vale a primeira que casar: as rejeições — D-REJ-ATO
-(P03, P04, P06 e P07 com pagador >= 70), D-REJ-RCP e D-REJ-CROSS, que
-pedem marcação de fraude do destino no DICT — → D-ATO-1 (P03 e P06) →
-D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-LIMIT (L03) → D-SCAM
-(P06 e REL01, sem REL03) → D-DRAIN (P04 e P07) → D-RCP (destino >= 40)
-→ D-OK. As rejeições têm arquivo próprio (test_rejeicoes.py), e as três
-linhas de combinação, as fronteiras (test_fronteiras.py).
+A tabela, em ordem, vale a primeira que casar: D-RESTRICT-SIM (restrição
+ativa) → as rejeições por nota — D-REJ-ATO (P03, P04, P06 e P07 com
+pagador >= 70), D-REJ-RCP e D-REJ-CROSS, que pedem marcação de fraude do
+destino no DICT — → D-ATO-1 (P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY
+(pagador >= 40) → D-LIMIT (L03) → D-SCAM (P06 e REL01, sem REL03) →
+D-DRAIN (P04 e P07) → D-RCP (destino >= 40) → D-DATA-UNAVAILABLE
+(cadastro de aparelhos fora do ar) → D-OK. As rejeições têm arquivo
+próprio (test_rejeicoes.py e test_restricoes.py), o cadastro também
+(test_cadastro_aparelhos.py), e as três linhas de combinação, as
+fronteiras (test_fronteiras.py).
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
 test_concorrencia.py, com os nomes que a RFC deu. As sementes passam pelo
 seed (tests/utils/pix.py), que derruba o teste se alguma não voltar
 approved. Todos rodam com o DICT no padrão (estatística 70, sem marcação
 de fraude): a camada 3 fica calada aqui, e tem arquivo próprio — e é por
-isso que R01, R02 e R03 juntos não rejeitam nestes cenários.
+isso que R01, R02 e R03 juntos não rejeitam nestes cenários. E todo
+pagador nasce com o aparelho de sempre cadastrado no banco (new_payer):
+"aparelho novo" é um new_device, que o cadastro não conhece.
 """
 
 from datetime import timedelta
@@ -42,24 +47,27 @@ from tests.utils.identities import new_device, new_ip, new_payer, new_recipient
 from tests.utils.pix import pix_payload, post_pix, seed, seed_pix
 
 # Os sinais que comparam o Pix com o histórico. No primeiro Pix de todo
-# mundo, todos eles respondem unavailable.
+# mundo, todos eles respondem unavailable. P03 e L02 ficam de fora: eles
+# perguntam ao cadastro do banco, que responde desde o primeiro Pix.
 HISTORICAL_SIGNALS = {
-    "L02", "G01", "P03", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
+    "G01", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
     "R02", "R03", "R04", "REL01", "REL02",
 }
 
 
 class TestCenariosRfc:
     def test_primeira_observacao_normal_aprova(self):
-        """Cenário 01 — o primeiro Pix na base: contas maduras, R$ 150, às 14h.
+        """Cenário 01 — o primeiro Pix na base: contas maduras, R$ 150, às 14h, do aparelho cadastrado.
 
-        Sem histórico, só a camada 1 e o teto por Pix têm o que olhar, e
-        não acham nada: contas abertas há anos, de dia, R$ 150 (longe dos
-        R$ 5.000 do teto de quem nunca teve Pix aprovado), documentos
-        diferentes. Os 15 sinais históricos saem unavailable — "não sei",
-        e não "está tudo bem" — e nenhum vira ponto. O DICT responde o
-        padrão (estatística 70, sem marcação de fraude), e a camada 3
-        inteira fica calada.
+        Sem histórico, só a camada 1, o teto por Pix e o cadastro de
+        aparelhos têm o que olhar, e não acham nada: contas abertas há
+        anos, de dia, R$ 150 (longe dos R$ 5.000 do teto de quem nunca
+        teve Pix aprovado), documentos diferentes, e o aparelho é o que o
+        banco cadastrou (P03 e L02 calados, e metadata.device diz isso).
+        Os 13 sinais históricos saem unavailable — "não sei", e não "está
+        tudo bem" — e nenhum vira ponto. O DICT responde o padrão
+        (estatística 70, sem marcação de fraude), e a camada 3 inteira
+        fica calada.
 
         Pagador 0, destino 0, suficiência unavailable nos dois eixos: D-OK.
         Primeira observação não é culpa nem atestado (RFC §14).
@@ -74,8 +82,11 @@ class TestCenariosRfc:
         assert pix.scores == {"payer": 0, "recipient": 0}
         assert pix.sufficiency == {"payer": "unavailable", "recipient": "unavailable"}
         assert pix.triggered() == set()
-        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L03", "DICT01", "DICT02", "DICT03"}
+        assert pix.signals_with("not_triggered") == {"P01", "L01", "R01", "REL03", "L02", "L03", "P03", "DICT01", "DICT02", "DICT03"}
         assert pix.signals_with("unavailable") == HISTORICAL_SIGNALS
+        assert pix.metadata["device"] == {
+            "registration_status": "registered", "registration_source": "demo_seed", "previously_observed": False,
+        }
 
     def test_primeiro_pix_noturno_alto_pede_confirmacao_pelo_teto(self):
         """Cenário 02 — o primeiro Pix na base, R$ 5.000 às 3h da manhã.
@@ -189,17 +200,17 @@ class TestCenariosRfc:
         assert pix.scores == {"payer": 0, "recipient": 0}
 
     def test_device_novo_e_valor_atipico_pede_2fa(self):
-        """Cenário 06 — aparelho nunca visto e valor muito acima do padrão: 2FA.
+        """Cenário 06 — aparelho sem cadastro e valor muito acima do padrão: 2FA.
 
         Preparo: 10 Pix de R$ 1.000 para o mesmo destino, um por dia nos
-        10 dias anteriores, sempre do mesmo aparelho. Dá mediana de
+        10 dias anteriores, sempre do aparelho cadastrado. Dá mediana de
         R$ 1.000 com o lastro que o P06 pede (10 aprovados em 7 dias ou
-        mais). Pix: R$ 6.200, de um aparelho nunca visto, para um destino
-        inédito.
+        mais). Pix: R$ 6.200, de um aparelho que o banco não cadastrou,
+        para um destino inédito.
 
-            P03 +18    Dispositivo sem Pix aprovado do pagador
+            P03 +18    Dispositivo não cadastrado no banco
             P06 +18    R$ 6.200 é 6,2x a mediana, e passa de R$ 1.000
-            L02 +10    aparelho sem Pix aprovado antes de hoje, acima de R$ 200
+            L02 +10    aparelho sem cadastro, acima de R$ 200
             REL01 +8   destino inédito para um pagador com histórico
             pagador 18 + 18 + 10 = 46; destino 8
 
@@ -219,25 +230,28 @@ class TestCenariosRfc:
         assert pix.triggered() == {"P03", "P06", "L02", "REL01"}
         assert pix.scores == {"payer": 46, "recipient": 8}
         assert pix.sufficiency == {"payer": "medium", "recipient": "unavailable"}
-        assert pix.signal("P03")["evidence"]["payer_prior_tx"] == 10
-        assert pix.signal("P03")["evidence"]["device_seen_before"] is False
+        assert pix.signal("P03")["evidence"] == {
+            "registration_status": "unregistered", "registration_source": "demo_seed",
+            "previously_observed": False, "payer_prior_tx": 10,
+        }
         assert pix.signal("P06")["evidence"]["median_amount"] == 100000
         assert pix.signal("P06")["evidence"]["ratio"] == 6.2
         assert "6,2" in pix.reasons[0]
 
     def test_device_novo_valor_baixo_aprova(self):
-        """Cenário 07 — aparelho nunca visto, mas R$ 100 para o destino de sempre.
+        """Cenário 07 — aparelho sem cadastro, mas R$ 100 para o destino de sempre.
 
         Preparo: 3 Pix para o mesmo destino, há 8, 4 e 1 dia, do aparelho
-        de sempre. Pix: R$ 100 de um aparelho novo, mesmo IP.
+        cadastrado. Pix: R$ 100 de um aparelho sem cadastro, mesmo IP.
 
-            P03 +18     Dispositivo sem Pix aprovado do pagador
+            P03 +18     Dispositivo não cadastrado no banco
             L02 calado  R$ 100 não passa dos R$ 200 por Pix nem dos R$ 1.000
                         do dia
             REL02 -8    destino recorrente (3 aprovados, o primeiro há 8 dias)
             pagador 18, destino 0
 
-        P03 sozinho não pede 2FA: troca de celular acontece. D-OK.
+        P03 sozinho não pede 2FA: troca de celular acontece. D-OK — e o
+        Pix aprovado não cadastra o aparelho: isso é do banco.
         """
         payer, recipient = new_payer(), new_recipient()
         seed_pix(payer, recipient, days_ago(T0, 8, 4, 1))
@@ -477,7 +491,7 @@ class TestCenariosRfc:
         mesmo aparelho, IP novo.
 
             P09 +6      IP sem Pix aprovado do pagador
-            P03 calado  o aparelho é o de sempre (e sem ele não há P10)
+            P03 calado  o aparelho é o cadastrado (e sem ele não há P10)
             REL02 -8    destino recorrente
             pagador 6, destino 0
 
@@ -498,12 +512,12 @@ class TestCenariosRfc:
         assert pix.scores == {"payer": 6, "recipient": 0}
 
     def test_device_e_ip_novos_pedem_2fa(self):
-        """Cenário 17 — aparelho e IP nunca vistos ao mesmo tempo.
+        """Cenário 17 — aparelho sem cadastro e IP nunca visto ao mesmo tempo.
 
         Preparo: 3 Pix para o mesmo destino, nos 3 dias anteriores. Pix:
-        R$ 150 para ele, de um aparelho novo, num IP novo.
+        R$ 150 para ele, de um aparelho sem cadastro, num IP novo.
 
-            P03 +18     Dispositivo sem Pix aprovado do pagador
+            P03 +18     Dispositivo não cadastrado no banco
             P09 +6      IP sem Pix aprovado do pagador
             P10 +12     os dois juntos
             L02 calado  R$ 150 não passa dos R$ 200 por Pix
@@ -529,12 +543,12 @@ class TestCenariosRfc:
 
         Preparo: 10 Pix de R$ 200 para o mesmo destino em EXATAMENTE 7
         dias civis (dois por dia nos três primeiros, um nos outros quatro)
-        — o mínimo que destrava o P06. Pix: R$ 1.500 de um aparelho novo,
-        mesmo IP, mesmo destino.
+        — o mínimo que destrava o P06. Pix: R$ 1.500 de um aparelho sem
+        cadastro, mesmo IP, mesmo destino.
 
-            P03 +18    Dispositivo sem Pix aprovado do pagador
+            P03 +18    Dispositivo não cadastrado no banco
             P06 +18    R$ 1.500 é 7,5x a mediana de R$ 200, e passa de R$ 1.000
-            L02 +10    aparelho sem Pix aprovado antes de hoje, acima de R$ 200
+            L02 +10    aparelho sem cadastro, acima de R$ 200
             REL02 -8   destino recorrente: 10 aprovados, o primeiro há 7 dias
             pagador 46, destino 0
 

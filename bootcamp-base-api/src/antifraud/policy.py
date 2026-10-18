@@ -1,8 +1,8 @@
 """A política do motor: todo número que ele usa, num arquivo só.
 
-Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5, com
-os ajustes da v0.6.0 listados abaixo), não calibragem com dado real; os
-que vêm do Banco Central dizem de onde vieram. A POLICY_VERSION vai
+Pesos, limiares, janelas e tetos são hipóteses do time (a RFC v0.5, mais
+as emendas listadas abaixo), não calibragem com dado real; os que vêm do
+Banco Central dizem de onde vieram. A POLICY_VERSION vai
 gravada em cada análise. Mudou um número aqui, muda a versão — senão o
 motivo gravado ontem passa a ser lido com os pesos de hoje.
 """
@@ -12,19 +12,15 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# v0.6.0, o que mudou desde a v0.5:
-#   • aparelho e IP conhecidos voltam a ser os dos Pix aprovados do
-#     pagador (L02, P03, P09, P10), sem cadastro de aparelhos; a camada 3
-#     lê a marcação de fraude do próprio DICT (DICT02, DICT03);
-#   • as janelas de histórico contam por transaction_date, o tempo do
-#     negócio, e não pelo relógio do servidor;
-#   • o teto da rede do destino sobe de 35 pra 40: conta nova
-#     concentrando pagadores passa a pedir 2FA sozinha;
-#   • L03, o teto por Pix (R$ 50.000; R$ 5.000 pra quem nunca teve Pix
-#     aprovado), e três linhas novas de 2FA: D-LIMIT, D-SCAM e D-DRAIN;
-#   • saem a linha da restrição simulada e a rejeição do pagador por
-#     evidência externa, que dependiam de fontes que só existiam
-#     semeadas por SQL.
+# v0.6.0 é a RFC v0.5 mais quatro emendas propostas para a v0.6, cada
+# uma marcada como emenda onde mora (catálogo e tabela): o L03, teto por
+# Pix, e três linhas de 2FA por combinação, D-LIMIT, D-SCAM e D-DRAIN.
+# Nenhuma emenda mexe no que a RFC manda; cada uma pede confirmação num
+# caso em que a v0.5 aprovaria. Onde ainda difere da RFC: as janelas de
+# histórico contam por transaction_date, e não pelo relógio do servidor;
+# o teto da rede do destino está em 40, e não em 35; a camada 3 lê a
+# marcação de fraude do DICT, e não ocorrências datadas; e não há a
+# rejeição do pagador por evidência do DICT (D-REJ-PAY).
 POLICY_VERSION = "v0.6.0"
 
 
@@ -67,7 +63,8 @@ NIGHT_END_HOUR = 6
 NIGHT_AMOUNT_LIMIT = 100000
 
 # L02. Referência: o limite do Banco Central pra dispositivo não
-# cadastrado, R$ 200 por Pix e R$ 1.000 por dia.
+# cadastrado, R$ 200 por Pix e R$ 1.000 por dia. O dia é por cliente,
+# somando todos os aparelhos sem cadastro dele, e não por aparelho.
 NEW_DEVICE_PIX_LIMIT = 20000
 NEW_DEVICE_DAY_LIMIT = 100000
 
@@ -80,14 +77,13 @@ NEW_DEVICE_DAY_LIMIT = 100000
 PIX_AMOUNT_CAP = 5_000_000
 COLD_START_AMOUNT_CAP = 500_000
 
-# L02, P03, P09 e P10 comparam aparelho e IP com os dos Pix aprovados,
-# e ficam unavailable enquanto o pagador não tiver 3 Pix aprovados:
-# antes disso não há aparelho nem IP conhecido a perder. A conta é de
-# aprovados, e não de tentativas, porque o 2FA não volta pra esta API.
-# Contando tentativas, o cliente novo cujos 3 primeiros Pix não foram
-# aprovados disparava P03 e P09 no 4º, caía no D-ATO-2 e ficava preso
-# em 2FA dali em diante, pra qualquer destino. O preço: quem toma uma
-# conta que ainda não teve 3 Pix aprovados não cai no D-ATO.
+# P09 compara o IP com os dos Pix aprovados, e fica unavailable (e com
+# ele o P10) enquanto o pagador não tiver 3 Pix aprovados: antes disso
+# não há IP conhecido a perder. A conta é de aprovados, e não de
+# tentativas, porque o 2FA não volta pra esta API: contando tentativas,
+# o cliente novo cujos 3 primeiros Pix não foram aprovados teria, no 4º,
+# um IP "nunca visto" de graça. O aparelho não passa por aqui — o P03
+# pergunta ao cadastro do banco, que responde desde o primeiro Pix.
 ACCESS_MIN_APPROVED = 3
 
 PAYER_ATTEMPTS_THRESHOLD = 5  # P04: 5 ou mais em 5 min, com o atual
@@ -181,11 +177,12 @@ CATALOG: dict[str, SignalSpec] = {
     ),
     # Camada 2 — o Pix contra o histórico
     "L02": SignalSpec(
-        name="Valor acima do limite para dispositivo novo",
+        name="Valor acima do limite para dispositivo não cadastrado",
         layer=2, family="Limite", axis=Axis.PAYER,
         granularity="payer",
         cap_group="limit", points=10,
     ),
+    # Emenda proposta para a v0.6 (fora da RFC v0.5): o teto por Pix.
     "L03": SignalSpec(
         name="Valor acima do teto por Pix",
         layer=2, family="Limite", axis=Axis.PAYER,
@@ -198,7 +195,7 @@ CATALOG: dict[str, SignalSpec] = {
         granularity="payer", cap_group="payer_behavior", points=6,
     ),
     "P03": SignalSpec(
-        name="Dispositivo sem Pix aprovado do pagador",
+        name="Dispositivo não cadastrado no banco",
         layer=2, family="Perfil", axis=Axis.PAYER,
         granularity="payer",
         cap_group="payer_behavior", points=18,
@@ -240,7 +237,7 @@ CATALOG: dict[str, SignalSpec] = {
         cap_group="payer_behavior", points=6,
     ),
     "P10": SignalSpec(
-        name="Dispositivo e IP sem Pix aprovado do pagador",
+        name="Dispositivo não cadastrado e IP sem Pix aprovado do pagador",
         layer=2, family="Perfil", axis=Axis.PAYER,
         granularity="payer",
         cap_group="payer_behavior", points=12,
@@ -384,9 +381,10 @@ class DecisionRule:
 
     Casa quando todos os sinais de all_triggered dispararam, nenhum dos
     de none_triggered disparou, as notas mínimas, se houver, foram
-    atingidas e, se a linha pede, o DICT tem marcação de fraude contra o
-    recebedor (suspeita ou confirmada). Linha sem condição nenhuma casa
-    sempre.
+    atingidas e, se a linha pede, há restrição ativa contra alguém do
+    Pix, o DICT tem marcação de fraude contra o recebedor (suspeita ou
+    confirmada) ou o cadastro de aparelhos está fora do ar. Linha sem
+    condição nenhuma casa sempre.
     """
 
     name: str
@@ -395,20 +393,25 @@ class DecisionRule:
     none_triggered: tuple[str, ...] = ()
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
+    requires_restriction: bool = False
     requires_recipient_adverse: bool = False
+    requires_device_registry_unavailable: bool = False
 
 
-# Em ordem, vale a primeira linha que casar. As rejeições vêm antes de
-# qualquer 2FA, e duas delas pedem a marcação de fraude do recebedor no
-# DICT: a marcação é a porteira da rejeição, e não ponto — os pontos dela
-# já estão no DICT02 e no DICT03. Sem marcação, nota alta continua dando
+# Em ordem, vale a primeira linha que casar. A restrição vem na frente de
+# tudo: é o banco dizendo que esta pessoa, ou esta conta, está bloqueada,
+# e nota nenhuma discute isso. Depois as rejeições, antes de qualquer
+# 2FA, e duas delas pedem a marcação de fraude do recebedor no DICT: a
+# marcação é a porteira da rejeição, e não ponto — os pontos dela já
+# estão no DICT02 e no DICT03. Sem marcação, nota alta continua dando
 # 2FA. É o lado que segura o falso positivo: rejeitar de vez fica pra
 # quem o sistema Pix inteiro já marcou, ou pra tomada de conta com todos
 # os sinais juntos.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
-    # Aparelho novo, rajada, valor atípico e destinos inéditos ao mesmo
-    # tempo, com o pagador em 70 ou mais: é o dreno da conta tomada, e a
-    # única rejeição que não precisa do DICT.
+    DecisionRule("D-RESTRICT-SIM", PixStatus.REJECTED, requires_restriction=True),
+    # Aparelho sem cadastro, rajada, valor atípico e destinos inéditos ao
+    # mesmo tempo, com o pagador em 70 ou mais: é o dreno da conta tomada,
+    # e a única rejeição que não precisa do DICT.
     DecisionRule(
         "D-REJ-ATO", PixStatus.REJECTED,
         all_triggered=("P03", "P04", "P06", "P07"), min_payer_risk=70,
@@ -428,7 +431,10 @@ DECISION_TABLE: tuple[DecisionRule, ...] = (
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),
     DecisionRule("D-ATO-2", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P09")),
     DecisionRule("D-PAY", PixStatus.TWO_FACTOR_REQUIRED, min_payer_risk=40),
-    # Passou do teto por Pix: confirmação, seja qual for a nota.
+    # As três linhas seguintes são emendas propostas para a v0.6, fora da
+    # RFC v0.5: 2FA por combinação de sinais, em casos que a v0.5
+    # aprovaria. Passou do teto por Pix: confirmação, seja qual for a
+    # nota.
     DecisionRule("D-LIMIT", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("L03",)),
     # Valor atípico pra um destino que o pagador nunca pagou, do próprio
     # aparelho: a falsa central, o falso parente, o sequestro relâmpago —
@@ -442,6 +448,12 @@ DECISION_TABLE: tuple[DecisionRule, ...] = (
     # pequenas, antes de a nota chegar aos 40.
     DecisionRule("D-DRAIN", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P04", "P07")),
     DecisionRule("D-RCP", PixStatus.TWO_FACTOR_REQUIRED, min_recipient_risk=40),
+    # Só quando nada acima casou: o cadastro de aparelhos não respondeu,
+    # e aprovar seria aprovar sem saber de que aparelho o Pix saiu. É
+    # fallback, e não rejeição — fonte fora do ar não é indício contra
+    # ninguém, e um Pix que já caiu numa linha de cima fica onde caiu
+    # (RFC §4 e §7).
+    DecisionRule("D-DATA-UNAVAILABLE", PixStatus.TWO_FACTOR_REQUIRED, requires_device_registry_unavailable=True),
     DecisionRule("D-OK", PixStatus.APPROVED),
 )
 
