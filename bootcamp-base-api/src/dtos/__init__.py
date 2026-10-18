@@ -1,1 +1,1 @@
-"""Formatos de resposta; DTO não consulta banco nem decide risco."""
+from dtos.pix_transaction_dto import PixTransactionDTO

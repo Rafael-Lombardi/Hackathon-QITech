@@ -1,3 +1,4 @@
+from middlewares.body_size_limit import register_body_size_limit_middleware
 from middlewares.internal_token import register_internal_token_middleware
 from middlewares.request_context import register_request_context_middleware
 from middlewares.request_logger import register_request_logger_middleware

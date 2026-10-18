@@ -1,1 +1,1 @@
-"""Casos de uso Pix; controllers coordenam regra, persistência e commit."""
+from controllers.pix_transaction_controller import PixTransactionController
