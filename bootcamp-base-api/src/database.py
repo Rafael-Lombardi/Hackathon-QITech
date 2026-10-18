@@ -6,7 +6,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from constants import DATABASE_URL
 
-engine = create_engine(DATABASE_URL, pool_size=5, pool_recycle=600, pool_pre_ping=True)
+# hide_parameters: sem ele, todo erro de banco traz os parâmetros do
+# comando na mensagem, e o log da exceção imprimiria o CPF inteiro — que,
+# pela LGPD, nunca vai pro log.
+engine = create_engine(DATABASE_URL, pool_size=5, pool_recycle=600, pool_pre_ping=True, hide_parameters=True)
 SessionLocal = sessionmaker(bind=engine, autoflush=False)
 
 

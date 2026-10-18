@@ -1,6 +1,7 @@
 from uuid import uuid4
 
-from sqlalchemy import insert, select
+from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import Context
@@ -35,20 +36,29 @@ class PixTransactionRepository:
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
 
-    def create(self, **fields) -> PixTransaction:
-        """Grava o Pix e devolve o model com o id preenchido.
+    def create(self, **fields) -> PixTransaction | None:
+        """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.
 
         fields usa os nomes das colunas (status_id, payer_risk,
         pix_transaction_data...); só a pix_transaction_key nasce aqui. O
-        flush manda o INSERT agora, sem commit, por dois motivos: os sinais
-        precisam do id, e a violação do UNIQUE(external_id) — dois POSTs do
-        mesmo Pix chegando juntos — estoura nesta linha, onde o controller
-        a espera, e não no commit.
+        INSERT sai agora, sem commit: os sinais precisam do id.
+
+        None é a corrida do mesmo id chegando junto por pagadores
+        diferentes, que a trava (uma por pagador) não serializa: o outro
+        gravou primeiro, e este responde como num reenvio. O ON CONFLICT
+        (external_id) DO NOTHING segura o nosso INSERT até o outro
+        terminar e, se ele commitou, desiste sem erro. Capturar o
+        IntegrityError daria no mesmo, a um preço: o Postgres grava no log
+        dele todo comando que falha, com os valores — o payload e o CPF sem
+        máscara —, e o controller teria de conhecer o nome da constraint.
+        Outra violação, um CHECK por exemplo, continua levantando.
         """
-        pix_transaction = PixTransaction(pix_transaction_key=str(uuid4()), **fields)
-        self.session.add(pix_transaction)
-        self.session.flush()
-        return pix_transaction
+        return self.session.scalars(
+            insert(PixTransaction)
+            .values(pix_transaction_key=str(uuid4()), **fields)
+            .on_conflict_do_nothing(index_elements=[PixTransaction.external_id])
+            .returning(PixTransaction)
+        ).one_or_none()
 
     def create_signals(self, pix_transaction_id: int, signals: list[dict]) -> None:
         """Grava os sinais de um Pix num INSERT só, uma linha por sinal.

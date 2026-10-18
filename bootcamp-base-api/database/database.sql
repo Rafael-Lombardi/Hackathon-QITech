@@ -11,8 +11,8 @@
 --                                regras que a resposta devolve em
 --                                metadata.signals.
 -- Os índices são um por pergunta de regra (conta de origem, conta de
--- destino, aparelho, IP), todos terminando em transaction_date, mais um
--- em account(customer_id) pra ir das contas ao documento.
+-- destino, aparelho), todos terminando em transaction_date, mais um em
+-- account(customer_id) pra ir das contas ao documento.
 
 -- As três decisões do contrato, e só elas. O Pix já nasce decidido (o
 -- controller roda as regras antes do INSERT): não há pendente, e não há
@@ -67,10 +67,7 @@ INSERT INTO pix_signal_status (enumerator) VALUES
 -- primeira vez que aparecem num payload, por INSERT ... ON CONFLICT DO
 -- NOTHING no controller — é isso que o resto deste arquivo chama de
 -- upsert, e são até quatro por Pix: customer e account, origem e destino
--- — e a linha não muda depois. Conta que reaparece com outro documento é
--- sinal pra regra, não erro de banco: a linha original fica, o payload
--- bruto guarda o que chegou e o controller decide. Por isso só o
--- REFERENCES customer(id) em account amarra conta a documento.
+-- — e a linha não muda depois.
 --
 -- document_number é só dígitos: 11 (CPF) ou 14 (CNPJ), sem máscara. O
 -- UNIQUE nele é a chave do histórico, e "123.456.789-09" e "12345678909"
@@ -89,7 +86,13 @@ CREATE TABLE customer(
     CHECK(document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$')
 );
 
--- Uma conta, de qualquer banco, de um customer.
+-- Uma conta, de qualquer banco, de um customer. O titular faz parte da
+-- identidade — o UNIQUE inclui customer_id —, e uma conta conjunta vira
+-- uma linha por titular. Pagador e recebedor são o documento, e o
+-- histórico vai da conta a ele por customer_id: com a conta presa ao
+-- primeiro titular, o Pix do segundo entraria no histórico do primeiro.
+-- Nenhuma regra conta por conta (a idade do P01 e do R01 sai da
+-- opening_date do payload), e a divisão não custa nada ao motor.
 --
 -- participant é o ISPB, o código de oito dígitos de cada banco no Pix.
 -- Fica NULL na conta de origem: o payload não o traz e o contrato não diz
@@ -107,15 +110,15 @@ CREATE TABLE account(
     opening_date                    TIMESTAMPTZ NOT NULL,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(account_key),
-    UNIQUE NULLS NOT DISTINCT (participant, branch, account_number),
+    UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, customer_id),
     CHECK(participant IS NULL OR participant ~ '^[0-9]{8}$')
 );
 
 -- Das contas ao documento: "muitos pagadores pro mesmo documento de
 -- destino" e "quantas contas este documento já usou" são JOIN
 -- account → customer, e passam por aqui. Não há índice em participant
--- nem em (branch, account_number) além do UNIQUE: o upsert procura pela
--- tripla inteira, e o UNIQUE já é esse índice.
+-- nem em (branch, account_number) além do UNIQUE: o upsert procura pelas
+-- quatro colunas dele, e o UNIQUE já é esse índice.
 CREATE INDEX account_customer_id_idx
     ON account (customer_id);
 
@@ -239,14 +242,13 @@ CREATE INDEX pix_transaction_source_account_id_idx
 CREATE INDEX pix_transaction_destination_account_id_idx
     ON pix_transaction (destination_account_id, transaction_date);
 
--- Aparelho e IP: quantos Pix por device_id ou por ip, e aparelho
--- compartilhado (um aparelho pagando por vários documentos distintos é
--- indício de farm de contas).
+-- Aparelho: quantos Pix por device_id, e aparelho compartilhado (um
+-- aparelho pagando por vários documentos distintos é indício de farm de
+-- contas). O IP fica sem índice: é lido no histórico do pagador, e não há
+-- regra de velocity por IP no catálogo — quando houver, o índice volta
+-- com ela.
 CREATE INDEX pix_transaction_device_id_idx
     ON pix_transaction (device_id, transaction_date);
-
-CREATE INDEX pix_transaction_ip_idx
-    ON pix_transaction (ip, transaction_date);
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta
@@ -262,14 +264,14 @@ CREATE INDEX pix_transaction_ip_idx
 -- Velocity, Contraparte...), não o grupo de teto da RFC — somar points
 -- por Pix não reproduz payer_risk, porque o teto é aplicado no motor.
 --
--- Do sinal à decisão: soma por família (as regras que olham o mesmo
--- padrão) com um teto, pra que cinco regras vendo a mesma rajada não
--- contem cinco vezes; soma por eixo (payer_risk e recipient_risk, 0 a
--- 100); e a tabela de decisão, linha a linha, até uma bater. Pesos, tetos
--- e a tabela moram no motor e na RFC. O banco guarda o que cada regra
--- viu (rule_result_data: observado, limite, janela) e o que disse (status
--- e points) naquela hora, pra que o motivo de ontem continue legível com
--- os pesos de amanhã.
+-- Do sinal à decisão: soma por grupo de teto (as regras que olham o
+-- mesmo padrão dividem um teto), pra que cinco regras vendo a mesma
+-- rajada não contem cinco vezes; soma por eixo (payer_risk e
+-- recipient_risk, 0 a 100); e a tabela de decisão, linha a linha, até
+-- uma bater. Pesos, tetos e a tabela moram no motor e na RFC. O banco
+-- guarda o que cada regra viu (rule_result_data: observado, limite,
+-- janela) e o que disse (status e points) naquela hora, pra que o motivo
+-- de ontem continue legível com os pesos de amanhã.
 --
 -- rule_name, axis e family são texto com CHECK, não FK pra tabela: regra
 -- é código, nasce e muda no motor, e uma tabela populada por INSERT aqui

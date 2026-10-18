@@ -23,10 +23,14 @@ class AccountRepository:
         account_number: str,
         opening_date: datetime,
     ) -> Account:
-        """Devolve a conta da tripla (participant, branch, account_number), criando na primeira aparição.
+        """Devolve a conta deste titular (participant, branch, account_number, customer_id), criando na primeira aparição.
 
         É o mesmo upsert do CustomerRepository.get_or_create, com o porquê
-        escrito lá. Duas diferenças.
+        escrito lá. Três diferenças.
+
+        O titular entra na identidade. A mesma conta com outro documento —
+        uma conta conjunta — é outra linha, e o Pix de cada titular fica no
+        histórico do documento dele; o porquê está no database.sql.
 
         A busca precisa de um if. participant é None na conta de origem, e
         `participant = NULL` nunca é verdade em SQL: a conta não seria
@@ -38,11 +42,14 @@ class AccountRepository:
         índice do UNIQUE. O ON CONFLICT dispensa o if: o UNIQUE é NULLS NOT
         DISTINCT, e para ele None é igual a None.
 
-        E a linha volta como foi gravada na primeira vez. Se o payload
-        trouxer outro customer ou outra opening_date para a mesma conta,
-        nada é atualizado: quem compara e decide é o controller.
+        E opening_date não entra na identidade: a linha volta como foi
+        gravada na primeira vez, sem UPDATE.
         """
-        by_identity = select(Account).where(Account.branch == branch, Account.account_number == account_number)
+        by_identity = select(Account).where(
+            Account.branch == branch,
+            Account.account_number == account_number,
+            Account.customer_id == customer_id,
+        )
         if participant is None:
             by_identity = by_identity.where(Account.participant.is_(None))
         else:
@@ -62,7 +69,9 @@ class AccountRepository:
                 account_number=account_number,
                 opening_date=opening_date,
             )
-            .on_conflict_do_nothing(index_elements=[Account.participant, Account.branch, Account.account_number])
+            .on_conflict_do_nothing(
+                index_elements=[Account.participant, Account.branch, Account.account_number, Account.customer_id],
+            )
             .returning(Account)
         ).one_or_none()
         if created is not None:

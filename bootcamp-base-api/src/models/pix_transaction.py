@@ -80,7 +80,6 @@ class PixTransaction(Base):
         Index("pix_transaction_source_account_id_idx", "source_account_id", "transaction_date"),
         Index("pix_transaction_destination_account_id_idx", "destination_account_id", "transaction_date"),
         Index("pix_transaction_device_id_idx", "device_id", "transaction_date"),
-        Index("pix_transaction_ip_idx", "ip", "transaction_date"),
     )
 
     status = relationship("PixTransactionStatus", foreign_keys=[status_id])
