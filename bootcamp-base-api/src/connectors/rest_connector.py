@@ -5,13 +5,15 @@ from abc import ABCMeta
 from datetime import datetime
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from utils.logger import get_logger
 
 # Uma requests.Session por thread, e não uma por processo: a Session
-# reaproveita a conexão TCP entre chamadas (keep-alive), e com um DICT de
-# verdade, atrás de TLS, isso poupa um handshake por Pix; mas ela não é
-# segura entre threads, e o resource roda numa por requisição.
+# reaproveita a conexão TCP entre chamadas (keep-alive), e com uma fonte
+# de verdade, atrás de TLS, isso poupa um handshake por Pix; mas ela não
+# é segura entre threads, e o resource roda numa por requisição.
 _sessions = threading.local()
 
 
@@ -19,6 +21,17 @@ def _session() -> requests.Session:
     session = getattr(_sessions, "session", None)
     if session is None:
         session = requests.Session()
+        # Keep-alive tem um buraco: a conexão ociosa que o outro lado
+        # fechou (balanceador com idle timeout) e que a gente tenta usar
+        # no mesmo instante vira ConnectionError, e a fonte sairia
+        # unavailable naquele Pix por azar de relógio. Uma tentativa a
+        # mais, só pra falha de CONEXÃO (connect=1, read=0, status=0): o
+        # que já foi enviado nunca é repetido, e um GET que o outro lado
+        # já leu não chega duas vezes. O preço é um segundo connect na
+        # fonte que não atende ao primeiro.
+        adapter = HTTPAdapter(max_retries=Retry(total=1, connect=1, read=0, status=0))
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
         _sessions.session = session
     return session
 

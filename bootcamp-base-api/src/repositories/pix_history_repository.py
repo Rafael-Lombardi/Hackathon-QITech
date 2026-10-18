@@ -95,11 +95,17 @@ _PAYER_QUERY = text("""
           AND pix.received_at <= :t
     ),
     candidates AS (
-        -- os recebedores da janela, mais o atual
+        -- os recebedores da janela, mais o atual. Lidos do índice, e não
+        -- da CTE: sem estatística da CTE o planejador chuta um terço do
+        -- histórico na janela de 10 min e troca o nested loop por um hash
+        -- de account inteira — 5 mil Pix: 8 ms e 309 páginas em vez de
+        -- 6 ms e 107.
         SELECT recipient.customer_id
-        FROM payer_pix
-        JOIN account recipient ON recipient.id = payer_pix.destination_account_id
-        WHERE payer_pix.received_at >= :new_destinations_since
+        FROM pix_transaction pix
+        JOIN account recipient ON recipient.id = pix.destination_account_id
+        WHERE pix.source_account_id = ANY(:payer_accounts)
+          AND pix.received_at >= :new_destinations_since
+          AND pix.received_at <= :t
         UNION
         SELECT :recipient_customer_id
     ),
