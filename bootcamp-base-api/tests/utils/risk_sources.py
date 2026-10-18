@@ -136,16 +136,19 @@ def seed_external_risk(assessments: list[dict]) -> None:
                     """
                     INSERT INTO external_risk_assessment
                         (customer_id, axis, assessment, valid_from, valid_until,
-                         provenance, occurrence_id)
+                         provenance, occurrence_id, severity, source_version, observed_at)
                     VALUES (:customer_id, :axis, :assessment, :valid_from, :valid_until,
-                            :provenance, :occurrence_id)
+                            :provenance, :occurrence_id, :severity, :source_version, :observed_at)
                     ON CONFLICT (occurrence_id) DO UPDATE SET
                         customer_id = EXCLUDED.customer_id,
                         axis = EXCLUDED.axis,
                         assessment = EXCLUDED.assessment,
                         valid_from = EXCLUDED.valid_from,
                         valid_until = EXCLUDED.valid_until,
-                        provenance = EXCLUDED.provenance
+                        provenance = EXCLUDED.provenance,
+                        severity = EXCLUDED.severity,
+                        source_version = EXCLUDED.source_version,
+                        observed_at = EXCLUDED.observed_at
                     """
                 ),
                 {
@@ -156,6 +159,9 @@ def seed_external_risk(assessments: list[dict]) -> None:
                     "valid_until": assessment.get("valid_until"),
                     "provenance": assessment.get("provenance", "scenario"),
                     "occurrence_id": assessment.get("occurrence_id", str(uuid4())),
+                    "severity": assessment.get("severity"),
+                    "source_version": assessment.get("source_version"),
+                    "observed_at": assessment.get("observed_at"),
                 },
             )
     engine.dispose()

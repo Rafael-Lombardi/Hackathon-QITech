@@ -19,6 +19,9 @@ class ExternalRiskAssessment(Base):
     valid_until = Column(DateTime(timezone=True))
     provenance = Column(String(80), nullable=False)
     occurrence_id = Column(String(255), nullable=False)
+    severity = Column(String(20))
+    source_version = Column(String(50))
+    observed_at = Column(DateTime(timezone=True))
 
     __table_args__ = (
         UniqueConstraint("occurrence_id"),

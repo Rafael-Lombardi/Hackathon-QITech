@@ -19,6 +19,8 @@ class RestrictionSnapshot:
     scope: str
     provenance: str
     occurrence_id: str
+    valid_from: datetime
+    valid_until: datetime | None
 
 
 @dataclass(frozen=True)
@@ -27,6 +29,11 @@ class ExternalRiskAssessmentSnapshot:
     assessment: str
     provenance: str
     occurrence_id: str
+    valid_from: datetime
+    valid_until: datetime | None
+    severity: str | None = None
+    source_version: str | None = None
+    observed_at: datetime | None = None
 
 
 class RiskRepository:
@@ -75,7 +82,7 @@ class RiskRepository:
         if not rows:
             return None
         row = rows[0]
-        return RestrictionSnapshot(row.scope, row.provenance, row.occurrence_id)
+        return RestrictionSnapshot(row.scope, row.provenance, row.occurrence_id, row.active_from, row.active_until)
 
     def external_assessment(
         self,
@@ -106,4 +113,9 @@ class RiskRepository:
             assessment=row.assessment,
             provenance=row.provenance,
             occurrence_id=row.occurrence_id,
+            valid_from=row.valid_from,
+            valid_until=row.valid_until,
+            severity=row.severity,
+            source_version=row.source_version,
+            observed_at=row.observed_at,
         )

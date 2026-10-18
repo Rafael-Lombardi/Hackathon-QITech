@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -5,7 +6,7 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import joinedload
 
 from database import Context
-from models import PixSignalStatus, PixTransaction, PixTransactionRuleResult, PixTransactionStatus
+from models import PixSignalStatus, PixTransaction, PixTransactionReceipt, PixTransactionRuleResult, PixTransactionStatus
 
 
 class PixTransactionRepository:
@@ -35,6 +36,61 @@ class PixTransactionRepository:
             .options(joinedload(PixTransaction.status, innerjoin=True))
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
+
+    def get_receipt(self, external_id: str) -> PixTransactionReceipt | None:
+        return self.session.scalar(
+            select(PixTransactionReceipt).where(PixTransactionReceipt.external_id == external_id)
+        )
+
+    def claim_receipt(self, *, external_id: str, payload: dict, now: datetime) -> tuple[PixTransactionReceipt, bool]:
+        """Claim the durable intake record; return (receipt, claimed_by_us)."""
+        token = str(uuid4())
+        lease_until = now + timedelta(minutes=2)
+        created = self.session.scalars(
+            insert(PixTransactionReceipt)
+            .values(
+                external_id=external_id,
+                payload=payload,
+                state="processing",
+                owner_token=token,
+                lease_until=lease_until,
+                received_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=[PixTransactionReceipt.external_id])
+            .returning(PixTransactionReceipt)
+        ).one_or_none()
+        if created is not None:
+            return created, True
+
+        receipt = self.session.scalars(
+            select(PixTransactionReceipt)
+            .where(PixTransactionReceipt.external_id == external_id)
+            .with_for_update()
+        ).one()
+        if receipt.payload != payload:
+            return receipt, False
+        if receipt.state == "completed":
+            return receipt, False
+        if receipt.state == "processing" and receipt.lease_until > now:
+            return receipt, False
+        receipt.state = "processing"
+        receipt.owner_token = token
+        receipt.lease_until = lease_until
+        receipt.failure_reason = None
+        receipt.evaluated_at = None
+        receipt.pix_transaction_id = None
+        return receipt, True
+
+    def mark_receipt_failed(self, receipt: PixTransactionReceipt, reason: str) -> None:
+        receipt.state = "failed"
+        receipt.failure_reason = reason[:1000]
+        receipt.evaluated_at = datetime.now(timezone.utc)
+
+    def mark_receipt_completed(self, receipt: PixTransactionReceipt, transaction_id: int, now: datetime) -> None:
+        receipt.state = "completed"
+        receipt.pix_transaction_id = transaction_id
+        receipt.evaluated_at = now
+        receipt.failure_reason = None
 
     def create(self, **fields) -> PixTransaction | None:
         """Grava o Pix e devolve o model com o id preenchido, ou None se o external_id já estava gravado.
@@ -76,6 +132,15 @@ class PixTransactionRepository:
 
         rows = [{**signal, "pix_transaction_id": pix_transaction_id} for signal in signals]
         self.session.execute(insert(PixTransactionRuleResult), rows)
+
+    def create_risk_evidence(self, pix_transaction_id: int, evidence: list[dict]) -> None:
+        """Grava os snapshots autoritativos consultados para esta análise."""
+        if not evidence:
+            return
+        from models import PixTransactionRiskEvidence
+
+        rows = [{**item, "pix_transaction_id": pix_transaction_id} for item in evidence]
+        self.session.execute(insert(PixTransactionRiskEvidence), rows)
 
     def list_signals(self, pix_transaction_id: int) -> list[PixTransactionRuleResult]:
         """Os sinais de um Pix na ordem em que foram gravados, com o estado de cada um.

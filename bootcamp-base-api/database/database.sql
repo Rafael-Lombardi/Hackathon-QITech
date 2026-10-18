@@ -1,4 +1,4 @@
--- O antifraude Pix, em seis tabelas:
+-- O antifraude Pix, nas tabelas de contrato, histórico e fontes:
 --   pix_transaction_status       os três veredictos do contrato.
 --   pix_signal_status            os três estados de um sinal.
 --   customer                     quem paga ou recebe: um por CPF ou CNPJ (o
@@ -176,6 +176,9 @@ CREATE TABLE external_risk_assessment(
     valid_until                    TIMESTAMPTZ,
     provenance                     VARCHAR(80) NOT NULL,
     occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
+    severity                       VARCHAR(20),
+    source_version                 VARCHAR(50),
+    observed_at                    TIMESTAMPTZ,
     created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
     CHECK(axis IN ('payer', 'recipient')),
     CHECK(assessment IN ('clear', 'suspicious', 'confirmed_in_mock', 'unavailable')),
@@ -266,6 +269,9 @@ CREATE TABLE pix_transaction(
     ip                              VARCHAR(45) NOT NULL,
     latitude                        NUMERIC(9, 6),
     longitude                       NUMERIC(9, 6),
+    received_at                     TIMESTAMPTZ NOT NULL,
+    evaluated_at                    TIMESTAMPTZ NOT NULL,
+    evaluation_context              JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
@@ -282,6 +288,25 @@ CREATE TABLE pix_transaction(
     CHECK(latitude IS NULL OR latitude BETWEEN -90 AND 90),
     CHECK(longitude IS NULL OR longitude BETWEEN -180 AND 180)
 );
+
+-- Receipt durável para processamento, falha e recuperação com lease.
+CREATE TABLE pix_transaction_receipt(
+    id                              BIGSERIAL PRIMARY KEY,
+    external_id                    VARCHAR(255) NOT NULL UNIQUE,
+    payload                        JSONB NOT NULL,
+    state                          VARCHAR(20) NOT NULL,
+    owner_token                    VARCHAR(36) NOT NULL,
+    lease_until                    TIMESTAMPTZ NOT NULL,
+    received_at                    TIMESTAMPTZ NOT NULL,
+    evaluated_at                   TIMESTAMPTZ,
+    failure_reason                 TEXT,
+    pix_transaction_id             BIGINT REFERENCES pix_transaction(id),
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(state IN ('processing', 'failed', 'completed')),
+    CHECK(jsonb_typeof(payload) = 'object')
+);
+CREATE INDEX pix_transaction_receipt_lease_idx
+    ON pix_transaction_receipt (state, lease_until);
 
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
 -- em transaction_date porque a pergunta é sempre "deste X, numa janela
@@ -368,3 +393,34 @@ CREATE TABLE pix_transaction_rule_result(
     CHECK(points BETWEEN -100 AND 100),
     CHECK(jsonb_typeof(rule_result_data) = 'object')
 );
+
+-- Snapshot imutável das restrições e assessments que o controller consultou
+-- para este Pix. A fonte pode mudar depois; a análise continua auditável.
+CREATE TABLE pix_transaction_risk_evidence(
+    id                              BIGSERIAL PRIMARY KEY,
+    pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
+    source_type                    VARCHAR(30) NOT NULL,
+    axis                            VARCHAR(10),
+    scope                           VARCHAR(30),
+    assessment                     VARCHAR(30),
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL,
+    valid_from                     TIMESTAMPTZ NOT NULL,
+    valid_until                    TIMESTAMPTZ,
+    captured_at                    TIMESTAMPTZ NOT NULL,
+    severity                       VARCHAR(20),
+    source_version                 VARCHAR(50),
+    observed_at                    TIMESTAMPTZ,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(pix_transaction_id, source_type, occurrence_id),
+    CHECK(source_type IN ('restriction', 'external_risk')),
+    CHECK(axis IS NULL OR axis IN ('payer', 'recipient')),
+    CHECK(source_type <> 'restriction' OR scope IS NOT NULL),
+    CHECK(source_type <> 'external_risk' OR axis IS NOT NULL),
+    CHECK(provenance <> ''),
+    CHECK(occurrence_id <> ''),
+    CHECK(valid_until IS NULL OR valid_until > valid_from)
+);
+
+CREATE INDEX pix_transaction_risk_evidence_transaction_idx
+    ON pix_transaction_risk_evidence (pix_transaction_id);

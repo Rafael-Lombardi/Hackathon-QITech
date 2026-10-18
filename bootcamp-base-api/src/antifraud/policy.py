@@ -91,6 +91,13 @@ RECURRENT_PAIR_MIN_APPROVED = 3
 RECURRENT_PAIR_MIN_DAYS = 7
 
 LOW_TRUST_LIMIT = 30  # DICT01: trust factor abaixo disso
+LOCATION_DISTANCE_THRESHOLD_KM = 300
+LOCATION_MIN_OBSERVATIONS = 10
+LOCATION_MIN_DAYS = 7
+LOCATION_MIN_DAYS_PER_CENTER = 2
+LOCATION_CLUSTER_RADIUS_KM = 100
+LOCATION_HISTORY_WINDOW = timedelta(days=90)
+LOCATION_RECENCY_GAP = timedelta(hours=24)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -151,6 +158,11 @@ CATALOG: dict[str, SignalSpec] = {
         layer=2, family="Limite", axis=Axis.PAYER,
         granularity="payer",
         cap_group="limit", points=10,
+    ),
+    "G01": SignalSpec(
+        name="Localização distante do padrão",
+        layer=2, family="Localização", axis=Axis.PAYER,
+        granularity="payer", cap_group="payer_behavior", points=6,
     ),
     "P03": SignalSpec(
         name="Dispositivo sem Pix aprovado do pagador",

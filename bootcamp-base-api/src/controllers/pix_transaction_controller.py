@@ -1,5 +1,7 @@
-from dataclasses import replace
-from datetime import datetime
+import json
+import os
+from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from sqlalchemy.exc import SQLAlchemyError
 
 from antifraud import Analysis, Context, Transaction, evaluate, policy
@@ -73,6 +75,36 @@ class PixTransactionController(BaseController):
         if replayed is not None:
             return replayed, False
 
+        received_at = datetime.now(timezone.utc)
+        receipt, claimed = self.pix_transaction_repository.claim_receipt(
+            external_id=pix_request.external_id, payload=pix_request.payload, now=received_at,
+        )
+        if not claimed:
+            if receipt.payload != pix_request.payload:
+                raise PixTransactionIdConflict(pix_request.external_id)
+            # A completed receipt normally has a transaction and was caught by
+            # the replay above. An active claim is deliberately not a verdict.
+            if receipt.pix_transaction_id is None:
+                raise PixTransactionIdConflict(pix_request.external_id)
+            replayed = self._replay_if_recorded(pix_request)
+            if replayed is not None:
+                return replayed, False
+            raise PixTransactionIdConflict(pix_request.external_id)
+        # Make the claim durable before external I/O or risk evaluation.
+        self.session.commit()
+
+        try:
+            return self._process_claimed(pix_request, received_at, receipt), True
+        except Exception as error:
+            self.session.rollback()
+            failed = self.pix_transaction_repository.get_receipt(pix_request.external_id)
+            if failed is not None:
+                self.pix_transaction_repository.mark_receipt_failed(failed, str(error))
+                self.session.commit()
+            raise
+
+    def _process_claimed(self, pix_request: PixRequest, received_at: datetime, receipt) -> dict:
+
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
         # conexão ao pool, o estoque de 15 conexões de banco que o processo
         # divide entre todas as requisições, pra outra usar enquanto este
@@ -85,28 +117,40 @@ class PixTransactionController(BaseController):
         source_account = self._get_or_create_account(payer, pix_request.source_account)
         destination_account = self._get_or_create_account(recipient, pix_request.destination_account)
 
-        self.customer_repository.lock_for_pix(customer_id=payer.id)
+        self.customer_repository.lock_for_pix_many(customer_ids=(payer.id, recipient.id))
 
         replayed = self._replay_if_recorded(pix_request)
         if replayed is not None:
-            return replayed, False
+            return replayed
 
-        analysis = evaluate(
-            self._build_context(pix_request, payer, recipient, trust_factor, destination_account.id)
+        context, risk_evidence, context_snapshot = self._build_context(
+            pix_request, payer, recipient, trust_factor, destination_account.id, received_at
         )
+        analysis = evaluate(context)
 
         # A trava é por pagador, e não segura o mesmo id chegando junto por
         # DOIS pagadores. Esse caso o banco resolve: o INSERT ... ON
         # CONFLICT (external_id) DO NOTHING espera o outro commitar, desiste
         # sem erro e devolve None. Aí a análise do outro já está gravada, e
         # este responde como num reenvio — 200 ou 409, nunca 500.
-        pix_transaction = self._create_pix_transaction(pix_request, analysis, source_account, destination_account)
+        evaluated_at = datetime.now(timezone.utc)
+        pix_transaction = self._create_pix_transaction(
+            pix_request, analysis, source_account, destination_account,
+            received_at=received_at, evaluated_at=evaluated_at, evaluation_context=context_snapshot,
+        )
         if pix_transaction is None:
-            return self._replay_if_recorded(pix_request), False
+            replayed = self._replay_if_recorded(pix_request)
+            if replayed is None:
+                raise PixTransactionIdConflict(pix_request.external_id)
+            return replayed
 
         self.pix_transaction_repository.create_signals(
             pix_transaction_id=pix_transaction.id,
             signals=self._signal_rows(analysis),
+        )
+        self.pix_transaction_repository.create_risk_evidence(
+            pix_transaction_id=pix_transaction.id,
+            evidence=risk_evidence,
         )
 
         self.logger.info(
@@ -116,6 +160,7 @@ class PixTransactionController(BaseController):
         )
 
         pix_transaction_dto = self._recorded_analysis(pix_transaction)
+        self.pix_transaction_repository.mark_receipt_completed(receipt, pix_transaction.id, evaluated_at)
         self.session.commit()
 
         return pix_transaction_dto, True
@@ -209,7 +254,8 @@ class PixTransactionController(BaseController):
         recipient: Customer,
         trust_factor: int | None,
         recipient_account_id: int,
-    ) -> Context:
+        received_at: datetime,
+    ) -> tuple[Context, list[dict], dict]:
         """O Context do motor: o Pix normalizado, o histórico contado e o DICT.
 
         O histórico é contado por documento (o customer), com as janelas
@@ -219,27 +265,36 @@ class PixTransactionController(BaseController):
         da conta que vier.
         """
         transaction_date = pix_request.transaction_date
+        # Local scenarios intentionally use the payload clock so they remain
+        # reproducible; deployed evaluations use the server receipt clock.
+        history_time = transaction_date if os.getenv("APP_ENV", "local") == "local" else received_at
 
         payer_history = self.pix_history_repository.get_payer_features(
             payer_customer_id=payer.id,
             recipient_customer_id=recipient.id,
             device_id=pix_request.device_id,
             ip=pix_request.ip,
-            transaction_date=transaction_date,
+            transaction_date=history_time,
             attempts_window=policy.PAYER_ATTEMPTS_WINDOW,
             amount_window=policy.PAYER_AMOUNT_WINDOW,
             new_destinations_window=policy.NEW_DESTINATIONS_WINDOW,
         )
+        location_distance_km = self.pix_history_repository.get_location_distance_km(
+            payer_customer_id=payer.id,
+            transaction_date=history_time,
+            latitude=pix_request.latitude,
+            longitude=pix_request.longitude,
+        )
         device_history = self.pix_history_repository.get_device_features(
             device_id=pix_request.device_id,
             payer_customer_id=payer.id,
-            transaction_date=transaction_date,
+            transaction_date=history_time,
             payers_window=policy.DEVICE_PAYERS_WINDOW,
         )
         recipient_history = self.pix_history_repository.get_recipient_features(
             recipient_customer_id=recipient.id,
             payer_customer_id=payer.id,
-            transaction_date=transaction_date,
+            transaction_date=history_time,
             attempts_window=policy.RECIPIENT_ATTEMPTS_WINDOW,
             payers_window=policy.RECIPIENT_PAYERS_WINDOW,
             attempts_cap=policy.HIGH_SUFFICIENCY_MIN_ATTEMPTS,
@@ -248,18 +303,18 @@ class PixTransactionController(BaseController):
         pair_history = self.pix_history_repository.get_pair_features(
             payer_customer_id=payer.id,
             recipient_customer_id=recipient.id,
-            transaction_date=transaction_date,
+            transaction_date=history_time,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
         try:
             device_trusted = self.device_registry_repository.is_trusted(
                 customer_id=payer.id,
                 device_id=pix_request.device_id,
-                at=transaction_date,
+                at=history_time,
             )
             unregistered_device_day_amount = self.device_registry_repository.unregistered_device_day_amount(
                 customer_id=payer.id,
-                at=transaction_date,
+                at=history_time,
             )
             device_registry_available = True
         except SQLAlchemyError:
@@ -280,16 +335,20 @@ class PixTransactionController(BaseController):
             recipient_document=pix_request.destination_account.document_number,
             payer_account_age_days=self._account_age_days(pix_request.source_account, transaction_date),
             recipient_account_age_days=self._account_age_days(pix_request.destination_account, transaction_date),
+            latitude=pix_request.latitude,
+            longitude=pix_request.longitude,
+            location_distance_km=location_distance_km,
         )
 
         risk_inputs = self._get_risk_inputs(
             payer_customer_id=payer.id,
             recipient_customer_id=recipient.id,
             recipient_account_id=recipient_account_id,
-            transaction_date=transaction_date,
+            transaction_date=history_time,
+            captured_at=received_at,
         )
 
-        return Context(
+        context = Context(
             transaction=transaction,
             payer=payer_history,
             device=device_history,
@@ -305,6 +364,9 @@ class PixTransactionController(BaseController):
             recipient_external_adverse=risk_inputs["recipient_external_adverse"],
             recipient_external_confirmed=risk_inputs["recipient_external_confirmed"],
         )
+        snapshot = json.loads(json.dumps(asdict(context), default=str))
+        snapshot["history_evaluated_at"] = history_time.isoformat()
+        return context, risk_inputs["evidence"], snapshot
 
     def _get_risk_inputs(
         self,
@@ -313,7 +375,8 @@ class PixTransactionController(BaseController):
         recipient_customer_id: int,
         recipient_account_id: int,
         transaction_date: datetime,
-    ) -> dict[str, bool]:
+        captured_at: datetime,
+    ) -> dict:
         """Lê as fontes seedadas uma vez e congela flags para o motor."""
         try:
             restriction = self.risk_repository.active_restriction(
@@ -336,6 +399,7 @@ class PixTransactionController(BaseController):
                 "payer_external_confirmed": False,
                 "recipient_external_adverse": False,
                 "recipient_external_confirmed": False,
+                "evidence": [],
             }
 
         def flags(assessment) -> tuple[bool, bool]:
@@ -347,6 +411,38 @@ class PixTransactionController(BaseController):
 
         payer_adverse, payer_confirmed = flags(payer_assessment)
         recipient_adverse, recipient_confirmed = flags(recipient_assessment)
+        evidence = []
+        if restriction is not None:
+            evidence.append({
+                "source_type": "restriction",
+                "scope": restriction.scope,
+                "assessment": None,
+                "axis": None,
+                "provenance": restriction.provenance,
+                "occurrence_id": restriction.occurrence_id,
+                "valid_from": restriction.valid_from,
+                "valid_until": restriction.valid_until,
+                "captured_at": captured_at,
+                "severity": None,
+                "source_version": None,
+                "observed_at": None,
+            })
+        for assessment in (payer_assessment, recipient_assessment):
+            if assessment is not None:
+                evidence.append({
+                    "source_type": "external_risk",
+                    "scope": None,
+                    "assessment": assessment.assessment,
+                    "axis": assessment.axis,
+                    "provenance": assessment.provenance,
+                    "occurrence_id": assessment.occurrence_id,
+                    "valid_from": assessment.valid_from,
+                    "valid_until": assessment.valid_until,
+                    "captured_at": captured_at,
+                    "severity": assessment.severity,
+                    "source_version": assessment.source_version,
+                    "observed_at": assessment.observed_at,
+                })
         return {
             "restriction_active": restriction is not None,
             "restriction_available": True,
@@ -354,6 +450,7 @@ class PixTransactionController(BaseController):
             "payer_external_confirmed": payer_confirmed,
             "recipient_external_adverse": recipient_adverse,
             "recipient_external_confirmed": recipient_confirmed,
+            "evidence": evidence,
         }
 
     def _account_age_days(self, account_data: AccountData, transaction_date: datetime) -> int:
@@ -369,6 +466,7 @@ class PixTransactionController(BaseController):
 
     def _create_pix_transaction(
         self, pix_request: PixRequest, analysis: Analysis, source_account: Account, destination_account: Account,
+        *, received_at: datetime, evaluated_at: datetime, evaluation_context: dict,
     ) -> PixTransaction | None:
         return self.pix_transaction_repository.create(
             status_id=self.pix_transaction_repository.get_status_id(enumerator=analysis.status),
@@ -390,10 +488,13 @@ class PixTransactionController(BaseController):
             ip=pix_request.ip,
             latitude=pix_request.latitude,
             longitude=pix_request.longitude,
+            received_at=received_at,
+            evaluated_at=evaluated_at,
+            evaluation_context=evaluation_context,
         )
 
     def _signal_rows(self, analysis: Analysis) -> list[dict]:
-        """Os 19 sinais como linhas de pix_transaction_rule_result.
+        """Os 20 sinais como linhas de pix_transaction_rule_result.
 
         Vão todos, inclusive os not_triggered e os unavailable: o GET
         mostra cada regra e o que ela disse, até quando foi "não sei".

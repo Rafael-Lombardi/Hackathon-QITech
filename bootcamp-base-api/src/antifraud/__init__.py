@@ -1,6 +1,6 @@
 """O motor antifraude Pix: recebe um Context pronto e devolve a Analysis.
 
-No Base Service a regra de negócio mora no controller. Aqui são 19
+No Base Service a regra de negócio mora no controller. Aqui são 20
 sinais, tetos e uma tabela de decisão, que no controller ficariam
 misturados com trava, sessão e commit: o motor é a parte da regra que
 não precisa de banco. Não importa SQLAlchemy, FastAPI nem nada de fora

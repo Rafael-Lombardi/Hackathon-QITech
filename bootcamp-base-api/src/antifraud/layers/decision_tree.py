@@ -23,6 +23,7 @@ class DecisionTreeLayer:
     def evaluate(self, context: Context) -> list[Signal]:
         return [
             _l02_new_device_over_limit(context),
+            _g01_unusual_location(context),
             _p03_unknown_device(context),
             _p04_many_attempts(context),
             _p05_high_hourly_amount(context),
@@ -37,6 +38,18 @@ class DecisionTreeLayer:
             _rel01_new_relation(context),
             _rel02_recurrent_relation(context),
         ]
+
+
+def _g01_unusual_location(context: Context) -> Signal:
+    distance = context.transaction.location_distance_km
+    if distance is None:
+        return policy.unavailable("G01")
+    if distance > policy.LOCATION_DISTANCE_THRESHOLD_KM:
+        return policy.triggered("G01", {
+            "distance_km": round(distance, 2),
+            "threshold_km": policy.LOCATION_DISTANCE_THRESHOLD_KM,
+        })
+    return policy.not_triggered("G01")
 
 
 # As perguntas de histórico, uma por função. A primeira serve a L02,

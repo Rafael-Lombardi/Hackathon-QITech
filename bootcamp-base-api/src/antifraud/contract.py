@@ -96,6 +96,9 @@ class Transaction:
     # de todas as contas do titular.
     payer_account_age_days: int
     recipient_account_age_days: int
+    latitude: float | None = None
+    longitude: float | None = None
+    location_distance_km: float | None = None
 
     def __post_init__(self) -> None:
         # Sem fuso, o astimezone de local_datetime assumiria o fuso da

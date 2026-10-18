@@ -25,9 +25,11 @@ lido como SQL cada agregado bate com um campo do contrato.
 """
 
 from datetime import datetime, timedelta
+from math import asin, cos, radians, sin, sqrt
 
 from sqlalchemy import text
 
+from antifraud import policy
 from antifraud.contract import LOCAL_TIMEZONE, DeviceHistory, PairHistory, PayerHistory, RecipientHistory
 from database import Context
 from models import PixTransactionStatus
@@ -210,6 +212,14 @@ _PAIR_QUERY = text("""
 """)
 
 
+def _distance_km(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+    lat1, lat2 = radians(latitude_a), radians(latitude_b)
+    dlat = lat2 - lat1
+    dlon = radians(longitude_b) - radians(longitude_a)
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 6371.0 * 2 * asin(sqrt(a))
+
+
 class PixHistoryRepository:
     """As quatro consultas de histórico, uma por grupo do Context do motor."""
 
@@ -217,6 +227,56 @@ class PixHistoryRepository:
         self.session = context.db_session
         self.pix_transaction_repository = PixTransactionRepository(context)
 
+    def get_location_distance_km(
+        self, *, payer_customer_id: int, transaction_date: datetime,
+        latitude: float | None, longitude: float | None,
+    ) -> float | None:
+        if latitude is None or longitude is None:
+            return None
+        # The query intentionally also returns the timestamp so coverage is
+        # measured by civil days and the current attempt cannot teach itself.
+        rows = self.session.execute(text("""
+            SELECT pix.latitude, pix.longitude,
+                   (pix.transaction_date AT TIME ZONE :local_timezone)::date AS local_day
+            FROM account payer
+            JOIN pix_transaction pix ON pix.source_account_id = payer.id
+            WHERE payer.customer_id = :customer_id
+              AND pix.status_id = :approved
+              AND pix.transaction_date > :since
+              AND pix.transaction_date <= :cutoff
+            AND pix.latitude IS NOT NULL AND pix.longitude IS NOT NULL
+            ORDER BY pix.transaction_date DESC
+            LIMIT 1000
+        """), {
+            "customer_id": payer_customer_id,
+            "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
+            "since": transaction_date - policy.LOCATION_HISTORY_WINDOW,
+            "cutoff": transaction_date - policy.LOCATION_RECENCY_GAP,
+            "local_timezone": LOCAL_TIMEZONE.key,
+        }).all()
+        if len(rows) < policy.LOCATION_MIN_OBSERVATIONS or len({row[2] for row in rows}) < policy.LOCATION_MIN_DAYS:
+            return None
+
+        centers: list[dict] = []
+        for point_lat, point_lon, local_day in rows:
+            point = (float(point_lat), float(point_lon))
+            assigned = None
+            for center in centers:
+                if _distance_km(point[0], point[1], center["lat"], center["lon"]) <= policy.LOCATION_CLUSTER_RADIUS_KM:
+                    assigned = center
+                    break
+            if assigned is None:
+                centers.append({"lat": point[0], "lon": point[1], "days": {local_day}, "count": 1})
+            else:
+                count = assigned["count"]
+                assigned["lat"] = (assigned["lat"] * count + point[0]) / (count + 1)
+                assigned["lon"] = (assigned["lon"] * count + point[1]) / (count + 1)
+                assigned["days"].add(local_day)
+                assigned["count"] = count + 1
+        qualified = [center for center in centers if len(center["days"]) >= policy.LOCATION_MIN_DAYS_PER_CENTER]
+        if not qualified:
+            return None
+        return min(_distance_km(latitude, longitude, center["lat"], center["lon"]) for center in qualified)
     def get_payer_features(
         self,
         *,

@@ -79,3 +79,14 @@ class CustomerRepository:
         self.session.execute(
             select(Customer.id).where(Customer.id == customer_id).with_for_update(key_share=True)
         ).scalar_one()
+
+    def lock_for_pix_many(self, *, customer_ids: tuple[int, ...]) -> None:
+        """Lock payer and recipient in deterministic order for concurrency."""
+        ids = sorted(set(customer_ids))
+        if ids:
+            self.session.execute(
+                select(Customer.id)
+                .where(Customer.id.in_(ids))
+                .order_by(Customer.id)
+                .with_for_update(key_share=True)
+            ).all()
