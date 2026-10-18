@@ -15,6 +15,7 @@ from antifraud.contract import (
     Context,
     EvidenceValue,
     Layer,
+    PixStatus,
     Signal,
     SignalStatus,
     Sufficiency,
@@ -52,6 +53,19 @@ def evaluate(context: Context) -> Analysis:
     for layer in LAYERS:
         signals.extend(layer.evaluate(context))
     signals.sort(key=lambda signal: _CATALOG_POSITION[signal.code])
+
+    if not context.device_registry_available:
+        return Analysis(
+            status=PixStatus.TWO_FACTOR_REQUIRED,
+            decision_rule="D-DATA-UNAVAILABLE",
+            reasons=("Cadastro de dispositivos indisponível; 2FA obrigatório",),
+            payer_risk=0,
+            recipient_risk=0,
+            payer_sufficiency=_sufficiency(context.payer.prior_attempts, context.payer.prior_days),
+            recipient_sufficiency=_sufficiency(context.recipient.prior_attempts, context.recipient.prior_days),
+            policy_version=policy.POLICY_VERSION,
+            signals=tuple(signals),
+        )
 
     triggered = {signal.code: signal for signal in signals if signal.status == SignalStatus.TRIGGERED}
     payer_risk = _axis_risk(triggered.values(), Axis.PAYER)
@@ -130,7 +144,10 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
         ratio = triggered["P06"].evidence["ratio"]
         return f"Dispositivo sem Pix aprovado deste pagador, com valor {_number(ratio)}x a mediana"
     if rule.name == "D-ATO-2":
-        prior = triggered["P03"].evidence["payer_prior_tx"]
+        evidence = triggered["P03"].evidence
+        prior = evidence.get("payer_prior_tx")
+        if prior is None:
+            return "Dispositivo não cadastrado e IP sem Pix aprovado deste pagador"
         return f"Dispositivo e IP sem Pix aprovado deste pagador, que tem {_number(prior)} Pix anteriores"
     if rule.name == "D-PAY":
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)

@@ -76,10 +76,12 @@ class TestHistorico:
         dict_mock.set_trust(fresh.document, 12)
         seed_pix(payer, fresh, days_before(T0, 3), expect="two_factor_required")
 
-        pix = post_pix(pix_payload(payer, fresh, T0))
+        pix = post_pix(pix_payload(payer, fresh, T0), auto_register=False)
 
         assert pix.http_status == 201
-        assert {pix.signal_status(code) for code in ACCESS_SIGNALS} == {"unavailable"}
+        assert pix.signal_status("P03") == "triggered"
+        assert pix.signal_status("L02") == "not_triggered"
+        assert {pix.signal_status(code) for code in ("P09", "P10")} == {"unavailable"}
         assert pix.scores["recipient"] == 52
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-RCP"

@@ -30,6 +30,23 @@ Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteado
 
 Os nomes dos cenários são os da tabela da RFC §9. O cenário 15 está dividido: `test_reenvio_devolve_mesma_analise` e `test_mesmo_id_payload_diferente_409` em `test_contrato.py`, e `test_concorrencia_mesmo_pagador_conta_uma_vez` em `test_concorrencia.py`.
 
+## Formato declarativo
+
+`tests/utils/scenario.py` define o formato de um cenário novo. Ele separa
+`authoritative` (cadastros externos), `history` (Pix observados), `derived`
+(baseline que a aplicação deve calcular), `request` (Pix avaliado) e
+`expected` (oráculo independente). O runner envia cada item de `history` pela
+API, nunca faz INSERT direto no banco, e depois compara o POST com o GET.
+
+O seed de `authoritative.devices` grava somente o cadastro autoritativo de
+dispositivos; ele não cria Pix nem transforma uma aprovação em confiança.
+Assim, o banco recebe somente os eventos de entrada, os cadastros explícitos e a análise persistida;
+os resultados esperados ficam no teste. Uma execução válida prova os dois
+comportamentos: a decisão foi calculada e o mesmo resultado foi gravado.
+Quando cadastro de dispositivos, reputação ou restrições entrar no serviço,
+`authoritative` deve ser ligado aos seeds correspondentes sem mudar o formato
+do oráculo.
+
 ## Como ler a conta dos docstrings
 
 ```

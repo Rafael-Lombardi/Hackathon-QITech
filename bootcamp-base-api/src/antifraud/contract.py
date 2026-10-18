@@ -167,6 +167,8 @@ class PayerHistory:
     # Pix aprovado com este aparelho antes da 0h de hoje, em São Paulo
     device_known_before_today: bool
     device_day_amount: int  # hoje, com este aparelho, qualquer status
+    # Hoje, em todos os aparelhos sem cadastro autoritativo, qualquer status.
+    unregistered_device_day_amount: int = 0
 
 
 @dataclass(frozen=True)
@@ -221,8 +223,9 @@ class PairHistory:
 class Context:
     """Tudo o que o motor sabe de um Pix.
 
-    Quem monta é o controller: o histórico vem dos repositories e o trust
-    factor, do connector do DICT. O motor só lê.
+    Quem monta é o controller: o histórico vem dos repositories, o trust
+    factor do connector do DICT e device_trusted do cadastro autoritativo.
+    O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem
     exatos da própria definição. Pagador sem Pix anterior
@@ -239,6 +242,10 @@ class Context:
     recipient: RecipientHistory
     pair: PairHistory
     trust_factor: int | None  # 0 a 100; None quando o DICT falhou
+    # Cadastro autoritativo, independente de Pix aprovados. None só deve
+    # ocorrer quando a fonte de cadastro estiver indisponível.
+    device_trusted: bool | None = None
+    device_registry_available: bool = True
 
 
 @dataclass(frozen=True)

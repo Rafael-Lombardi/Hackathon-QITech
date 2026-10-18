@@ -1,4 +1,6 @@
+from dataclasses import replace
 from datetime import datetime
+from sqlalchemy.exc import SQLAlchemyError
 
 from antifraud import Analysis, Context, Transaction, evaluate, policy
 from connectors import DictConnector
@@ -7,7 +9,13 @@ from controllers.pix_request import AccountData, PixRequest, parse_pix_request
 from dtos import PixTransactionDTO
 from errors import DictUnavailable, PixTransactionIdConflict, PixTransactionNotFound
 from models import Account, Customer, PixTransaction
-from repositories import AccountRepository, CustomerRepository, PixHistoryRepository, PixTransactionRepository
+from repositories import (
+    AccountRepository,
+    CustomerRepository,
+    DeviceRegistryRepository,
+    PixHistoryRepository,
+    PixTransactionRepository,
+)
 from utils.document_number import mask_document
 
 
@@ -28,6 +36,7 @@ class PixTransactionController(BaseController):
         self.account_repository = AccountRepository(self.context)
         self.pix_transaction_repository = PixTransactionRepository(self.context)
         self.pix_history_repository = PixHistoryRepository(self.context)
+        self.device_registry_repository = DeviceRegistryRepository(self.context)
         self.dict_connector = DictConnector()
 
     def create(self, payload: dict) -> tuple[dict, bool]:
@@ -233,6 +242,27 @@ class PixTransactionController(BaseController):
             transaction_date=transaction_date,
             anomaly_window=policy.PAIR_ANOMALY_WINDOW,
         )
+        try:
+            device_trusted = self.device_registry_repository.is_trusted(
+                customer_id=payer.id,
+                device_id=pix_request.device_id,
+                at=transaction_date,
+            )
+            unregistered_device_day_amount = self.device_registry_repository.unregistered_device_day_amount(
+                customer_id=payer.id,
+                at=transaction_date,
+            )
+            device_registry_available = True
+        except SQLAlchemyError:
+            # Cadastro obrigatório indisponível: o motor pede 2FA, nunca
+            # transforma falta de fonte em dispositivo não confiável.
+            device_trusted = None
+            unregistered_device_day_amount = 0
+            device_registry_available = False
+        payer_history = replace(
+            payer_history,
+            unregistered_device_day_amount=unregistered_device_day_amount,
+        )
 
         transaction = Transaction(
             amount=pix_request.amount,
@@ -250,6 +280,8 @@ class PixTransactionController(BaseController):
             recipient=recipient_history,
             pair=pair_history,
             trust_factor=trust_factor,
+            device_trusted=device_trusted,
+            device_registry_available=device_registry_available,
         )
 
     def _account_age_days(self, account_data: AccountData, transaction_date: datetime) -> int:

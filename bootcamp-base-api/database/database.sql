@@ -122,6 +122,24 @@ CREATE TABLE account(
 CREATE INDEX account_customer_id_idx
     ON account (customer_id);
 
+-- Cadastro independente de aparelhos confiáveis. Pix aprovado não insere
+-- aqui: a linha só vem de um seed/serviço de identidade e pode ser revogada.
+CREATE TABLE device_registry(
+    id                              BIGSERIAL PRIMARY KEY,
+    customer_id                     BIGINT NOT NULL REFERENCES customer(id),
+    device_id                      VARCHAR(255) NOT NULL,
+    registered_at                  TIMESTAMPTZ NOT NULL,
+    revoked_at                     TIMESTAMPTZ,
+    provenance                     VARCHAR(50) NOT NULL,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(customer_id, device_id),
+    CHECK(revoked_at IS NULL OR revoked_at > registered_at),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX device_registry_customer_device_idx
+    ON device_registry (customer_id, device_id);
+
 -- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
 --
 -- Transação e análise moram na mesma tabela de propósito. São 1:1 — o
