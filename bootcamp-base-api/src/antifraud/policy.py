@@ -12,9 +12,9 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.3 + a camada 3 (DICT01). A tabela de decisão é a da RFC, menos
-# o teto de 69 do D-RCP (o porquê está na tabela).
-POLICY_VERSION = "v0.3.1"
+# RFC v0.3 + a camada 3 (DICT01, com teto próprio). A tabela de decisão
+# é a da RFC, menos o teto de 69 do D-RCP (veja a tabela).
+POLICY_VERSION = "v0.3.2"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -60,17 +60,22 @@ NIGHT_AMOUNT_LIMIT = 100000
 NEW_DEVICE_PIX_LIMIT = 20000
 NEW_DEVICE_DAY_LIMIT = 100000
 
-# Com menos de 3 Pix anteriores, aparelho e IP sem Pix aprovado não
-# dizem nada: pra quem acabou de chegar, quase todo aparelho é novo.
-# L02, P03, P09 e P10 ficam unavailable.
-ACCESS_MIN_PRIOR_ATTEMPTS = 3
+# L02, P03, P09 e P10 comparam aparelho e IP com os dos Pix aprovados,
+# e ficam unavailable enquanto o pagador não tiver 3 Pix aprovados:
+# antes disso não há aparelho nem IP conhecido a perder. A conta é de
+# aprovados, e não de tentativas, porque o 2FA não volta pra esta API.
+# Contando tentativas, o cliente novo cujos 3 primeiros Pix não foram
+# aprovados disparava P03 e P09 no 4º, caía no D-ATO-2 e ficava preso
+# em 2FA dali em diante, pra qualquer destino. O preço: quem toma uma
+# conta que ainda não teve 3 Pix aprovados não cai no D-ATO.
+ACCESS_MIN_APPROVED = 3
 
 PAYER_ATTEMPTS_THRESHOLD = 5  # P04: 5 ou mais em 5 min, com o atual
 PAYER_AMOUNT_LIMIT = 800000  # P05: mais de R$ 8.000 em 1 h, com o atual
 
 # P06. Mais de 5 vezes a mediana, e só a partir de R$ 1.000: 5 vezes a
 # mediana de quem paga R$ 30 é troco, e não justifica fricção. A
-# mediana só vale com lastro, 10 Pix approved espalhados por 7 dias.
+# mediana só vale com lastro, 10 Pix aprovados espalhados por 7 dias.
 MEDIAN_MULTIPLIER = 5
 ATYPICAL_MIN_AMOUNT = 100000
 MEDIAN_MIN_APPROVED = 10
@@ -81,7 +86,7 @@ SHARED_DEVICE_THRESHOLD = 3  # P08
 RECIPIENT_ATTEMPTS_THRESHOLD = 5  # R02, contando o atual
 RECIPIENT_PAYERS_THRESHOLD = 4  # R03 e R04
 
-# REL02: 3 Pix approved no par, o primeiro há 7 dias ou mais.
+# REL02: 3 Pix aprovados no par, o primeiro há 7 dias ou mais.
 RECURRENT_PAIR_MIN_APPROVED = 3
 RECURRENT_PAIR_MIN_DAYS = 7
 
@@ -227,20 +232,26 @@ CATALOG: dict[str, SignalSpec] = {
     ),
     # Camada 3 — o DICT.
     #
-    # DICT01 responde à mesma pergunta do R01 e do R03 (o destino é
-    # confiável?), e conta nova costuma ter nota baixa: em grupos
-    # separados, a conta nova contaria duas vezes. Por isso ele divide o
-    # teto de 35 do recipient_network, e o máximo do destino fica nos 43
-    # da RFC. Com 32 e limiar 30, sozinho ele não pede 2FA (o DICT real
-    # atualiza com até 12 h de atraso), e somado à conta nova para nos
-    # 35. O preço: na prática o DICT01 só decide junto com o REL01, que
-    # leva o destino aos 40 do D-RCP, e nunca pede 2FA no Pix de um
-    # pagador sem histórico, em que o REL01 fica unavailable.
+    # O DICT01 soma por fora do teto da rede: a nota do DICT diz o que o
+    # sistema Pix inteiro registrou do recebedor, coisa que o nosso
+    # histórico não vê. Sozinho, o 32 fica abaixo dos 40 de propósito,
+    # porque o DICT real atualiza com até 12 h de atraso. Com qualquer
+    # outro indício do destino, pede 2FA: R01 dá 44, REL01 dá 40, e R02
+    # ou R03 pegam também a conta já aquecida, de 7 dias ou mais, que
+    # recebe rajada com nota baixa. O destino chega a 75.
+    #
+    # Contar a conta nova duas vezes, no R01 e na nota, é de propósito:
+    # conta recém-aberta com nota ruim é o retrato do laranja. Dividindo
+    # os 35 da rede com R01 a R04, ela parava em 35, e o primeiro Pix de
+    # um cliente pra ela saía aprovado. O preço é a conta recém-aberta
+    # honesta, com nota baixa só por ser nova: ela pede 2FA de todo
+    # pagador, menos o próprio titular (REL03) e quem já tem relação
+    # recorrente com ele (REL02).
     "DICT01": SignalSpec(
         name="Destino com baixa confiança no DICT",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient",
-        cap_group="recipient_network", points=32,
+        cap_group="recipient_trust", points=32,
     ),
 }
 
@@ -266,17 +277,21 @@ def signal_spec(code: str) -> SignalSpec:
 #
 # relation é o único que desce: histórico bom desconta até 10 pontos, e
 # nunca mais que isso — relação antiga não apaga sinal grave.
+#
+# payer_account e recipient_trust têm um sinal só, e o teto é o próprio
+# peso: não dividem teto com ninguém. Mudou o peso, muda o teto.
 CAPS: dict[str, tuple[int, int]] = {
     "limit": (0, 15),
     "payer_account": (0, 10),
     "payer_velocity": (0, 25),
     "payer_behavior": (0, 45),
     "recipient_network": (0, 35),
+    "recipient_trust": (0, 32),
     "relation": (-10, 8),
 }
 
 # A nota de um eixo é a soma dos grupos dele, presa entre 0 e 100. Com
-# os tetos acima o pagador chega no máximo a 95, e o destino a 43. Não é
+# os tetos acima o pagador chega no máximo a 95, e o destino a 75. Não é
 # probabilidade: 70 pontos não são 70% de chance de fraude.
 MIN_RISK = 0
 MAX_RISK = 100
@@ -321,11 +336,11 @@ class DecisionRule:
 # valor fora do padrão (D-ATO-1), ou com IP também sem Pix aprovado
 # (D-ATO-2).
 #
-# D-RCP é >= 40, sem o teto de 69 da RFC. O 69 vinha de quando 70 ou
-# mais era rejeição, regra que saiu porque nunca era alcançada: com os
-# tetos o destino chega no máximo a 43, e hoje o comportamento é o
-# mesmo. A diferença aparece se os pesos mudarem: com o teto, um
-# destino acima de 69 cairia no D-OK.
+# D-RCP é >= 40, sem o teto de 69 da RFC. Rejeição só sai da combinação
+# do D-REJ, porque o motivo de uma rejeição precisa caber numa
+# combinação explicável, e o DICT, com até 12 h de atraso, não leva
+# ninguém à rejeição. Com o 69 da RFC, os piores destinos, de 70 a 75,
+# cairiam no D-OK; com >= 40, eles vão pra 2FA.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
     DecisionRule("D-REJ", PixStatus.REJECTED, all_triggered=("R01", "R02", "R03")),
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),

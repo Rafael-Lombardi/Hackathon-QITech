@@ -40,11 +40,12 @@ class DecisionTreeLayer:
 
 
 # As perguntas de histórico, uma por função. A primeira serve a L02,
-# P03, P09 e P10, e é uma função só por causa do P10: ele fica
-# unavailable quando o P03 ou o P09 ficam, e com a mesma função os dois
-# não têm como divergir.
+# P03, P09 e P10 e conta Pix aprovados, como o device_known e o
+# ip_known: sem 3 aprovados não há aparelho nem IP conhecido a perder.
+# É uma função só por causa do P10, que fica unavailable quando o P03 ou
+# o P09 ficam: com a mesma função os dois não têm como divergir.
 def _short_access_history(context: Context) -> bool:
-    return context.payer.prior_attempts < policy.ACCESS_MIN_PRIOR_ATTEMPTS
+    return context.payer.approved_count < policy.ACCESS_MIN_APPROVED
 
 
 def _payer_is_new(context: Context) -> bool:
@@ -66,7 +67,7 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
     # R$ 1.000)". Com o P03 da RFC ao pé da letra (aparelho sem registro
     # nenhum com o pagador), a soma do dia seria sempre o próprio Pix, e
     # a segunda metade nunca decidiria nada. Aqui aparelho novo é o que
-    # não tinha Pix approved antes de hoje: o limite do Banco Central pra
+    # não tinha Pix aprovado antes de hoje: o limite do Banco Central pra
     # dispositivo não cadastrado é diário, e assim o segundo e o terceiro
     # Pix do dia no aparelho novo também entram na soma.
     payer = context.payer
@@ -118,7 +119,7 @@ def _p06_atypical_amount(context: Context) -> Signal:
     # Abaixo do piso o P06 não dispara, seja qual for a mediana. A
     # pergunta vem antes da mediana pra que o controller possa nem
     # calculá-la nesse caso: o percentile_cont ordena todos os Pix
-    # approved do pagador.
+    # aprovados do pagador.
     amount = context.transaction.amount
     if amount < policy.ATYPICAL_MIN_AMOUNT:
         return policy.not_triggered("P06")

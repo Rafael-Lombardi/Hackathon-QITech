@@ -128,14 +128,17 @@ class PayerHistory:
     comentário do campo avisa.
 
     As contagens de rajada pegam qualquer status, porque a rajada em si
-    é o sinal: contar só approved deixaria invisível o invasor que
+    é o sinal: contar só os aprovados deixaria invisível o invasor que
     insiste depois do primeiro 2FA.
 
     Teto: prior_days, approved_count e approved_days podem chegar
     parados no limiar que os lê (HIGH_SUFFICIENCY_MIN_DAYS,
     MEDIAN_MIN_APPROVED e MEDIAN_MIN_DAYS, do policy.py). O motor só os
-    compara com esse limiar, e contar além dele é consulta à toa; o teto
-    é a própria constante, então mudou o limiar, muda o teto. O resto
+    compara com limiar, e contar além dele é consulta à toa; o teto é a
+    própria constante, então mudou o limiar, muda o teto. Repare que o
+    approved_count tem dois leitores, o lastro do P06 e a pré-condição
+    de aparelho e IP (ACCESS_MIN_APPROVED): o teto precisa ficar no
+    maior dos dois limiares, hoje o MEDIAN_MIN_APPROVED (10). O resto
     precisa ser exato: prior_attempts vira payer_prior_tx na evidência e
     no motivo do D-ATO-2, e as janelas e new_destinations_10m saem na
     evidência do jeito que foram contados.
@@ -143,7 +146,7 @@ class PayerHistory:
 
     prior_attempts: int
     prior_days: int  # dias civis distintos, em São Paulo
-    # Conhecido é já ter sido usado num Pix approved deste pagador, e não
+    # Conhecido é já ter sido usado num Pix aprovado deste pagador, e não
     # só visto. Um 2FA que ninguém confirmou não pode ensinar o motor que
     # o aparelho é do cliente, senão a segunda tentativa do invasor passa
     # limpa. Nas evidências, device_seen_before e ip_seen_before (os
@@ -154,14 +157,14 @@ class PayerHistory:
     amount_1h: int  # centavos
     approved_count: int
     approved_days: int
-    # percentile_cont(0.5) dos approved. None sem nenhum approved, ou com
+    # percentile_cont(0.5) dos aprovados. None sem nenhum aprovado, ou com
     # o Pix abaixo do piso do P06 (ATYPICAL_MIN_AMOUNT): aí o P06 responde
     # sem ela, e o controller pode pular a consulta.
     approved_median_amount: float | None
-    # Recebedores distintos sem Pix approved deste pagador antes da
+    # Recebedores distintos sem Pix aprovado deste pagador antes da
     # janela, contando o recebedor atual.
     new_destinations_10m: int
-    # Pix approved com este aparelho antes da 0h de hoje, em São Paulo
+    # Pix aprovado com este aparelho antes da 0h de hoje, em São Paulo
     device_known_before_today: bool
     device_day_amount: int  # hoje, com este aparelho, qualquer status
 
@@ -206,9 +209,9 @@ class PairHistory:
     """
 
     prior_approved: int
-    # Dias de 24 h entre o primeiro approved do par e o Pix atual, como a
+    # Dias de 24 h entre o primeiro aprovado do par e o Pix atual, como a
     # idade das contas: (transaction_date - primeiro).days. None sem
-    # nenhum approved.
+    # nenhum aprovado.
     first_approved_days_ago: int | None
     # rejected ou two_factor_required no par, nos últimos 7 dias
     recent_anomaly: bool

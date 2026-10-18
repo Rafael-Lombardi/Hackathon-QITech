@@ -98,7 +98,7 @@ def _decide(triggered: Collection[str], payer_risk: int, recipient_risk: int) ->
     for rule in policy.DECISION_TABLE:
         if _matches(rule, triggered, payer_risk, recipient_risk):
             return rule
-    raise RuntimeError("a DECISION_TABLE precisa terminar numa linha sem condição, como a D-OK")
+    raise RuntimeError("a DECISION_TABLE precisa terminar numa linha sem condição, como o D-OK")
 
 
 def _matches(rule: DecisionRule, triggered: Collection[str], payer_risk: int, recipient_risk: int) -> bool:
