@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# v0.6.0, o que mudou da v0.5.0:
+# v0.6.0, o que mudou desde a v0.5:
 #   • aparelho e IP conhecidos voltam a ser os dos Pix aprovados do
 #     pagador (L02, P03, P09, P10), sem cadastro de aparelhos; a camada 3
 #     lê a marcação de fraude do próprio DICT (DICT02, DICT03);
@@ -22,8 +22,9 @@ from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 #     concentrando pagadores passa a pedir 2FA sozinha;
 #   • L03, o teto por Pix (R$ 50.000; R$ 5.000 pra quem nunca teve Pix
 #     aprovado), e três linhas novas de 2FA: D-LIMIT, D-SCAM e D-DRAIN;
-#   • saem D-RESTRICT-SIM e D-REJ-PAY, que dependiam de fontes que só
-#     existiam semeadas.
+#   • saem a linha da restrição simulada e a rejeição do pagador por
+#     evidência externa, que dependiam de fontes que só existiam
+#     semeadas por SQL.
 POLICY_VERSION = "v0.6.0"
 
 
@@ -33,8 +34,8 @@ POLICY_VERSION = "v0.6.0"
 # Nenhuma regra lê janela: quem lê é o repository, e elas moram aqui pra
 # que a consulta e a regra falem do mesmo número. Repare que a janela
 # também está no nome do campo (attempts_5m), na chave da evidência e no
-# nome do sinal: mudar uma janela é mudar os quatro, e no D-REJ também a
-# frase do motivo.
+# nome do sinal: mudar uma janela é mudar os quatro, e no D-DRAIN também
+# a frase do motivo.
 #
 # Com t = transaction_date do Pix atual, anterior é transaction_date <= t
 # (o Pix atual ainda não foi gravado, e um Pix do mesmo instante conta),
@@ -110,6 +111,13 @@ RECURRENT_PAIR_MIN_APPROVED = 3
 RECURRENT_PAIR_MIN_DAYS = 7
 
 LOW_SECURITY_STATISTICS_LIMIT = 30  # DICT01: estatística de segurança abaixo disso
+
+# G01. Longe é mais de 300 km de todo centro habitual do pagador. Centro
+# habitual: os Pix aprovados com localização dos últimos 90 dias, até 24 h
+# antes deste (o Pix atual não ensina a si mesmo, e a rajada de hoje não
+# vira "casa"), agrupados num raio de 100 km; só conta o centro visto em
+# 2 dias distintos. Sem 10 observações em 7 dias não há padrão, e o sinal
+# fica unavailable. Viagem é comum e GPS erra: 6 pontos, e sozinho passa.
 LOCATION_DISTANCE_THRESHOLD_KM = 300
 LOCATION_MIN_OBSERVATIONS = 10
 LOCATION_MIN_DAYS = 7
@@ -140,7 +148,7 @@ class SignalSpec:
 # só existe pra soma (veja CAPS).
 #
 # granularity é a chave da consulta que alimentou o sinal, como a RFC
-# v0.3 pede pra não misturar titular com conta: a conta (source_account,
+# pede pra não misturar titular com conta: a conta (source_account,
 # destination_account), o documento (payer, recipient), o aparelho
 # (device), o par de documentos (pair) ou o próprio Pix (transaction).
 # O R04 cruza a conta destino com o documento recebedor e registra os
@@ -326,8 +334,9 @@ def signal_spec(code: str) -> SignalSpec:
 # nunca mais que isso — relação antiga não apaga sinal grave.
 #
 # payer_account, amount_cap e dict_security_statistics têm um sinal só, e
-# o teto é o próprio peso: não dividem teto com ninguém. Mudou o peso,
-# muda o teto.
+# o teto é o próprio peso: não dividem teto com ninguém. dict_security tem
+# dois que nunca disparam juntos (a marcação é suspeita OU confirmada), e
+# o teto é o peso do DICT03. Mudou o peso, muda o teto.
 #
 # recipient_network em 40: a conta nova concentrando pagadores (R01 +
 # R02 + R03 + R04 = 63, ou 47 sem a rajada do R02) chega ao teto e pede

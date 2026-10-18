@@ -14,11 +14,8 @@ o serviço só enxerga o PixRequest.
 Aqui não mora limite nenhum. Tamanho, faixa e formato ficam no schema, que
 é o contrato; esta conversão só recusa o que o schema não tem como saber —
 que fevereiro não tem dia 31, por exemplo. Medir em dois lugares já deu
-errado neste projeto. No 9d12cad, o schema aceitava participant em
-source_account e o modelo Pydantic, com extra="forbid", recusava: o
-contrato dizia sim e a API respondia 400. E o format: date-time do schema
-não conferia nada — quem validava a data era só o Pydantic, e o contrato
-prometia uma checagem que ele mesmo não fazia.
+errado neste projeto: o schema dizia sim a um campo que a conversão
+recusava, e o contrato prometia uma checagem de data que ninguém fazia.
 
 Idade das contas e hora local também ficam de fora. São cálculos do
 controller e do motor, feitos sobre o PixRequest pronto.

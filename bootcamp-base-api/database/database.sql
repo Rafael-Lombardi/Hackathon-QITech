@@ -1,4 +1,4 @@
--- O antifraude Pix, nas tabelas de contrato, histórico e fontes:
+-- O antifraude Pix, em seis tabelas, as de contrato e as de histórico:
 --   pix_transaction_status       os três veredictos do contrato.
 --   pix_signal_status            os três estados de um sinal.
 --   customer                     quem paga ou recebe: um por CPF ou CNPJ (o

@@ -4,7 +4,7 @@ from database import clear_context, open_context
 
 
 def register_session_manager_middleware(application: FastAPI) -> None:
-    # Context opens per request; controller owns commit.
+    # Um contexto por requisição; quem commita é o controller.
     @application.middleware("http")
     async def manage_session(request: Request, call_next):
         context = open_context()

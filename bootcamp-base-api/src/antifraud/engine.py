@@ -38,8 +38,9 @@ LAYERS: tuple[Layer, ...] = (
     DictSecurityLayer(),
 )
 
-# Quantos sinais a frase do D-PAY e do D-RCP cita, do mais pesado pro
-# mais leve. Os outros continuam em metadata.signals.
+# Quantos sinais as frases de nota (D-PAY, D-RCP, D-REJ-ATO e D-REJ-RCP)
+# citam, do mais pesado pro mais leve. Os outros continuam em
+# metadata.signals.
 _REASON_MAX_SIGNALS = 3
 
 # As marcações do DICT que abrem a porteira das rejeições do destino.

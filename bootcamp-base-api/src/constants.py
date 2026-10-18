@@ -44,7 +44,7 @@ def _read_dict_api_timeout() -> float:
 # chamada inteira, e não cobre o DNS.
 DICT_API_TIMEOUT = _read_dict_api_timeout()
 
-# Health endpoints are public; all challenge routes require token.
+# A raiz e o health check são públicos; o resto pede o token.
 BYPASS_ENDPOINTS = [
     "/",
     "/health_check",

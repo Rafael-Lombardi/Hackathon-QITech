@@ -67,8 +67,7 @@ class PixTransactionRepository:
         axis, family, points, rule_result_data); o pix_transaction_id
         entra aqui. Passar a lista inteira ao session.execute vira um
         INSERT ... VALUES (...), (...) — o insertmanyvalues do SQLAlchemy
-        2.0. Um INSERT por sinal custaria o dobro: medido com 8 clientes,
-        550 Pix por segundo em vez de 1.000.
+        2.0. Um INSERT por sinal custaria o dobro (medido).
         """
         # Com a lista vazia, o SQLAlchemy mandaria um INSERT sem valores.
         if not signals:
@@ -107,8 +106,7 @@ class PixTransactionRepository:
         # Uma consulta traz a tabela inteira, que são três linhas. Repare
         # que o dict fica pronto ANTES de entrar no cache, num update só:
         # preenchido linha a linha, outra thread podia achar o cache pela
-        # metade e levar um KeyError — sem a extensão C do SQLAlchemy foram
-        # 400 leituras parciais em 884 mil. Enumerator que não existe
+        # metade e levar um KeyError (aconteceu). Enumerator que não existe
         # também vira KeyError, mas aí é erro de programação, e tem de
         # aparecer alto.
         if not cache:

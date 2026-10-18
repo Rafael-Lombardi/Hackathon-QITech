@@ -29,7 +29,7 @@ Toda requisição atravessa as mesmas camadas, sempre na mesma ordem. Este é o 
         ↓
   src/controllers/     a ordem do caso de uso. pix_request.py converte o
         ↓              payload; o controller confere a idempotência, pergunta
-        ↓              ao DICT, cria customer e account, trava o pagador,
+        ↓              ao DICT, trava o pagador, cria customer e account,
         ↓              conta o histórico, chama o motor, grava e dá o commit
         ↓
         ├──→ src/connectors/     o DICT, lá fora: endereço, prazo e log
@@ -58,7 +58,7 @@ Abra os arquivos e siga o caminho uma vez. Vale mais que ler três vezes este te
 | `resources/` | receber a requisição, conferir o schema (pelo decorator), chamar **um** controller, devolver a resposta com o status certo (201 ou 200) | saber SQL, decidir regra, ter `raise` |
 | `schemas/` | dizer qual JSON é aceito na entrada, e recusar o que não é | falar com banco, decidir regra |
 | `controllers/` | a ordem do caso de uso: converter o payload, chamar repositories, o connector e o motor, salvar (`commit`) | escrever consulta, saber que existe HTTP, ter regra antifraude dentro |
-| `antifraud/` | a regra antifraude: os 22 sinais, os pesos, os tetos e a tabela de decisão, sobre um `Context` pronto | importar qualquer coisa de fora do próprio pacote — banco, FastAPI, `constants`, variável de ambiente, relógio |
+| `antifraud/` | a regra antifraude: os 23 sinais, os pesos, os tetos e a tabela de decisão, sobre um `Context` pronto | importar qualquer coisa de fora do próprio pacote — banco, FastAPI, `constants`, variável de ambiente, relógio |
 | `repositories/` | buscar, criar e contar no banco, inclusive o histórico que o motor lê | decidir se aquilo era permitido, escolher limiar |
 | `models/` | descrever as tabelas em Python | ter regra dentro |
 | `dtos/` | transformar a análise gravada no dicionário que vira a resposta | buscar coisa no banco, decidir regra |
@@ -92,7 +92,7 @@ O combinado que isso exige é curto, para caber na cabeça:
 
 Motor, DTO e connector não chegam nem perto dele. O `/` e o `/health_check` não constroem controller nenhum, e por isso nunca tocam no banco: o health check que o Docker consulta a cada três segundos não depende de o banco estar de pé.
 
-**E o `commit`?** Nunca é do middleware. Quem sabe se o trabalho terminou é o controller, e é por isso que `self.session.commit()` é a última linha antes do `return` em `src/controllers/pix_transaction_controller.py`. O middleware cuida do ciclo de vida; o controller decide o conteúdo — e, aqui, decide também quando devolver a conexão. Repare no `rollback` logo depois da primeira busca pelo `id`: ele devolve a conexão ao pool enquanto a API espera o DICT, que pode levar os 2 s do prazo. Medido com o DICT lento: segurando a conexão passavam 6 Pix por segundo; devolvendo, 12. Daí em diante quem segura é o pool de 40 threads do processo, porque cada POST prende uma delas durante a espera.
+**E o `commit`?** Nunca é do middleware. Quem sabe se o trabalho terminou é o controller, e é por isso que `self.session.commit()` é a última linha antes do `return` em `src/controllers/pix_transaction_controller.py`. O middleware cuida do ciclo de vida; o controller decide o conteúdo — e, aqui, decide também quando devolver a conexão. Repare no `rollback` logo depois da primeira busca pelo `id`: ele devolve a conexão ao pool enquanto a API espera o DICT, que pode levar os 2 s do prazo — com o DICT lento, segurar a conexão durante a espera derrubava a vazão pela metade. Daí em diante quem segura é o pool de 40 threads do processo, porque cada POST prende uma delas durante a espera.
 
 ---
 
@@ -114,7 +114,7 @@ Motor, DTO e connector não chegam nem perto dele. O `/` e o `/health_check` nã
 
 Quatro armadilhas que pegam quase todo mundo. As duas primeiras custam caro pelo mesmo motivo: a mensagem de erro aponta para o sintoma, e não para a causa. A terceira é pior — nela não vem mensagem nenhuma.
 
-**Renomeou uma chave de evidência?** As frases de `reasons` leem a evidência pelo nome da chave: o motivo do D-ATO-1 lê o `ratio` do P06, o do D-REJ lê o `account_age_days` do R01. Renomeie a chave na camada e esqueça o `engine.py`, e o próximo Pix que cair naquela linha da tabela volta 500, com um `KeyError` no log. Os outros seguem verdes, e o defeito espera o caso raro para aparecer.
+**Renomeou uma chave de evidência?** As frases de `reasons` leem a evidência pelo nome da chave: o motivo do D-ATO-1 lê o `ratio` do P06, o do D-DRAIN lê o `attempts_5m` do P04 e o `new_destinations_10m` do P07. Renomeie a chave na camada e esqueça o `engine.py`, e o próximo Pix que cair naquela linha da tabela volta 500, com um `KeyError` no log. Os outros seguem verdes, e o defeito espera o caso raro para aparecer.
 
 **Mexeu no `database/database.sql` e nada mudou?** Aquele arquivo roda uma vez só: **quando o banco nasce**. Depois disso o Postgres nunca mais olha para ele — nem no `docker compose up` seguinte, nem num `docker compose restart db`. O sintoma aparece longe daí, num 500 da API e numa linha do log como estas:
 
@@ -132,7 +132,7 @@ docker compose up -d --build --wait
 
 O `-v` é o que apaga o volume, o disco do banco — e **leva junto todo Pix gravado** até aqui. Em sistema de verdade ninguém apaga o banco, claro: lá a mudança de schema entra por um comando aplicado no deploy, e é por isso que este projeto guarda o schema num arquivo versionado em vez de deixá-lo só dentro do banco.
 
-**Mudou um peso e esqueceu a `POLICY_VERSION`?** Nada quebra, e é esse o problema. Cada análise grava a versão da política que a decidiu, e é por ela que alguém, amanhã, entende por que um Pix de ontem virou 2FA. Com a versão parada, a análise de ontem e a de hoje dizem `v0.5.0` as duas, decididas por pesos diferentes, e ninguém tem como separar uma da outra.
+**Mudou um peso e esqueceu a `POLICY_VERSION`?** Nada quebra, e é esse o problema. Cada análise grava a versão da política que a decidiu, e é por ela que alguém, amanhã, entende por que um Pix de ontem virou 2FA. Com a versão parada, a análise de ontem e a de hoje dizem `v0.6.0` as duas, decididas por pesos diferentes, e ninguém tem como separar uma da outra.
 
 **Mexeu numa dependência?** As dependências moram em dois lugares, e eles não se falam. As da API são instaladas **dentro da imagem**, quando o Docker constrói a API; as dos testes ficam no **seu `.venv`**. Acrescentar uma linha no `requirements.txt` não avisa nenhum dos dois — e o `--reload` da API só recarrega o `src/`, não reinstala nada. Mexeu no `requirements.txt`: `docker compose up -d --build --wait`. Mexeu no `requirements-dev.txt`: `uv pip install -r requirements-dev.txt` de novo, com o `.venv` ativo.
 
@@ -165,9 +165,9 @@ Quando você estiver com pressa, vai dar vontade de escrever a consulta direto n
 
 ### Por que o motor é um pacote à parte
 
-No Base Service, a regra de negócio mora no controller: um `if` que olha o status e levanta um erro. Aqui são 22 sinais, oito grupos com teto e uma tabela de decisão em ordem — no controller, isso ficaria misturado com trava, sessão e commit, e ninguém conseguiria ler a política sem ler também a transação de banco.
+No Base Service, a regra de negócio mora no controller: um `if` que olha o status e levanta um erro. Aqui são 23 sinais, nove grupos com teto e uma tabela de decisão em ordem — no controller, isso ficaria misturado com trava, sessão e commit, e ninguém conseguiria ler a política sem ler também a transação de banco.
 
-O motor é a parte da regra que não precisa de banco: recebe um `Context` pronto — o Pix normalizado, o histórico contado, as estatísticas e evidências de segurança do DICT — e devolve uma `Analysis`. O que se ganha: a mesma entrada dá sempre a mesma análise, porque sem relógio e sem banco lá dentro a resposta não depende de que horas são nem do que outra requisição gravou no meio. Todo número que o motor usa cabe em `src/antifraud/policy.py`, com o porquê ao lado e a versão que vai gravada em cada análise. E o controller continua dono da ordem: quem busca, trava, grava e dá o commit é ele, como no Base Service.
+O motor é a parte da regra que não precisa de banco: recebe um `Context` pronto — o Pix normalizado, o histórico contado, a estatística de segurança e a marcação de fraude do DICT — e devolve uma `Analysis`. O que se ganha: a mesma entrada dá sempre a mesma análise, porque sem relógio e sem banco lá dentro a resposta não depende de que horas são nem do que outra requisição gravou no meio. Todo número que o motor usa cabe em `src/antifraud/policy.py`, com o porquê ao lado e a versão que vai gravada em cada análise. E o controller continua dono da ordem: quem busca, trava, grava e dá o commit é ele, como no Base Service.
 
 O preço: o controller monta o `Context` inteiro antes de chamar o motor, inclusive contagens que nenhuma regra vai usar naquele Pix, e um campo novo de histórico passa por três arquivos (o `contract.py`, o repository e o controller).
 
@@ -175,7 +175,7 @@ E um pacote puro sem teste unitário próprio, por quê? Porque o risco não est
 
 ### Dentro do motor, a mesma regra
 
-As três camadas (`src/antifraud/layers/`) seguem a seta por dentro: nenhuma camada importa outra, e todas importam só o `contract.py` e o `policy.py`. Quando uma regra precisa de uma condição que mora em outra camada, ela a recalcula a partir do `Context` — o R04 refaz a idade da conta de destino, que é a condição do R01, em vez de ler o sinal dele. O porquê, e o que custaria passar os sinais de uma camada para a outra, está na docstring do `Layer`, em `contract.py`.
+As três camadas de regras (`src/antifraud/layers/`, quatro arquivos: a terceira, a do DICT, está em dois, estatística e marcação de fraude) seguem a seta por dentro: nenhuma camada importa outra, e todas importam só o `contract.py` e o `policy.py`. Quando uma regra precisa de uma condição que mora em outra camada, ela a recalcula a partir do `Context` — o R04 refaz a idade da conta de destino, que é a condição do R01, em vez de ler o sinal dele. O porquê, e o que custaria passar os sinais de uma camada para a outra, está na docstring do `Layer`, em `contract.py`.
 
 Nenhuma camada lê o sinal de outra; quem junta é o `engine.py`, nos tetos, nas notas e na tabela de decisão.
 

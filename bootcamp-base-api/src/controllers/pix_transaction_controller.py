@@ -66,8 +66,8 @@ class PixTransactionController(BaseController):
         # O rollback não desfaz nada — só houve um SELECT. Ele devolve a
         # conexão ao pool, o estoque de conexões de banco que o processo
         # divide entre todas as requisições, pra outra usar enquanto este
-        # Pix espera o DICT. Medido com 120 Pix e o DICT lento: 6 Pix/s
-        # segurando a conexão, 12 devolvendo.
+        # Pix espera o DICT: com o DICT lento, segurar a conexão na espera
+        # derrubava a vazão pela metade.
         self.session.rollback()
         dict_information = self._get_dict_security_information(
             pix_request.destination_account.document_number
@@ -176,9 +176,8 @@ class PixTransactionController(BaseController):
         pagador primeiro. Dois Pix cruzados de gente nova — A paga B
         enquanto B paga A — criariam os dois customers em ordens opostas,
         cada um esperando o INSERT do outro terminar: deadlock, e um dos
-        dois vira 500. Na mesma ordem, o segundo só espera o primeiro
-        commitar. Reproduzido com 100 pares cruzados: pagador primeiro, 73
-        POSTs com 500; em ordem de documento, nenhum.
+        dois vira 500 (reproduzido). Na mesma ordem, o segundo só espera o
+        primeiro commitar.
 
         Pagador e recebedor podem ser o mesmo documento (Pix pra si mesmo,
         o REL03), e aí é um customer só.

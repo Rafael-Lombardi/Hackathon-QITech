@@ -50,74 +50,30 @@ def create_app() -> FastAPI:
     # ────────────────────────────────────────────────────────────────
     # Os middlewares — e a ordem deles, que é regra e não gosto
     # ────────────────────────────────────────────────────────────────
-    # Middleware é uma camada por fora da aplicação: toda requisição
-    # atravessa todas elas na ida, e todas de novo na volta. São como
-    # cascas de cebola, e o ÚLTIMO registrado é a casca de FORA.
+    # Middleware é casca por fora da aplicação: toda requisição atravessa
+    # todas na ida e na volta, e o ÚLTIMO registrado é a casca de FORA.
+    # Por isso as cinco linhas abaixo estão de trás pra frente: leia de
+    # baixo pra cima e a requisição faz este caminho:
     #
-    # Ou seja: destas cinco linhas, a de BAIXO é a primeira que a
-    # requisição encontra, e a de CIMA é a última. Lendo de fora para
-    # dentro, acontece isto:
-    #
-    #     requisição chega
-    #           ↓
     #     request_context   dá um identificador único a esta requisição
-    #           ↓
     #     request_logger    escreve "ENTROU" e, na volta, "SAIU"
-    #           ↓
     #     internal_token    confere o INTERNAL-TOKEN. Sem ele, para aqui
-    #           ↓
-    #     body_size_limit   recusa o POST de corpo grande demais, ou sem
-    #           ↓           tamanho declarado, antes de ler um byte dele
-    #           ↓
-    #     session_manager   cuida da sessão de banco: desfaz se deu
-    #           ↓           errado, fecha sempre — e nunca salva
-    #           ↓
+    #     body_size_limit   recusa o POST grande demais, ou sem tamanho
+    #                       declarado, antes de ler um byte do corpo
+    #     session_manager   a sessão de banco: desfaz se deu errado,
+    #                       fecha sempre, nunca salva
     #     as rotas
     #
-    # Cada posição tem um porquê, e trocar duas linhas muda o que a API
-    # faz:
-    #
-    # • O identificador vem ANTES do log: se viesse depois, as linhas de
-    #   log da requisição sairiam sem o nome dela, e o middleware
-    #   existiria para nada.
-    # • O log vem ANTES do token: assim a tentativa recusada com 403
-    #   também aparece no log — e essa é justamente a que você quer ver,
-    #   porque mil delas seguidas é alguém tentando adivinhar o token.
-    # • A sessão de banco fica por DENTRO do token, encostada nas
-    #   rotas: quem não passou na porta leva 403 na camada de cima e não
-    #   chega a ter uma sessão. É o mais interno de propósito — banco é
-    #   o recurso mais caro desta lista, e o último que se empresta.
-    # • O teto do corpo fica entre os dois. Depois do token, porque quem
-    #   nem tem a chave leva 403 e não fica sabendo nada do contrato. E
-    #   antes da sessão, porque um corpo recusado não tem o que pedir ao
-    #   banco.
-    #
-    # Nada disso é teoria, e dá pra ver com os olhos. Troque as duas
-    # últimas linhas de lugar (o identificador passa a ser registrado
-    # antes do log, ou seja, a executar DEPOIS dele), consulte um Pix
-    # pelo GET e olhe o log:
-    #
-    #     docker compose logs api | grep request_logger | tail -2
-    #
-    # (O grep é necessário: sem ele o tail pega a linha de acesso do
-    # uvicorn, que é outra coisa e não passa por este middleware. E o
-    # /health_check não serve pro teste: ele é das rotas que o
-    # request_logger deixa de fora.)
-    #
-    # As duas linhas saem com [-] no lugar do identificador: o log
-    # aconteceu antes de existir um nome para aquela requisição. Desfaça
-    # a troca e o nome volta.
-    #
-    # Repare no que essa experiência tem de incômodo: a suíte continua
-    # TODA VERDE com a ordem trocada. Nenhum teste aqui guarda esta
-    # ordem — o preço aparece no dia do incidente, quando o log não
-    # servir pra achar a requisição. Teste que não existe não avisa
-    # nada, e é por isso que este comentário existe.
-    #
-    # ATENÇÃO, e é aqui que quase todo mundo tropeça: as cinco linhas
-    # abaixo são o DIAGRAMA ACIMA DE TRÁS PRA FRENTE. O FastAPI embrulha
-    # a aplicação de dentro pra fora, então o ÚLTIMO registrado é o
-    # PRIMEIRO a executar. Leia de baixo pra cima e o diagrama volta.
+    # Cada posição tem um porquê. O identificador vem antes do log, senão
+    # as linhas sairiam com [-] no lugar do nome da requisição. O log vem
+    # antes do token, pra que o 403 também apareça — mil deles seguidos é
+    # alguém adivinhando o token. O teto do corpo vem depois do token
+    # (quem não tem a chave não fica sabendo do contrato) e antes da
+    # sessão (corpo recusado não tem o que pedir ao banco). A sessão é a
+    # mais interna de propósito: banco é o recurso mais caro da lista, e
+    # o último que se empresta. Nenhum teste guarda esta ordem — a suíte
+    # fica verde com duas linhas trocadas —, e é por isso que este
+    # comentário existe.
     register_session_manager_middleware(application)
     register_body_size_limit_middleware(application)
     register_internal_token_middleware(application)

@@ -16,9 +16,8 @@ REQUEST_ID_HEADER = "X-Request-ID"
 # desconfiança está em build_request_id, logo abaixo.
 SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 
-# Quando não há requisição nenhuma acontecendo — a API subindo, ou o
-# aplicação subindo, por exemplo — o log escreve isto no
-# lugar do identificador.
+# Quando não há requisição nenhuma acontecendo — a API subindo, por
+# exemplo — o log escreve isto no lugar do identificador.
 NO_REQUEST_ID = "-"
 
 

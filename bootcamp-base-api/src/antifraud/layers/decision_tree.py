@@ -41,6 +41,10 @@ class DecisionTreeLayer:
         ]
 
 
+# G01: a distância até o centro habitual mais perto vem pronta do
+# controller — None quando não há padrão (poucas observações, ou nenhum
+# centro com 2 dias) ou quando o Pix veio sem localização. Os números e o
+# porquê estão nas LOCATION_* do policy.py.
 def _g01_unusual_location(context: Context) -> Signal:
     distance = context.transaction.location_distance_km
     if distance is None:

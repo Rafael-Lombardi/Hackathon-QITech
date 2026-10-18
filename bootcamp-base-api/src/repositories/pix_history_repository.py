@@ -59,8 +59,8 @@ from repositories.pix_transaction_repository import PixTransactionRepository
 # contrário: primeiro as contas dos candidatos, que são poucas, e depois
 # os approved anteriores à janela pra alguma delas. Repare no
 # MATERIALIZED: sem ele o Postgres embute candidate_account na consulta,
-# reordena o JOIN e volta a buscar a conta de cada approved — medido num
-# pagador com 3 mil Pix, 7.916 páginas em vez de 215.
+# reordena o JOIN e volta a buscar a conta de cada approved (37 vezes
+# mais páginas lidas, medido).
 _PAYER_QUERY = text("""
     WITH payer_pix AS (
         SELECT pix.transaction_date,

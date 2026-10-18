@@ -2,7 +2,7 @@
 
 A API do motor antifraude Pix: recebe um Pix em `POST /pix/transaction`, decide entre `approved`, `two_factor_required` e `rejected`, grava o Pix com a decisão explicada e devolve a análise. `GET /pix/transaction/{id}` devolve o que foi gravado. É **Python 3.11 + FastAPI**, com **PostgreSQL 16**, rodando em **Docker**, e nasceu do Base Service do bootcamp. Para decidir, ela consulta o DICT, o diretório do Banco Central que liga chave Pix a conta; aqui quem faz o papel dele é um mock, um servidor de mentira que devolve as respostas combinadas com ele (seção 4).
 
-As decisões deste serviço seguem a política `v0.5.0`, descrita na [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099). Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança.
+As decisões seguem a política `v0.6.0` ([`src/antifraud/policy.py`](src/antifraud/policy.py)), que parte da [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099) com os ajustes listados no cabeçalho do arquivo. O DICT responde, numa consulta só, a estatística de segurança do recebedor (`DICT01`) e a marcação de fraude dele (`DICT02`, `DICT03`): sem marcação é informação, e DICT fora do ar deixa a camada 3 `unavailable` — nunca segurança.
 
 As regras, o porquê de cada parâmetro e a tabela de decisão estão no [README da raiz](../README.md). Este é o do serviço: como subir, o que cada rota responde, a configuração, o mock, os testes e o caminho de uma requisição.
 
@@ -34,10 +34,10 @@ Não precisa criar nem copiar arquivo nenhum antes: toda configuração tem valo
 | Serviço | O que é | Porta |
 |---|---|---|
 | `api` | a API. Roda com `--reload`: mudou um arquivo de `src/`, ela recarrega sozinha | 3000 |
-| `db` | o PostgreSQL, com as tabelas do [`database/database.sql`](database/database.sql) | 5432 |
+| `db` | o PostgreSQL 16, com as tabelas do [`database/database.sql`](database/database.sql) e `shm_size` de 256 MB (nos 64 MB padrão do Docker o `VACUUM` paralelo já não cabe) | 5432 |
 | `dict-mock` | o DICT de mentira, um MockServer (seção 4) | 1080 |
 
-O `--wait` devolve o terminal quando o `/health_check` da API responde e o banco aceita conexão. O mock conta como pronto assim que o container roda: a imagem dele não tem shell para um healthcheck, e ele ainda leva de 2 a 18 s para atender (medido). É isso que a segunda linha espera; até lá, o DICT01 sai `unavailable` e o Pix é decidido sem a camada 3.
+O `--wait` devolve o terminal quando o `/health_check` da API responde e o banco aceita conexão. O mock conta como pronto assim que o container roda: a imagem dele não tem shell para um healthcheck, e ele ainda leva de 2 a 18 s para atender (medido). É isso que a segunda linha espera; até lá, a camada 3 sai `unavailable` e o Pix é decidido pelas outras duas.
 
 ```bash
 curl -i http://localhost:3000/health_check    # 204, sem corpo
@@ -95,14 +95,14 @@ curl -s -X POST http://localhost:3000/pix/transaction \
   }'
 ```
 
-Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para caber na tela):
+Num banco novo, a resposta inteira, com os 23 sinais (um por linha aqui, para caber na tela):
 
 ```json
 {
-  "key": "b1f7f4da-ee18-403d-903d-9cd63c41fa60",
+  "key": "b3ed101b-45ee-4988-81d6-229e1580e4a2",
   "status": "approved",
   "metadata": {
-    "policy_version": "v0.5.0",
+    "policy_version": "v0.6.0",
     "decision_rule": "D-OK",
     "reasons": ["Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)"],
     "scores": {"payer": 8, "recipient": 0},
@@ -113,6 +113,8 @@ Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para ca
       {"code": "R01", "layer": 1, "granularity": "destination_account", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0},
       {"code": "REL03", "layer": 1, "granularity": "pair", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0},
       {"code": "L02", "layer": 2, "granularity": "payer", "family": "Limite", "axis": "payer", "status": "unavailable", "points": 0},
+      {"code": "L03", "layer": 2, "granularity": "payer", "family": "Limite", "axis": "payer", "status": "not_triggered", "points": 0},
+      {"code": "G01", "layer": 2, "granularity": "payer", "family": "Localização", "axis": "payer", "status": "unavailable", "points": 0},
       {"code": "P03", "layer": 2, "granularity": "payer", "family": "Perfil", "axis": "payer", "status": "unavailable", "points": 0},
       {"code": "P04", "layer": 2, "granularity": "payer", "family": "Velocity", "axis": "payer", "status": "unavailable", "points": 0},
       {"code": "P05", "layer": 2, "granularity": "payer", "family": "Montante", "axis": "payer", "status": "unavailable", "points": 0},
@@ -126,22 +128,26 @@ Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para ca
       {"code": "R04", "layer": 2, "granularity": "destination_account+recipient", "family": "Contraparte", "axis": "recipient", "status": "unavailable", "points": 0},
       {"code": "REL01", "layer": 2, "granularity": "pair", "family": "Contraparte", "axis": "recipient", "status": "unavailable", "points": 0},
       {"code": "REL02", "layer": 2, "granularity": "pair", "family": "Contraparte", "axis": "recipient", "status": "unavailable", "points": 0},
-      {"code": "DICT01", "layer": 3, "granularity": "recipient", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0}
+      {"code": "DICT01", "layer": 3, "granularity": "recipient", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0},
+      {"code": "DICT02", "layer": 3, "granularity": "recipient", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0},
+      {"code": "DICT03", "layer": 3, "granularity": "recipient", "family": "Contraparte", "axis": "recipient", "status": "not_triggered", "points": 0}
     ]
   }
 }
 ```
+
+Os 8 são do L01 (22h15 com R$ 1.500); a conta de destino tem 7 dias e 13 horas, e o R01 fica calado; os 15 sinais de histórico saem `unavailable` porque é o primeiro Pix do pagador, e o L03 fica calado porque R$ 1.500 está longe do teto de R$ 5.000 de quem nunca teve Pix aprovado. O DICT respondeu o padrão do mock (estatística 70, sem marcação): DICT01, DICT02 e DICT03 calados.
 
 | Campo | O que é |
 |---|---|
 | `key` | o identificador da análise, um UUID gerado aqui (a coluna `pix_transaction_key`). O `id` serial da linha nunca sai |
 | `status` | `approved`, `two_factor_required` ou `rejected` |
 | `metadata.policy_version` | a versão dos pesos e da tabela de decisão que valiam quando o Pix chegou |
-| `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-DATA-UNAVAILABLE`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
+| `metadata.decision_rule` | a linha da tabela que decidiu, na ordem em que são tentadas: `D-REJ-ATO`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-LIMIT`, `D-SCAM`, `D-DRAIN`, `D-RCP` ou `D-OK` |
 | `metadata.reasons` | a frase dessa linha, com os números da evidência |
 | `metadata.scores` | a nota de 0 a 100 do pagador (`payer`) e a do destino (`recipient`) |
 | `metadata.evidence_sufficiency` | quanto histórico sustenta cada nota: `unavailable`, `low`, `medium` ou `high` |
-| `metadata.signals` | os 22 sinais, na ordem do catálogo. `DICT02`/`DICT03` representam evidência antifraude do DICT suspeita/confirmada na fixture; `clear` e ausência não pontuam. |
+| `metadata.signals` | os 23 sinais, na ordem do catálogo, cada um com camada, família, eixo, granularidade (a chave que a regra consultou), estado e pontos; `evidence` só quando disparou |
 
 **Mandou o mesmo Pix de novo?** `200`, com a análise que já estava gravada, e nada é contado de novo no histórico: é a idempotência, e quem garante é o `UNIQUE(external_id)` do banco. O mesmo `id` com outro conteúdo é `409`, inclusive quando os dois chegam ao mesmo tempo por pagadores diferentes: o segundo espera o primeiro gravar e responde como num reenvio. Repare que a comparação é com o payload como chegou: campos do JSON em outra ordem são o mesmo Pix, mas o CPF agora com máscara já é outro pedido.
 
@@ -206,23 +212,24 @@ O `default_token` só vale porque isto é um projeto de estudo, sem dado de ning
 
 ---
 
-## 4. O mock da evidência de segurança do DICT
+## 4. O mock do DICT
 
-A camada 3 consulta evidências de segurança do DICT sobre o recebedor. O serviço `dict-mock` usa o endpoint legado abaixo apenas para compatibilidade da fixture:
+A camada 3 pergunta ao DICT pelo documento do recebedor, uma vez por Pix, e a resposta traz duas coisas: a estatística de segurança e a marcação de fraude. Quem responde aqui é o serviço `dict-mock`:
 
 ```
-GET /security-statistics/{documento, só dígitos}   →   200 {"security_statistics": 70}
+GET /security-statistics/{documento, só dígitos}   →   200 {"security_statistics": 70, "fraud_marker": null}
 ```
 
-O DICT de verdade devolve dados de chave, titularidade, estatísticas e marcações de segurança. O mock simplifica isso com uma resposta estatística compatível e fixtures de marcação. `clear` não significa legitimidade e `unavailable` não significa segurança. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa.
+`security_statistics` é um inteiro de 0 a 100, e abaixo de 30 dispara o DICT01 (+32). `fraud_marker` é `null` (ou ausente) quando não há marcação, `"suspicious"` (DICT02, +20) ou `"confirmed"` (DICT03, +25); a marcação do recebedor é também a porteira das rejeições `D-REJ-RCP` e `D-REJ-CROSS`. O DICT de verdade devolve contadores de fraude por janela e as marcações que os participantes registram contra o documento (Manual do DICT, caps. 10 e 18); o mock reduz isso a um número e uma palavra. Qualquer resposta fora desse combinado — erro, prazo estourado, estatística fora da faixa, marcação desconhecida — deixa os três sinais `unavailable`, e indisponibilidade nunca vira segurança. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa.
 
 | Documento do recebedor | Responde | Para quê |
 |---|---|---|
-| qualquer um | `70` | o caso comum: nada contra o recebedor |
-| `999.999.999-99` | `12` | demonstração: estatística desfavorável, DICT01 dispara (+32) |
-| `888.888.888-88` | `70`, depois de 3 s | demonstração: passa do prazo de 2 s, o DICT01 sai `unavailable` e o Pix é decidido sem ele |
+| qualquer um | `70`, sem marcação | o caso comum: nada contra o recebedor |
+| `999.999.999-99` | `12`, marcação `confirmed` | demonstração: DICT01 +32 e DICT03 +25. Um primeiro Pix pra ele já pede 2FA (destino 57, `D-RCP`); com rajada de muita gente, é rejeição (`D-REJ-RCP`) |
+| `777.777.777-77` | `70`, marcação `suspicious` | demonstração: só o DICT02 (+20), que sozinho aprova, mas abre a porteira das rejeições do destino |
+| `888.888.888-88` | `70`, depois de 3 s | demonstração: passa do prazo de 2 s, a camada 3 sai `unavailable` e o Pix é decidido sem ela |
 
-Repare que o DICT01 sozinho não pede 2FA: leva o destino a 32. Pede quando vem junto de outro indício do destino — conta de destino aberta há menos de 7 dias (R01, 44), um pagador com histórico que nunca mandou Pix para esse recebedor (REL01, 40) ou uma rajada de entradas (R02, R03).
+Repare que o DICT01 sozinho não pede 2FA: leva o destino a 32. Pede quando vem junto de outro indício do destino — conta de destino aberta há menos de 7 dias (R01, 44), um pagador com histórico que nunca mandou Pix para esse recebedor (REL01, 40), a marcação (DICT02 ou DICT03) ou uma rajada de entradas (R02, R03).
 
 Como os testes combinam a resposta de cada documento, as armadilhas do MockServer e como recomeçar uma demonstração (`docker compose restart dict-mock`): [`mockserver/README.md`](mockserver/README.md).
 
@@ -236,14 +243,9 @@ source .venv/bin/activate
 pytest
 ```
 
-A stack precisa estar de pé (seção 1). O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova. A suíte leva uns 12 s.
+A stack precisa estar de pé (seção 1). O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova. São 198 testes, em uns 20 s.
 
-Todos são de integração. A maioria fala HTTP com a API, como um cliente faria;
-os testes de resiliência também usam controller/repositories reais e sessões
-PostgreSQL para simular falha de infraestrutura e expiração de lease. Cada
-teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios),
-monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O
-que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
+Todos são de integração, e só HTTP: nenhum importa `src/`, nenhum grava nada por SQL. Cada teste cria o próprio mundo (documentos, contas, aparelhos e IPs sorteados), monta o histórico com POSTs de data escolhida — as janelas contam em `transaction_date`, então "10 Pix em 10 dias" é mandar 10 Pix com essas datas — e escreve no mock o roteiro do recebedor dele quando o assunto é a camada 3. Não precisa limpar o banco entre rodadas. O que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
 
 ---
 
@@ -255,19 +257,23 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
 1. converte o payload            data impossível é 400, antes de tudo
 2. procura o id                  reenvio idêntico: a análise gravada (200);
                                  outro conteúdo: 409. Sem DICT, sem contar nada
-3. pergunta ao DICT              pelo recebedor, ANTES de travar qualquer linha,
+3. pergunta ao DICT              pelo recebedor, ANTES de travar qualquer coisa,
                                  e com a conexão de volta ao pool durante a espera
-4. cria customer e account       na primeira aparição, em ordem de documento:
+4. trava o pagador               advisory lock pelo documento, até o commit:
+                                 dois Pix do mesmo CPF passam um de cada vez
+5. cria customer e account       na primeira aparição, em ordem de documento:
                                  dois Pix cruzados não esperam um pelo outro
-5. trava o pagador               SELECT ... FOR NO KEY UPDATE no customer dele,
-                                 e procura o id de novo
-6. conta o histórico             monta o Context e roda o motor
-7. grava o Pix e os 22 sinais    e só então dá o commit → 201
-8. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
+6. procura o id de novo          outro POST do mesmo Pix pode ter gravado
+                                 enquanto este esperava a trava
+7. conta o histórico             por transaction_date, nas contas do documento;
+                                 monta o Context e roda o motor
+8. grava o Pix e os 23 sinais    INSERT ... ON CONFLICT (external_id) DO NOTHING,
+                                 e só então dá o commit → 201
+9. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
 
-O histórico usa `received_at`, o recebimento do servidor; `transaction_date` é reservado ao relógio de negócio. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. A conclusão do recibo usa `owner_token` em uma atualização condicional: um avaliador que perdeu o lease não pode completar ou marcar como falho o recibo de outro.
+O histórico conta em `transaction_date`, o tempo do negócio, que vem do sistema do banco no payload: é o que deixa qualquer cenário ser reproduzido mandando Pix com as datas escolhidas, e um Pix que chegue atrasado cai no lugar certo. O `received_at` fica gravado só para auditoria.
 
 Quem fala com o banco, o DICT e o motor é o controller, e só ele. O mapa das pastas, o que cada uma pode e não pode e onde mexer para cada mudança estão em [`docs/como-o-projeto-e-organizado.md`](docs/como-o-projeto-e-organizado.md).
 
@@ -290,7 +296,7 @@ Ou ponha as três no `.env`, que a subida e os testes leem.
 
 **Mexeu no `requirements.txt`.** As dependências da API moram na imagem, e o `--reload` só recarrega o `src/`. Reconstrua: `docker compose up -d --build --wait`. As dos testes moram no seu `.venv`: `uv pip install -r requirements-dev.txt` de novo.
 
-**Todo Pix sai com o DICT01 `unavailable`.** O mock ainda está subindo (até 18 s); alguém mandou um `PUT /mockserver/reset`, que apaga também as expectativas do arquivo; ou o mock passou de 5.000 expectativas e descartou a padrão ([`mockserver/README.md`](mockserver/README.md)). `docker compose restart dict-mock` traz tudo de volta.
+**Todo Pix sai com a camada 3 `unavailable`.** O mock ainda está subindo (até 18 s); alguém mandou um `PUT /mockserver/reset`, que apaga também as expectativas do arquivo; ou o mock passou de 5.000 expectativas e descartou a padrão ([`mockserver/README.md`](mockserver/README.md)). `docker compose restart dict-mock` traz tudo de volta.
 
 **A suíte parou com "A stack não ficou de pé".** A API ou o mock não responderam em 60 s nas portas que o teste procurou. Suba a stack e confira se as portas dos testes são as mesmas da subida.
 
@@ -298,26 +304,26 @@ Ou ponha as três no `.env`, que a subida e os testes leem.
 
 ## 8. Números
 
-Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--reload`, log em DEBUG). Servem como ordem de grandeza; não são desempenho de produção.
+Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose como ela sobe: um processo, `--reload`, log em DEBUG, num banco com 160 mil Pix. Servem como ordem de grandeza; não são desempenho de produção.
 
 | O quê | Quanto |
 |---|---|
-| POST de um Pix novo, mediana (p50) | 16 a 19 ms |
+| POST de um Pix novo, mediana (p50), um cliente | ~21 ms (p90 24 ms) |
 | Reenvio idêntico / GET | ~5 ms / ~4 ms |
-| Motor (três camadas, tetos e tabela) | ~0,1 ms |
-| Histórico (as 4 consultas) | ~2 a 3 ms no caso típico; ~15 ms num pagador com 4 mil Pix |
-| Um processo da API | ~85 a 100 Pix/s |
-| 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
-| Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 189 testes em ~12 s |
-| Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
+| Consulta do histórico do pagador, num pagador com 5 mil Pix | ~12 ms, sem voltar à tabela (index-only scan no índice cobrindo) |
+| Consulta do par pagador→recebedor, o mesmo pagador | ~0,1 ms (15 páginas) |
+| Um processo da API, 8 clientes | ~65 Pix/s, p50 123 ms |
+| Um processo da API, 16 clientes | ~62 Pix/s, p50 256 ms |
+| Suíte de testes | 198 testes em ~19 s |
+| Disco | ~5 KB por Pix: ~1,5 KB em `pix_transaction` com os índices, mais 23 sinais de ~150 B. A 20 milhões de Pix por mês, uns 100 GB |
+| WAL | ~16 KB por Pix |
 
-- **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.
-- **DICT lento custa vazão, e não decisão:** cada Pix espera o prazo numa das 40 threads do processo, e a vazão cai para ~12 a 18 Pix/s; a decisão sai, com o DICT01 `unavailable`.
-- **O histórico do pagador cresce:** a consulta lê todos os Pix do documento, porque a mediana precisa deles. A do recebedor já tem teto: uma loja com 50 mil Pix recebidos passou de 37 para 17 ms por POST.
-- **Disco:** ~77 GB por mês a 20 milhões de Pix (estimativa), dois terços na tabela de sinais.
+- **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões — veja o limite do `--reload` na seção 9.
+- **DICT lento custa vazão, e não decisão:** cada Pix espera o prazo de 2 s numa das 40 threads do processo, o que dá no máximo 20 Pix/s por processo enquanto o DICT não responde; a decisão sai, com a camada 3 `unavailable`.
+- **O histórico do pagador cresce:** a consulta lê todos os Pix do documento, porque a mediana, os dias ativos e o aparelho e o IP conhecidos precisam deles; o índice cobrindo evita a volta à tabela, mas o custo continua linear no histórico. A do recebedor tem teto, e um destino com 50 mil Pix custa o mesmo que um inédito.
+- **Sinais vazios:** 98% das linhas de `pix_transaction_rule_result` são `not_triggered` ou `unavailable`, com evidência `{}`; só o estado informa.
 
-Próximos passos: `--workers` no lugar do `--reload` fora do desenvolvimento; `pool_size` maior por processo; pular as consultas de quem acabou de ser criado; um perfil do pagador pré-calculado (mediana, aparelhos e IPs conhecidos); não gravar os `not_triggered`, cerca de 70% da tabela de sinais.
+Próximos passos: `--workers` no lugar do `--reload` fora do desenvolvimento; janela de 90 dias (ou um perfil pré-calculado) para a mediana e os aparelhos e IPs conhecidos; não gravar os sinais vazios e devolvê-los no GET a partir do catálogo da `policy_version`; partição mensal de `pix_transaction` para a retenção.
 
 ---
 
@@ -325,8 +331,12 @@ Próximos passos: `--workers` no lugar do `--reload` fora do desenvolvimento; `p
 
 Os de antifraude estão no [README da raiz](../README.md#limites-conhecidos). Os daqui:
 
+- **Um processo só:** o compose sobe a API com `--reload`, que recarrega o `src/` a cada mudança e, por isso, não aceita `--workers`. Fora do desenvolvimento, o comando do `Dockerfile` (sem `--reload`) com `--workers N`; cada worker abre até 15 conexões (`pool_size` 5 mais 10 de folga), e o Postgres aceita 100: até 6 workers por banco sem um pgbouncer na frente.
+- **Corridas aceitas:** a trava segura um pagador por vez, e só ele. Dois pagadores no mesmo recebedor ou no mesmo aparelho, no mesmo instante, contam o histórico sem o Pix um do outro: R02, R03 e P08 podem chegar um Pix atrasados. Travar também o recebedor poria todos os pagadores de uma loja em fila única.
+- **O histórico do pagador não tem janela:** o custo da consulta cresce com a vida do documento (seção 8).
+- **Threads e conexões:** 40 threads por processo e 15 conexões; a 41ª requisição espera uma thread, e quem não consegue conexão em 5 s, ou não termina um comando em 10 s, falha com nome em vez de pendurar.
+- **DICT sem disjuntor:** com o DICT fora do ar, cada Pix paga os 2 s do prazo; não há "pular o DICT por um tempo depois de N falhas".
 - **CNPJ alfanumérico:** o novo formato da Receita ainda não é aceito; pede mudar junto o schema, o CHECK de `customer` e a normalização do documento.
-- **Corridas aceitas:** a trava segura um pagador por vez. Dois pagadores no mesmo aparelho ou no mesmo recebedor, no mesmo instante, contam o histórico sem o Pix um do outro: um sinal de rajada pode chegar um Pix atrasado.
 - **Idempotência pelo payload cru e reenvio depois de um 500**, descritos na seção 2: o mesmo Pix com o CPF agora mascarado volta 409, e o Pix que deu 500 não fica no histórico.
 
 ---
