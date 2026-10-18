@@ -58,7 +58,7 @@ Abra os arquivos e siga o caminho uma vez. Vale mais que ler três vezes este te
 | `resources/` | receber a requisição, conferir o schema (pelo decorator), chamar **um** controller, devolver a resposta com o status certo (201 ou 200) | saber SQL, decidir regra, ter `raise` |
 | `schemas/` | dizer qual JSON é aceito na entrada, e recusar o que não é | falar com banco, decidir regra |
 | `controllers/` | a ordem do caso de uso: converter o payload, chamar repositories, o connector e o motor, salvar (`commit`) | escrever consulta, saber que existe HTTP, ter regra antifraude dentro |
-| `antifraud/` | a regra antifraude: os 19 sinais, os pesos, os tetos e a tabela de decisão, sobre um `Context` pronto | importar qualquer coisa de fora do próprio pacote — banco, FastAPI, `constants`, variável de ambiente, relógio |
+| `antifraud/` | a regra antifraude: os 22 sinais, os pesos, os tetos e a tabela de decisão, sobre um `Context` pronto | importar qualquer coisa de fora do próprio pacote — banco, FastAPI, `constants`, variável de ambiente, relógio |
 | `repositories/` | buscar, criar e contar no banco, inclusive o histórico que o motor lê | decidir se aquilo era permitido, escolher limiar |
 | `models/` | descrever as tabelas em Python | ter regra dentro |
 | `dtos/` | transformar a análise gravada no dicionário que vira a resposta | buscar coisa no banco, decidir regra |
@@ -132,7 +132,7 @@ docker compose up -d --build --wait
 
 O `-v` é o que apaga o volume, o disco do banco — e **leva junto todo Pix gravado** até aqui. Em sistema de verdade ninguém apaga o banco, claro: lá a mudança de schema entra por um comando aplicado no deploy, e é por isso que este projeto guarda o schema num arquivo versionado em vez de deixá-lo só dentro do banco.
 
-**Mudou um peso e esqueceu a `POLICY_VERSION`?** Nada quebra, e é esse o problema. Cada análise grava a versão da política que a decidiu, e é por ela que alguém, amanhã, entende por que um Pix de ontem virou 2FA. Com a versão parada, a análise de ontem e a de hoje dizem `v0.3.2` as duas, decididas por pesos diferentes, e ninguém tem como separar uma da outra.
+**Mudou um peso e esqueceu a `POLICY_VERSION`?** Nada quebra, e é esse o problema. Cada análise grava a versão da política que a decidiu, e é por ela que alguém, amanhã, entende por que um Pix de ontem virou 2FA. Com a versão parada, a análise de ontem e a de hoje dizem `v0.5.0` as duas, decididas por pesos diferentes, e ninguém tem como separar uma da outra.
 
 **Mexeu numa dependência?** As dependências moram em dois lugares, e eles não se falam. As da API são instaladas **dentro da imagem**, quando o Docker constrói a API; as dos testes ficam no **seu `.venv`**. Acrescentar uma linha no `requirements.txt` não avisa nenhum dos dois — e o `--reload` da API só recarrega o `src/`, não reinstala nada. Mexeu no `requirements.txt`: `docker compose up -d --build --wait`. Mexeu no `requirements-dev.txt`: `uv pip install -r requirements-dev.txt` de novo, com o `.venv` ativo.
 
@@ -165,9 +165,9 @@ Quando você estiver com pressa, vai dar vontade de escrever a consulta direto n
 
 ### Por que o motor é um pacote à parte
 
-No Base Service, a regra de negócio mora no controller: um `if` que olha o status e levanta um erro. Aqui são 19 sinais, sete grupos com teto e uma tabela de decisão em ordem — no controller, isso ficaria misturado com trava, sessão e commit, e ninguém conseguiria ler a política sem ler também a transação de banco.
+No Base Service, a regra de negócio mora no controller: um `if` que olha o status e levanta um erro. Aqui são 22 sinais, oito grupos com teto e uma tabela de decisão em ordem — no controller, isso ficaria misturado com trava, sessão e commit, e ninguém conseguiria ler a política sem ler também a transação de banco.
 
-O motor é a parte da regra que não precisa de banco: recebe um `Context` pronto — o Pix normalizado, o histórico contado, o trust factor do DICT ou `None` — e devolve uma `Analysis`. O que se ganha: a mesma entrada dá sempre a mesma análise, porque sem relógio e sem banco lá dentro a resposta não depende de que horas são nem do que outra requisição gravou no meio. Todo número que o motor usa cabe em `src/antifraud/policy.py`, com o porquê ao lado e a versão que vai gravada em cada análise. E o controller continua dono da ordem: quem busca, trava, grava e dá o commit é ele, como no Base Service.
+O motor é a parte da regra que não precisa de banco: recebe um `Context` pronto — o Pix normalizado, o histórico contado, as estatísticas e evidências de segurança do DICT — e devolve uma `Analysis`. O que se ganha: a mesma entrada dá sempre a mesma análise, porque sem relógio e sem banco lá dentro a resposta não depende de que horas são nem do que outra requisição gravou no meio. Todo número que o motor usa cabe em `src/antifraud/policy.py`, com o porquê ao lado e a versão que vai gravada em cada análise. E o controller continua dono da ordem: quem busca, trava, grava e dá o commit é ele, como no Base Service.
 
 O preço: o controller monta o `Context` inteiro antes de chamar o motor, inclusive contagens que nenhuma regra vai usar naquele Pix, e um campo novo de histórico passa por três arquivos (o `contract.py`, o repository e o controller).
 

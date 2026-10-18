@@ -95,8 +95,8 @@ class TestPoliticaRfcV05:
         assert response.decision_rule == "D-ATO-1"
         assert response.signal_status("P07") == "not_triggered"
 
-    def test_rejeicao_payer_exige_inteligencia_do_pagador(self):
-        """D-REJ-PAY — comportamento extremo mais inteligência externa.
+    def test_rejeicao_payer_exige_evidencia_dict_do_pagador(self):
+        """D-REJ-PAY — comportamento extremo mais evidência de segurança DICT.
 
         Preparo: 10 aprovações qualificam a mediana; o device do pagador é
         registrado e também aparece para três outros pagadores (P08). Em
@@ -109,7 +109,7 @@ class TestPoliticaRfcV05:
             payer = 70 ou mais
             external payer = suspicious
 
-        Sem a avaliação externa, a mesma combinação fica em 2FA; com ela,
+        Sem a evidência DICT, a mesma combinação fica em 2FA; com ela,
         D-REJ-PAY rejeita.
         """
         payer, usual = new_payer(), new_recipient()
@@ -205,7 +205,7 @@ class TestPoliticaRfcV05:
         assert response.status == "approved"
         assert response.decision_rule == "D-OK"
 
-    def test_rejeicao_de_recebedor_exige_inteligencia_externa(self, dict_mock: DictMock):
+    def test_rejeicao_de_recebedor_exige_evidencia_dict(self, dict_mock: DictMock):
         """D-REJ-RCP — rede de recebimento suspeita com evidência externa.
 
         Quatro pagadores diferentes fazem entradas no mesmo titular em
@@ -217,7 +217,7 @@ class TestPoliticaRfcV05:
             DICT01 +32, teto separado = 32
             recipient = 87 (DICT01 32 + rede 35 + DICT02 20)
 
-        O ponto essencial é a evidência externa: sem ela, a mesma rede fica
+        O ponto essencial é a evidência DICT: sem ela, a mesma rede fica
         em D-RCP/2FA; com ela e recipient >=55, D-REJ-RCP rejeita.
         """
         recipient = _recipient_network_with_external("suspicious", dict_mock)
@@ -259,7 +259,7 @@ class TestPoliticaRfcV05:
             recipient >= 40
             external recipient = confirmed_in_mock
 
-        A política cruza os dois eixos e rejeita. Sem a evidência externa,
+        A política cruza os dois eixos e rejeita. Sem a evidência DICT,
         o mesmo score seguiria para 2FA pela regra do pagador.
         """
         payer, old_recipient = new_payer(), new_recipient()

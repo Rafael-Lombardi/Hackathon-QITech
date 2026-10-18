@@ -2,7 +2,7 @@
 
 A API do motor antifraude Pix: recebe um Pix em `POST /pix/transaction`, decide entre `approved`, `two_factor_required` e `rejected`, grava o Pix com a decisão explicada e devolve a análise. `GET /pix/transaction/{id}` devolve o que foi gravado. É **Python 3.11 + FastAPI**, com **PostgreSQL 16**, rodando em **Docker**, e nasceu do Base Service do bootcamp. Para decidir, ela consulta o DICT, o diretório do Banco Central que liga chave Pix a conta; aqui quem faz o papel dele é um mock, um servidor de mentira que devolve as respostas combinadas com ele (seção 4).
 
-As decisões deste serviço seguem a política `v0.5.0`. Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança. As rejeições v0.5 (`D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP` e `D-REJ-CROSS`) só casam quando suas combinações e evidências DICT estiverem presentes.
+As decisões deste serviço seguem a política `v0.5.0`, descrita na [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099). Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança.
 
 As regras, o porquê de cada parâmetro e a tabela de decisão estão no [README da raiz](../README.md). Este é o do serviço: como subir, o que cada rota responde, a configuração, o mock, os testes e o caminho de uma requisição.
 
@@ -206,20 +206,20 @@ O `default_token` só vale porque isto é um projeto de estudo, sem dado de ning
 
 ---
 
-## 4. O mock do DICT
+## 4. O mock da evidência de segurança do DICT
 
-A camada 3 do motor pergunta ao DICT quão confiável é o recebedor, e quem responde aqui é um MockServer, o serviço `dict-mock`:
+A camada 3 consulta evidências de segurança do DICT sobre o recebedor. O serviço `dict-mock` usa o endpoint legado abaixo apenas para compatibilidade da fixture:
 
 ```
 GET /trust-factor/{documento, só dígitos}   →   200 {"trust_factor": 70}
 ```
 
-O DICT de verdade devolve contadores de fraude por CPF ou CNPJ (Manual Operacional do DICT, cap. 18); o time aceitou a ficção de um DICT que já responde a nota, o trust factor, de 0 a 100. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa: ele não tem código nosso, só o roteiro das respostas.
+O DICT de verdade devolve dados de chave, titularidade, estatísticas e marcações de segurança. O mock simplifica isso com uma resposta estatística compatível e fixtures de marcação. `clear` não significa legitimidade e `unavailable` não significa segurança. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa.
 
 | Documento do recebedor | Responde | Para quê |
 |---|---|---|
 | qualquer um | `70` | o caso comum: nada contra o recebedor |
-| `999.999.999-99` | `12` | demonstração: abaixo de 30, o DICT01 dispara (+32) |
+| `999.999.999-99` | `12` | demonstração: estatística desfavorável, DICT01 dispara (+32) |
 | `888.888.888-88` | `70`, depois de 3 s | demonstração: passa do prazo de 2 s, o DICT01 sai `unavailable` e o Pix é decidido sem ele |
 
 Repare que o DICT01 sozinho não pede 2FA: leva o destino a 32. Pede quando vem junto de outro indício do destino — conta de destino aberta há menos de 7 dias (R01, 44), um pagador com histórico que nunca mandou Pix para esse recebedor (REL01, 40) ou uma rajada de entradas (R02, R03).
@@ -257,7 +257,7 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
 5. trava o pagador               SELECT ... FOR NO KEY UPDATE no customer dele,
                                  e procura o id de novo
 6. conta o histórico             monta o Context e roda o motor
-7. grava o Pix e os 19 sinais    e só então dá o commit → 201
+7. grava o Pix e os 22 sinais    e só então dá o commit → 201
 8. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
@@ -302,8 +302,8 @@ Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--
 | Um processo da API | ~85 a 100 Pix/s |
 | 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
 | Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 168 testes em ~12 s |
-| Efeito da v0.3.2 (DICT01 com teto próprio) na taxa de 2FA | +0,3 a 0,6 ponto percentual, numa simulação sobre um mix de Pix que o time supôs, sem dado real; nenhum Pix fica mais brando |
+| Suíte de testes | 187 testes em ~12 s |
+| Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
 
 - **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.
 - **DICT lento custa vazão, e não decisão:** cada Pix espera o prazo numa das 40 threads do processo, e a vazão cai para ~12 a 18 Pix/s; a decisão sai, com o DICT01 `unavailable`.

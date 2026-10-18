@@ -64,7 +64,7 @@ class PixTransactionController(BaseController):
              procura o id de novo: outro POST do mesmo Pix pode ter gravado
              enquanto este esperava;
           6. conta o histórico, monta o Context e roda o motor;
-          7. grava o Pix e os 19 sinais, e só então commita;
+          7. grava o Pix e os 22 sinais, e só então commita;
           8. a não ser que o mesmo id tenha chegado junto por outro
              pagador, que a trava não segura, e gravado primeiro: aí este
              responde como num reenvio, 200 ou 409.

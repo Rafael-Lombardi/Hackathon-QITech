@@ -10,7 +10,7 @@ Um cenário é deliberadamente dividido em cinco partes:
 5. ``expected``: oráculo independente do cenário.
 
 ``authoritative`` é seedado separadamente (device registry, restrições e
-inteligência externa); ``derived`` continua sendo o oráculo documental que
+evidência de segurança do DICT); ``derived`` continua sendo o oráculo documental que
 o sistema deve calcular. Esses dados não são gravados como transações:
 ``history`` passa pela mesma validação e decisão que uma requisição normal.
 O resultado esperado também não é inserido no banco; ele é comparado com o

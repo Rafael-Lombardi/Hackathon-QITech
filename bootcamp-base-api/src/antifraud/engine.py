@@ -26,7 +26,7 @@ from antifraud.policy import DecisionRule
 # As camadas, na ordem em que rodam, uma por linha — como as cascas de
 # middleware do app.py. A semelhança para aí: nenhuma camada interrompe
 # a seguinte, do jeito que o 403 do token interrompe a requisição. As
-# três rodam sempre, a resposta mostra os 19 sinais, e rejeição só sai
+# as camadas rodam sempre, a resposta mostra os 22 sinais, e rejeição só sai
 # da tabela de decisão. Desligar uma camada é apagar a linha dela, e as
 # outras não percebem, porque nenhuma lê o sinal da outra. A ordem
 # também não muda a resposta (os sinais saem na ordem do catálogo); ela
@@ -162,7 +162,7 @@ def _reason(rule: DecisionRule, triggered: Mapping[str, Signal], payer_risk: int
             return _risk_reason("do destino", Axis.RECIPIENT, recipient_risk, rule.min_recipient_risk, triggered)
         if rule.name == "D-REJ-CROSS":
             return (
-                f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com evidência externa adversa"
+                f"Risco cruzado (pagador {payer_risk}, destino {recipient_risk}) com evidência DICT adversa"
             )
         return _risk_reason("do pagador", Axis.PAYER, payer_risk, rule.min_payer_risk, triggered)
     if rule.name == "D-ATO-1":

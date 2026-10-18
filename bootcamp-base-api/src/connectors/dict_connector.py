@@ -64,7 +64,7 @@ class DictConnector(RestConnector):
 
         # Repare no `type(...) is int` no lugar do isinstance: em Python,
         # True é um int que vale 1, e um {"trust_factor": true} passaria
-        # como trust factor 1. O 70.0 e o "70" também ficam de fora — o
+        # como estatística DICT 1. O 70.0 e o "70" também ficam de fora — o
         # combinado é um inteiro, e resposta fora do combinado não vira
         # número por boa vontade nossa.
         if type(security_statistics) is not int or not 0 <= security_statistics <= 100:

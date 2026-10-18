@@ -20,10 +20,10 @@ Montante, Perfil...); o grupo de teto é o de src/antifraud/policy.py
 exemplo, junta o P04 (família Velocity) e o P05 (família Montante).
 
 A tabela, em ordem, vale a primeira que casar: restrição ativa → rejeições
-combinadas da RFC v0.5 (com evidência externa quando exigida) → D-ATO-1
+combinadas da RFC v0.5 (com evidência DICT quando exigida) → D-ATO-1
 (P03 e P06) → D-ATO-2 (P03 e P09) → D-PAY (pagador >= 40) → D-RCP
 (destino >= 40) → D-OK. Os cenários legados desta classe não semeiam
-inteligência externa; por isso, a combinação de R01/R02/R03 não rejeita
+evidência DICT; por isso, a combinação de R01/R02/R03 não rejeita
 sozinha.
 
 O cenário 15 (reenvio e concorrência) mora em test_contrato.py e em
@@ -381,7 +381,7 @@ class TestCenariosRfc:
             REL01      unavailable: o pagador nunca foi visto
             destino 35, pagador 0
 
-        Sem inteligência externa, R01, R02 e R03 não são suficientes para
+        Sem evidência DICT, R01, R02 e R03 não são suficientes para
         rejeição na RFC v0.5. Como o teto deixa o destino em 35, o Pix é
         aprovado. Repare que a 4ª semente já tinha R01, R03 e R04 (destino
         35) e também foi aprovada: o caso só muda os sinais, não ultrapassa
@@ -411,7 +411,7 @@ class TestCenariosRfc:
             REL01 +8             destino inédito para quem tem histórico
             destino 43, pagador 0
 
-        Sem inteligência externa, a RFC v0.5 não rejeita apenas pelos sinais
+        Sem evidência DICT, a RFC v0.5 não rejeita apenas pelos sinais
         R01/R02/R03. O risco do destino chega a 43 e a política aplica
         D-RCP (2FA). O pagador está limpo, e a confirmação adicional é a
         fricção disponível quando ainda não há evidência suficiente para
