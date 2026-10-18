@@ -61,6 +61,9 @@ class PixTransaction(Base):
     latitude = Column(Numeric(9, 6))
     longitude = Column(Numeric(9, 6))
     created_at = Column(DateTime, nullable=False, server_default=func.now())
+    received_at = Column(DateTime(timezone=True), nullable=False)
+    evaluated_at = Column(DateTime(timezone=True), nullable=False)
+    evaluation_context = Column(JSONB, nullable=False, default=dict)
 
     __table_args__ = (
         UniqueConstraint("pix_transaction_key"),
@@ -77,9 +80,9 @@ class PixTransaction(Base):
         CheckConstraint("(latitude IS NULL) = (longitude IS NULL)"),
         CheckConstraint("latitude IS NULL OR latitude BETWEEN -90 AND 90"),
         CheckConstraint("longitude IS NULL OR longitude BETWEEN -180 AND 180"),
-        Index("pix_transaction_source_account_id_idx", "source_account_id", "transaction_date"),
-        Index("pix_transaction_destination_account_id_idx", "destination_account_id", "transaction_date"),
-        Index("pix_transaction_device_id_idx", "device_id", "transaction_date"),
+        Index("pix_transaction_source_account_id_idx", "source_account_id", "received_at"),
+        Index("pix_transaction_destination_account_id_idx", "destination_account_id", "received_at"),
+        Index("pix_transaction_device_id_idx", "device_id", "received_at"),
     )
 
     status = relationship("PixTransactionStatus", foreign_keys=[status_id])

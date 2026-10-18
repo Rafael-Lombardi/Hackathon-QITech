@@ -2,6 +2,8 @@
 
 A API do motor antifraude Pix: recebe um Pix em `POST /pix/transaction`, decide entre `approved`, `two_factor_required` e `rejected`, grava o Pix com a decisão explicada e devolve a análise. `GET /pix/transaction/{id}` devolve o que foi gravado. É **Python 3.11 + FastAPI**, com **PostgreSQL 16**, rodando em **Docker**, e nasceu do Base Service do bootcamp. Para decidir, ela consulta o DICT, o diretório do Banco Central que liga chave Pix a conta; aqui quem faz o papel dele é um mock, um servidor de mentira que devolve as respostas combinadas com ele (seção 4).
 
+As decisões deste serviço seguem a política `v0.5.0`, descrita na [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099). Evidência antifraude do DICT é fonte separada de estatísticas (`DICT01`) e marcações (`DICT02`/`DICT03`); `clear` ou indisponibilidade não significam segurança.
+
 As regras, o porquê de cada parâmetro e a tabela de decisão estão no [README da raiz](../README.md). Este é o do serviço: como subir, o que cada rota responde, a configuração, o mock, os testes e o caminho de uma requisição.
 
 ---
@@ -93,14 +95,14 @@ curl -s -X POST http://localhost:3000/pix/transaction \
   }'
 ```
 
-Num banco novo, a resposta inteira, com os 19 sinais (um por linha aqui, para caber na tela):
+Num banco novo, a resposta inteira, com os 22 sinais (um por linha aqui, para caber na tela):
 
 ```json
 {
   "key": "b1f7f4da-ee18-403d-903d-9cd63c41fa60",
   "status": "approved",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-OK",
     "reasons": ["Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)"],
     "scores": {"payer": 8, "recipient": 0},
@@ -135,11 +137,11 @@ Num banco novo, a resposta inteira, com os 19 sinais (um por linha aqui, para ca
 | `key` | o identificador da análise, um UUID gerado aqui (a coluna `pix_transaction_key`). O `id` serial da linha nunca sai |
 | `status` | `approved`, `two_factor_required` ou `rejected` |
 | `metadata.policy_version` | a versão dos pesos e da tabela de decisão que valiam quando o Pix chegou |
-| `metadata.decision_rule` | a linha da tabela que decidiu: `D-REJ`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
+| `metadata.decision_rule` | a linha da tabela que decidiu: `D-RESTRICT-SIM`, `D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP`, `D-REJ-CROSS`, `D-DATA-UNAVAILABLE`, `D-ATO-1`, `D-ATO-2`, `D-PAY`, `D-RCP` ou `D-OK` |
 | `metadata.reasons` | a frase dessa linha, com os números da evidência |
 | `metadata.scores` | a nota de 0 a 100 do pagador (`payer`) e a do destino (`recipient`) |
 | `metadata.evidence_sufficiency` | quanto histórico sustenta cada nota: `unavailable`, `low`, `medium` ou `high` |
-| `metadata.signals` | os 19 sinais, na ordem do catálogo. Cada um traz `code`, `layer` (a camada do motor), `granularity` (por qual chave a regra contou), `family` (a família de regra do desafio: Limite, Velocity, Montante, Perfil ou Contraparte), `axis` (o eixo, `payer` ou `recipient`), `status`, `points` e, só quando disparou, `evidence` (o que a regra viu e o limite com que comparou) |
+| `metadata.signals` | os 22 sinais, na ordem do catálogo. `DICT02`/`DICT03` representam evidência antifraude do DICT suspeita/confirmada na fixture; `clear` e ausência não pontuam. |
 
 **Mandou o mesmo Pix de novo?** `200`, com a análise que já estava gravada, e nada é contado de novo no histórico: é a idempotência, e quem garante é o `UNIQUE(external_id)` do banco. O mesmo `id` com outro conteúdo é `409`, inclusive quando os dois chegam ao mesmo tempo por pagadores diferentes: o segundo espera o primeiro gravar e responde como num reenvio. Repare que a comparação é com o payload como chegou: campos do JSON em outra ordem são o mesmo Pix, mas o CPF agora com máscara já é outro pedido.
 
@@ -204,20 +206,20 @@ O `default_token` só vale porque isto é um projeto de estudo, sem dado de ning
 
 ---
 
-## 4. O mock do DICT
+## 4. O mock da evidência de segurança do DICT
 
-A camada 3 do motor pergunta ao DICT quão confiável é o recebedor, e quem responde aqui é um MockServer, o serviço `dict-mock`:
+A camada 3 consulta evidências de segurança do DICT sobre o recebedor. O serviço `dict-mock` usa o endpoint legado abaixo apenas para compatibilidade da fixture:
 
 ```
 GET /trust-factor/{documento, só dígitos}   →   200 {"trust_factor": 70}
 ```
 
-O DICT de verdade devolve contadores de fraude por CPF ou CNPJ (Manual Operacional do DICT, cap. 18); o time aceitou a ficção de um DICT que já responde a nota, o trust factor, de 0 a 100. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa: ele não tem código nosso, só o roteiro das respostas.
+O DICT de verdade devolve dados de chave, titularidade, estatísticas e marcações de segurança. O mock simplifica isso com uma resposta estatística compatível e fixtures de marcação. `clear` não significa legitimidade e `unavailable` não significa segurança. O mock conta como infraestrutura de execução, como o Postgres, e não como uma API nossa.
 
 | Documento do recebedor | Responde | Para quê |
 |---|---|---|
 | qualquer um | `70` | o caso comum: nada contra o recebedor |
-| `999.999.999-99` | `12` | demonstração: abaixo de 30, o DICT01 dispara (+32) |
+| `999.999.999-99` | `12` | demonstração: estatística desfavorável, DICT01 dispara (+32) |
 | `888.888.888-88` | `70`, depois de 3 s | demonstração: passa do prazo de 2 s, o DICT01 sai `unavailable` e o Pix é decidido sem ele |
 
 Repare que o DICT01 sozinho não pede 2FA: leva o destino a 32. Pede quando vem junto de outro indício do destino — conta de destino aberta há menos de 7 dias (R01, 44), um pagador com histórico que nunca mandou Pix para esse recebedor (REL01, 40) ou uma rajada de entradas (R02, R03).
@@ -236,7 +238,12 @@ pytest
 
 A stack precisa estar de pé (seção 1). O `tests/conftest.py` espera a API, o mock e a resposta padrão do mock, até 60 s, antes do primeiro teste; se não vierem, a suíte para com uma mensagem só, dizendo o que faltou e o comando que resolve. Os testes leem o `.env` sozinhos: trocou a porta ali, eles batem na porta nova. A suíte leva uns 12 s.
 
-Todos são de integração: falam HTTP com a API, como um cliente faria, e nenhum importa `src/` nem escreve no banco por fora. Cada teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios), monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
+Todos são de integração. A maioria fala HTTP com a API, como um cliente faria;
+os testes de resiliência também usam controller/repositories reais e sessões
+PostgreSQL para simular falha de infraestrutura e expiração de lease. Cada
+teste cria o próprio mundo (documentos, contas, aparelhos e IPs aleatórios),
+monta o histórico com POSTs de data escolhida e não precisa limpar o banco. O
+que cada arquivo prova está em [`tests/integration/pix/README.md`](tests/integration/pix/README.md); para rodar um só, `pytest -v tests/integration/pix/test_cenarios_rfc.py`.
 
 ---
 
@@ -255,10 +262,12 @@ Cinco middlewares, de fora para dentro, atendem toda requisição: o identificad
 5. trava o pagador               SELECT ... FOR NO KEY UPDATE no customer dele,
                                  e procura o id de novo
 6. conta o histórico             monta o Context e roda o motor
-7. grava o Pix e os 19 sinais    e só então dá o commit → 201
+7. grava o Pix e os 22 sinais    e só então dá o commit → 201
 8. a não ser que o mesmo id      tenha chegado junto por outro pagador, que a
                                  trava não segura, e gravado primeiro: 200 ou 409
 ```
+
+O histórico usa `received_at`, o recebimento do servidor; `transaction_date` é reservado ao relógio de negócio. O cadastro de devices pode deixar sinais como `unavailable`, mas só produz `D-DATA-UNAVAILABLE` quando nenhuma restrição ou rejeição comprovável puder decidir. A conclusão do recibo usa `owner_token` em uma atualização condicional: um avaliador que perdeu o lease não pode completar ou marcar como falho o recibo de outro.
 
 Quem fala com o banco, o DICT e o motor é o controller, e só ele. O mapa das pastas, o que cada uma pode e não pode e onde mexer para cada mudança estão em [`docs/como-o-projeto-e-organizado.md`](docs/como-o-projeto-e-organizado.md).
 
@@ -300,8 +309,8 @@ Medidos na máquina de desenvolvimento (8 núcleos), com a stack do compose (`--
 | Um processo da API | ~85 a 100 Pix/s |
 | 4 processos (`--workers 4`) | ~220 a 250 Pix/s |
 | Mesmo pagador, com 8 clientes | ~60 Pix/s, um de cada vez, sem atrasar os outros pagadores |
-| Suíte de testes | 168 testes em ~12 s |
-| Efeito da v0.3.2 (DICT01 com teto próprio) na taxa de 2FA | +0,3 a 0,6 ponto percentual, numa simulação sobre um mix de Pix que o time supôs, sem dado real; nenhum Pix fica mais brando |
+| Suíte de testes | 189 testes em ~12 s |
+| Efeito da política v0.5.0 (DICT01 com teto próprio) na taxa de 2FA | estimativa ilustrativa, sem dado real; não deve ser apresentada como métrica validada |
 
 - **Onde trava:** na CPU de um processo Python; o banco fica com folga. A API não guarda estado (trava, idempotência e histórico estão no Postgres), e escala com mais processos ou réplicas, cada um com o seu pool de conexões.
 - **DICT lento custa vazão, e não decisão:** cada Pix espera o prazo numa das 40 threads do processo, e a vazão cai para ~12 a 18 Pix/s; a decisão sai, com o DICT01 `unavailable`.

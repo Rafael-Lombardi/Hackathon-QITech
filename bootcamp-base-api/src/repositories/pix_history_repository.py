@@ -7,9 +7,11 @@ mora lá: por que conhecido é só com approved, por que os distintos já
 contam o atual, onde cabe teto. Aqui fica o como contar.
 
 As definições valem pros quatro. Anterior é o que já está gravado com
-transaction_date até t, inclusive, sendo t o transaction_date do Pix
-atual — ele mesmo só é gravado depois da decisão. "Nos últimos X" é a
-janela (t - X, t]. Dia é o dia civil de São Paulo, cortado no SQL com AT
+``received_at`` antes de t, sendo t o relógio de avaliação do servidor — o
+Pix atual só é gravado depois da decisão. "Nos últimos X" é a janela
+(t - X, t), com o atual somado virtualmente quando a regra exige. A data
+``transaction_date`` continua disponível para hora local e auditoria. Dia é
+o dia civil de São Paulo, cortado no SQL com AT
 TIME ZONE e o LOCAL_TIMEZONE do motor: o banco roda em UTC, e um Pix às
 22h de São Paulo já é o dia seguinte lá. Pagador e recebedor são o
 DOCUMENTO: as contas do customer saem de account_customer_id_idx, e os
@@ -25,9 +27,11 @@ lido como SQL cada agregado bate com um campo do contrato.
 """
 
 from datetime import datetime, timedelta
+from math import asin, cos, radians, sin, sqrt
 
 from sqlalchemy import text
 
+from antifraud import policy
 from antifraud.contract import LOCAL_TIMEZONE, DeviceHistory, PairHistory, PayerHistory, RecipientHistory
 from database import Context
 from models import PixTransactionStatus
@@ -44,8 +48,8 @@ from repositories.pix_transaction_repository import PixTransactionRepository
 # 7.916 páginas em vez de 215.
 _PAYER_QUERY = text("""
     WITH payer_pix AS (
-        SELECT pix.transaction_date,
-               (pix.transaction_date AT TIME ZONE :local_timezone)::date AS local_day,
+        SELECT pix.received_at,
+               (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day,
                pix.amount,
                pix.status_id,
                pix.device_id,
@@ -54,14 +58,14 @@ _PAYER_QUERY = text("""
         FROM account payer
         JOIN pix_transaction pix ON pix.source_account_id = payer.id
         WHERE payer.customer_id = :payer_customer_id
-          AND pix.transaction_date <= :t
+          AND pix.received_at < :t
     ),
     candidates AS (
         -- os recebedores da janela, mais o atual
         SELECT recipient.customer_id
         FROM payer_pix
         JOIN account recipient ON recipient.id = payer_pix.destination_account_id
-        WHERE payer_pix.transaction_date > :new_destinations_since
+        WHERE payer_pix.received_at > :new_destinations_since
         UNION
         SELECT :recipient_customer_id
     ),
@@ -78,14 +82,14 @@ _PAYER_QUERY = text("""
         FROM candidate_account
         JOIN payer_pix ON payer_pix.destination_account_id = candidate_account.id
         WHERE payer_pix.status_id = :approved
-          AND payer_pix.transaction_date <= :new_destinations_since
+          AND payer_pix.received_at < :new_destinations_since
     )
     SELECT count(*) AS prior_attempts,
            count(DISTINCT local_day) AS prior_days,
            count(*) FILTER (WHERE status_id = :approved AND device_id = :device_id) > 0 AS device_known,
            count(*) FILTER (WHERE status_id = :approved AND ip = :ip) > 0 AS ip_known,
-           count(*) FILTER (WHERE transaction_date > :attempts_since) AS attempts_5m,
-           coalesce(sum(amount) FILTER (WHERE transaction_date > :amount_since), 0) AS amount_1h,
+           count(*) FILTER (WHERE received_at > :attempts_since) AS attempts_5m,
+           coalesce(sum(amount) FILTER (WHERE received_at > :amount_since), 0) AS amount_1h,
            count(*) FILTER (WHERE status_id = :approved) AS approved_count,
            count(DISTINCT local_day) FILTER (WHERE status_id = :approved) AS approved_days,
            percentile_cont(0.5) WITHIN GROUP (ORDER BY amount)
@@ -111,8 +115,8 @@ _DEVICE_QUERY = text("""
         FROM pix_transaction pix
         JOIN account payer ON payer.id = pix.source_account_id
         WHERE pix.device_id = :device_id
-          AND pix.transaction_date > :payers_since
-          AND pix.transaction_date <= :t
+          AND pix.received_at > :payers_since
+          AND pix.received_at < :t
         UNION
         SELECT :payer_customer_id
     )
@@ -120,7 +124,7 @@ _DEVICE_QUERY = text("""
                SELECT 1
                FROM pix_transaction
                WHERE device_id = :device_id
-                 AND transaction_date <= :t
+                 AND received_at < :t
            )::integer AS prior_attempts,
            (SELECT count(*) FROM payers_in_window) AS distinct_payers_24h
 """)
@@ -140,35 +144,35 @@ _RECIPIENT_QUERY = text("""
     ),
     active_day(day_start, n) AS (
         -- o dia do último Pix até t
-        SELECT date_trunc('day', max(last_pix.transaction_date), :local_timezone), 1
+        SELECT date_trunc('day', max(last_pix.received_at), :local_timezone), 1
         FROM recipient_account
         CROSS JOIN LATERAL (
-            SELECT pix.transaction_date
+            SELECT pix.received_at
             FROM pix_transaction pix
             WHERE pix.destination_account_id = recipient_account.id
-              AND pix.transaction_date <= :t
-            ORDER BY pix.transaction_date DESC
+              AND pix.received_at < :t
+            ORDER BY pix.received_at DESC
             LIMIT 1
         ) AS last_pix
-        HAVING max(last_pix.transaction_date) IS NOT NULL
+        HAVING max(last_pix.received_at) IS NOT NULL
         UNION ALL
         -- o dia do último Pix antes da meia-noite do dia achado na volta anterior
-        SELECT date_trunc('day', previous.transaction_date, :local_timezone), active_day.n + 1
+        SELECT date_trunc('day', previous.received_at, :local_timezone), active_day.n + 1
         FROM active_day
         CROSS JOIN LATERAL (
-            SELECT max(last_pix.transaction_date) AS transaction_date
+            SELECT max(last_pix.received_at) AS received_at
             FROM recipient_account
             CROSS JOIN LATERAL (
-                SELECT pix.transaction_date
+                SELECT pix.received_at
                 FROM pix_transaction pix
                 WHERE pix.destination_account_id = recipient_account.id
-                  AND pix.transaction_date < active_day.day_start
-                ORDER BY pix.transaction_date DESC
+                  AND pix.received_at < active_day.day_start
+                ORDER BY pix.received_at DESC
                 LIMIT 1
             ) AS last_pix
         ) AS previous
         WHERE active_day.n < :days_cap
-          AND previous.transaction_date IS NOT NULL
+          AND previous.received_at IS NOT NULL
     ),
     payers_in_window AS (
         -- os pagadores da janela, mais o atual
@@ -176,8 +180,8 @@ _RECIPIENT_QUERY = text("""
         FROM recipient_account
         JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
         JOIN account payer ON payer.id = pix.source_account_id
-        WHERE pix.transaction_date > :payers_since
-          AND pix.transaction_date <= :t
+        WHERE pix.received_at > :payers_since
+          AND pix.received_at < :t
         UNION
         SELECT :payer_customer_id
     )
@@ -185,29 +189,37 @@ _RECIPIENT_QUERY = text("""
             FROM (SELECT 1
                   FROM recipient_account
                   JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
-                  WHERE pix.transaction_date <= :t
+                  WHERE pix.received_at < :t
                   LIMIT :attempts_cap) AS capped) AS prior_attempts,
            (SELECT count(*) FROM active_day) AS prior_days,
            (SELECT count(*)
             FROM recipient_account
             JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
-            WHERE pix.transaction_date > :attempts_since
-              AND pix.transaction_date <= :t) AS attempts_10m,
+            WHERE pix.received_at > :attempts_since
+              AND pix.received_at < :t) AS attempts_10m,
            (SELECT count(*) FROM payers_in_window) AS distinct_payers_1h
 """)
 
 _PAIR_QUERY = text("""
     SELECT count(*) FILTER (WHERE pix.status_id = :approved) AS prior_approved,
-           min(pix.transaction_date) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
+           min(pix.received_at) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
            count(*) FILTER (WHERE pix.status_id IN (:rejected, :two_factor_required)
-                              AND pix.transaction_date > :anomaly_since) > 0 AS recent_anomaly
+                              AND pix.received_at > :anomaly_since) > 0 AS recent_anomaly
     FROM account payer
     JOIN pix_transaction pix ON pix.source_account_id = payer.id
     JOIN account recipient ON recipient.id = pix.destination_account_id
     WHERE payer.customer_id = :payer_customer_id
       AND recipient.customer_id = :recipient_customer_id
-      AND pix.transaction_date <= :t
+      AND pix.received_at < :t
 """)
+
+
+def _distance_km(latitude_a: float, longitude_a: float, latitude_b: float, longitude_b: float) -> float:
+    lat1, lat2 = radians(latitude_a), radians(latitude_b)
+    dlat = lat2 - lat1
+    dlon = radians(longitude_b) - radians(longitude_a)
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
+    return 6371.0 * 2 * asin(sqrt(a))
 
 
 class PixHistoryRepository:
@@ -217,6 +229,56 @@ class PixHistoryRepository:
         self.session = context.db_session
         self.pix_transaction_repository = PixTransactionRepository(context)
 
+    def get_location_distance_km(
+        self, *, payer_customer_id: int, transaction_date: datetime,
+        latitude: float | None, longitude: float | None,
+    ) -> float | None:
+        if latitude is None or longitude is None:
+            return None
+        # The query intentionally also returns the timestamp so coverage is
+        # measured by civil days and the current attempt cannot teach itself.
+        rows = self.session.execute(text("""
+            SELECT pix.latitude, pix.longitude,
+                   (pix.received_at AT TIME ZONE :local_timezone)::date AS local_day
+            FROM account payer
+            JOIN pix_transaction pix ON pix.source_account_id = payer.id
+            WHERE payer.customer_id = :customer_id
+              AND pix.status_id = :approved
+              AND pix.received_at > :since
+              AND pix.received_at <= :cutoff
+            AND pix.latitude IS NOT NULL AND pix.longitude IS NOT NULL
+            ORDER BY pix.received_at DESC
+            LIMIT 1000
+        """), {
+            "customer_id": payer_customer_id,
+            "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
+            "since": transaction_date - policy.LOCATION_HISTORY_WINDOW,
+            "cutoff": transaction_date - policy.LOCATION_RECENCY_GAP,
+            "local_timezone": LOCAL_TIMEZONE.key,
+        }).all()
+        if len(rows) < policy.LOCATION_MIN_OBSERVATIONS or len({row[2] for row in rows}) < policy.LOCATION_MIN_DAYS:
+            return None
+
+        centers: list[dict] = []
+        for point_lat, point_lon, local_day in rows:
+            point = (float(point_lat), float(point_lon))
+            assigned = None
+            for center in centers:
+                if _distance_km(point[0], point[1], center["lat"], center["lon"]) <= policy.LOCATION_CLUSTER_RADIUS_KM:
+                    assigned = center
+                    break
+            if assigned is None:
+                centers.append({"lat": point[0], "lon": point[1], "days": {local_day}, "count": 1})
+            else:
+                count = assigned["count"]
+                assigned["lat"] = (assigned["lat"] * count + point[0]) / (count + 1)
+                assigned["lon"] = (assigned["lon"] * count + point[1]) / (count + 1)
+                assigned["days"].add(local_day)
+                assigned["count"] = count + 1
+        qualified = [center for center in centers if len(center["days"]) >= policy.LOCATION_MIN_DAYS_PER_CENTER]
+        if not qualified:
+            return None
+        return min(_distance_km(latitude, longitude, center["lat"], center["lon"]) for center in qualified)
     def get_payer_features(
         self,
         *,

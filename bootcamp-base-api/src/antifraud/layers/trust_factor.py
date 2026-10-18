@@ -1,11 +1,9 @@
-"""Camada 3 — confiabilidade do destino, pelo trust factor do DICT.
+"""Camada 3 — estatísticas de segurança do DICT.
 
 O DICT é o diretório do Banco Central que liga chave Pix a conta. O
-real não devolve nota: devolve contadores por CPF ou CNPJ, como
-liquidações recebidas e notificações de infração por tipo de fraude
-(conta laranja, conta de fraudador), com até 12 h de atraso (Manual do
-DICT, cap. 18). A nota de 0 a 100, maior pra mais confiável, é a
-simplificação combinada no time, e quem responde é um mock. Quem
+    real não devolve nota: devolve contadores por CPF ou CNPJ e notificações
+    de infração por tipo de fraude, com até 12 h de atraso. O indicador
+    numérico é somente simplificação do mock. Quem
 consulta é o controller, pelo connector, antes de montar o Context;
 esta camada só lê o número.
 
@@ -29,9 +27,9 @@ class TrustFactorLayer:
 
 
 def _dict01_low_trust(context: Context) -> Signal:
-    trust_factor = context.trust_factor
-    if trust_factor is None:
+    statistics = context.dict_security_statistics
+    if statistics is None:
         return policy.unavailable("DICT01")
-    if trust_factor < policy.LOW_TRUST_LIMIT:
-        return policy.triggered("DICT01", {"trust_factor": trust_factor, "threshold": policy.LOW_TRUST_LIMIT})
+    if statistics < policy.LOW_TRUST_LIMIT:
+        return policy.triggered("DICT01", {"security_statistics": statistics, "threshold": policy.LOW_TRUST_LIMIT})
     return policy.not_triggered("DICT01")

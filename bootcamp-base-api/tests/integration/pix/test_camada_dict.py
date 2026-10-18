@@ -53,7 +53,7 @@ class TestCamadaDict:
         assert pix.scores["recipient"] == points
         assert pix.status == "approved"
         if expected == "triggered":
-            assert pix.signal("DICT01")["evidence"] == {"trust_factor": 29, "threshold": 30}
+            assert pix.signal("DICT01")["evidence"] == {"security_statistics": 29, "threshold": 30}
 
     def test_primeiro_pix_entre_contas_novas_com_dict_baixo_pede_2fa(self, dict_mock):
         """Conta nova pagando conta nova que o DICT avalia mal: 2FA já no primeiro Pix.
@@ -68,7 +68,7 @@ class TestCamadaDict:
             DICT01 +32   confiança 12 (< 30), no recipient_trust
             pagador 18, destino 12 + 32 = 44
 
-        D-RCP. É o caso que deu ao DICT01 um teto próprio, na v0.3.2:
+        D-RCP. O DICT01 tem teto próprio na política v0.5:
         dividindo o teto de 35 com o R01, este Pix parava em 35 e saía
         aprovado.
         """

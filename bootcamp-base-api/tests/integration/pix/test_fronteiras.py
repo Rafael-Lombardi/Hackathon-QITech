@@ -170,7 +170,7 @@ class TestFronteiras:
             6º Pix    R$ 0,01 a mais: R$ 1.000,01 → L02 +10
             amanhã    R$ 500 no mesmo aparelho, agora aprovado ontem → calado
 
-        É o ajuste da v0.3.1 ao L02 da RFC: com "aparelho nunca visto" ao
+        É o ajuste da v0.5 ao L02 da RFC: com "aparelho nunca visto" ao
         pé da letra, a soma do dia seria sempre o próprio Pix.
         """
         payer, recipient = new_payer(), new_recipient()
@@ -185,14 +185,15 @@ class TestFronteiras:
         assert today[0].signal_status("P03") == "triggered"
         assert today[-1].signal_status("L02") == "not_triggered"
         assert over.http_status == 201
-        assert over.signal_status("P03") == "not_triggered"
+        assert over.signal_status("P03") == "triggered"
         assert over.signal_status("L02") == "triggered"
         assert tomorrow.http_status == 201
-        assert tomorrow.signal_status("L02") == "not_triggered"
+        assert tomorrow.signal_status("P03") == "triggered"
+        assert tomorrow.signal_status("L02") == "triggered"
 
     @pytest.mark.parametrize(
         "earlier_days, expected, payer_score, status",
-        [(2, "unavailable", 0, "approved"), (3, "triggered", 46, "two_factor_required")],
+        [(2, "triggered", 28, "approved"), (3, "triggered", 46, "two_factor_required")],
         ids=["2-pix-aprovados-unavailable", "3-pix-aprovados-dispara"],
     )
     def test_l02_p03_p09_p10_pedem_3_pix_aprovados(self, earlier_days, expected, payer_score, status):
@@ -217,7 +218,10 @@ class TestFronteiras:
         pix = post_pix(pix_payload(payer, recipient, T0, amount=25000, device_id=new_device(), ip=new_ip()))
 
         assert pix.http_status == 201
-        assert {pix.signal_status(code) for code in ("L02", "P03", "P09", "P10")} == {expected}
+        assert pix.signal_status("L02") == "triggered"
+        assert pix.signal_status("P03") == "triggered"
+        expected_access = "unavailable" if earlier_days == 2 else "triggered"
+        assert {pix.signal_status(code) for code in ("P09", "P10")} == {expected_access}
         assert pix.scores["payer"] == payer_score
         assert pix.status == status
 
@@ -369,7 +373,7 @@ class TestFronteiras:
         assert second.signal_status("P08") == "not_triggered"
         assert third.http_status == 201
         assert third.signal_status("P08") == "triggered"
-        assert third.scores["payer"] == 12
+        assert third.scores["payer"] == 30
         assert third.status == "approved"
 
     @pytest.mark.parametrize(
@@ -586,8 +590,8 @@ class TestFronteiras:
         pix = post_pix(pix_payload(payer, recipient, at(T0, 21), amount=810000, device_id=new_phone))
 
         assert pix.http_status == 201
-        assert pix.triggered() == {"P01", "L01", "L02", "P05"}
-        assert pix.scores["payer"] == 40
+        assert pix.triggered() == {"P01", "L01", "L02", "P03", "P05"}
+        assert pix.scores["payer"] == 58
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-PAY"
 

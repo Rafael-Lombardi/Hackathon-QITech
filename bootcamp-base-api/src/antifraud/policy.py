@@ -1,6 +1,6 @@
 """A política do motor: todo número que ele usa, num arquivo só.
 
-Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.3), não
+Pesos, limiares, janelas e tetos são hipóteses do time (RFC v0.5), não
 calibragem com dado real; os que vêm do Banco Central dizem de onde
 vieram. A POLICY_VERSION vai gravada em cada análise. Mudou um número
 aqui, muda a versão — senão o motivo gravado ontem passa a ser lido com
@@ -12,9 +12,9 @@ from datetime import timedelta
 
 from antifraud.contract import Axis, Evidence, PixStatus, Signal, SignalStatus
 
-# RFC v0.3 + a camada 3 (DICT01, com teto próprio). A tabela de decisão
-# é a da RFC, menos o teto de 69 do D-RCP (veja a tabela).
-POLICY_VERSION = "v0.3.2"
+# RFC v0.5 + a camada 3 (DICT01, com teto próprio). Fontes externas e
+# restrições são entradas de Context e não alteram o contrato HTTP.
+POLICY_VERSION = "v0.5.0"
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -26,9 +26,9 @@ POLICY_VERSION = "v0.3.2"
 # nome do sinal: mudar uma janela é mudar os quatro, e no D-REJ também a
 # frase do motivo.
 #
-# Com t = transaction_date do Pix atual, anterior é transaction_date <=
-# t (o Pix atual ainda não foi gravado), e nos últimos X é
-# transaction_date > t - X AND transaction_date <= t. Ao lado de cada
+# Com t = received_at do Pix atual, anterior é received_at < t (o Pix atual
+# ainda não foi gravado), e nos últimos X é received_at > t - X AND
+# received_at < t. Ao lado de cada
 # janela, o campo do Context que ela define.
 PAYER_ATTEMPTS_WINDOW = timedelta(minutes=5)  # attempts_5m
 PAYER_AMOUNT_WINDOW = timedelta(hours=1)  # amount_1h
@@ -90,7 +90,14 @@ RECIPIENT_PAYERS_THRESHOLD = 4  # R03 e R04
 RECURRENT_PAIR_MIN_APPROVED = 3
 RECURRENT_PAIR_MIN_DAYS = 7
 
-LOW_TRUST_LIMIT = 30  # DICT01: trust factor abaixo disso
+LOW_TRUST_LIMIT = 30  # DICT01: estatística de segurança abaixo disso
+LOCATION_DISTANCE_THRESHOLD_KM = 300
+LOCATION_MIN_OBSERVATIONS = 10
+LOCATION_MIN_DAYS = 7
+LOCATION_MIN_DAYS_PER_CENTER = 2
+LOCATION_CLUSTER_RADIUS_KM = 100
+LOCATION_HISTORY_WINDOW = timedelta(days=90)
+LOCATION_RECENCY_GAP = timedelta(hours=24)
 
 
 # ────────────────────────────────────────────────────────────────────
@@ -151,6 +158,11 @@ CATALOG: dict[str, SignalSpec] = {
         layer=2, family="Limite", axis=Axis.PAYER,
         granularity="payer",
         cap_group="limit", points=10,
+    ),
+    "G01": SignalSpec(
+        name="Localização distante do padrão",
+        layer=2, family="Localização", axis=Axis.PAYER,
+        granularity="payer", cap_group="payer_behavior", points=6,
     ),
     "P03": SignalSpec(
         name="Dispositivo sem Pix aprovado do pagador",
@@ -248,10 +260,20 @@ CATALOG: dict[str, SignalSpec] = {
     # pagador, menos o próprio titular (REL03) e quem já tem relação
     # recorrente com ele (REL02).
     "DICT01": SignalSpec(
-        name="Destino com baixa confiança no DICT",
+        name="Estatística de segurança DICT desfavorável",
         layer=3, family="Contraparte", axis=Axis.RECIPIENT,
         granularity="recipient",
         cap_group="recipient_trust", points=32,
+    ),
+    "DICT02": SignalSpec(
+        name="Marcação de fraude suspeita no DICT",
+        layer=3, family="Contraparte", axis=Axis.RECIPIENT,
+        granularity="recipient", cap_group="dict_security", points=20,
+    ),
+    "DICT03": SignalSpec(
+        name="Marcação de fraude confirmada na fixture DICT",
+        layer=3, family="Contraparte", axis=Axis.RECIPIENT,
+        granularity="recipient", cap_group="dict_security", points=25,
     ),
 }
 
@@ -287,6 +309,7 @@ CAPS: dict[str, tuple[int, int]] = {
     "payer_behavior": (0, 45),
     "recipient_network": (0, 35),
     "recipient_trust": (0, 32),
+    "dict_security": (0, 25),
     "relation": (-10, 8),
 }
 
@@ -326,23 +349,41 @@ class DecisionRule:
     all_triggered: tuple[str, ...] = ()
     min_payer_risk: int | None = None
     min_recipient_risk: int | None = None
+    # Evidência externa já normalizada pelo controller. Os valores aceitos
+    # são evidência DICT adversa (EXT02 ou EXT03) e confirmada (EXT03).
+    payer_external: str | None = None
+    recipient_external: str | None = None
 
 
-# Em ordem, e vale a primeira que casar. Rejeição só por combinação no
-# destino (D-REJ): o 2FA ajuda quando outra pessoa pode estar usando a
-# conta, e não impede ninguém de mandar dinheiro pra um laranja. Conta
-# nova, horário ou valor sozinhos nunca rejeitam. ATO é account
-# takeover, a tomada de conta: aparelho sem Pix aprovado do pagador com
-# valor fora do padrão (D-ATO-1), ou com IP também sem Pix aprovado
-# (D-ATO-2).
-#
-# D-RCP é >= 40, sem o teto de 69 da RFC. Rejeição só sai da combinação
-# do D-REJ, porque o motivo de uma rejeição precisa caber numa
-# combinação explicável, e o DICT, com até 12 h de atraso, não leva
-# ninguém à rejeição. Com o 69 da RFC, os piores destinos, de 70 a 75,
-# cairiam no D-OK; com >= 40, eles vão pra 2FA.
+# Em ordem, vale a primeira linha que casar. Restrição e combinações de
+# rejeição ficam antes do fallback de 2FA. A evidência DICT adversa inclui
+# EXT02 ou EXT03; ela chega no Context já normalizada pela fonte correspondente
+# e funciona como gate da rejeição, não como pontos no eixo do pagador.
+# Sem essa evidência, notas altas continuam resultando em 2FA, reduzindo
+# falso positivo e mantendo o fallback seguro.
 DECISION_TABLE: tuple[DecisionRule, ...] = (
-    DecisionRule("D-REJ", PixStatus.REJECTED, all_triggered=("R01", "R02", "R03")),
+    # Rejeições são avaliadas antes de qualquer friction. A restrição é
+    # uma decisão de fonte, não depende da nota calculada.
+    DecisionRule("D-RESTRICT-SIM", PixStatus.REJECTED),
+    DecisionRule(
+        "D-REJ-ATO", PixStatus.REJECTED,
+        all_triggered=("P03", "P04", "P06", "P07"), min_payer_risk=70,
+    ),
+    DecisionRule(
+        "D-REJ-PAY", PixStatus.REJECTED,
+        all_triggered=("P04", "P06", "P07"), min_payer_risk=70,
+        payer_external="adverse",
+    ),
+    DecisionRule(
+        "D-REJ-RCP", PixStatus.REJECTED,
+        all_triggered=("R02", "R03"), min_recipient_risk=55,
+        recipient_external="adverse",
+    ),
+    DecisionRule(
+        "D-REJ-CROSS", PixStatus.REJECTED,
+        min_payer_risk=40, min_recipient_risk=40,
+        recipient_external="adverse",
+    ),
     DecisionRule("D-ATO-1", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P06")),
     DecisionRule("D-ATO-2", PixStatus.TWO_FACTOR_REQUIRED, all_triggered=("P03", "P09")),
     DecisionRule("D-PAY", PixStatus.TWO_FACTOR_REQUIRED, min_payer_risk=40),

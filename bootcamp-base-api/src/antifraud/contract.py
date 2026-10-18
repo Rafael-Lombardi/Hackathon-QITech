@@ -96,6 +96,9 @@ class Transaction:
     # de todas as contas do titular.
     payer_account_age_days: int
     recipient_account_age_days: int
+    latitude: float | None = None
+    longitude: float | None = None
+    location_distance_km: float | None = None
 
     def __post_init__(self) -> None:
         # Sem fuso, o astimezone de local_datetime assumiria o fuso da
@@ -121,8 +124,8 @@ class Transaction:
 class PayerHistory:
     """O passado do pagador, pelo documento: todas as contas dele somadas.
 
-    Anterior é o que já estava gravado com transaction_date até a do Pix
-    atual. O Pix atual ainda não foi gravado (isso só acontece depois da
+    Anterior é o que já estava gravado com received_at antes do instante de
+    avaliação do servidor. O Pix atual ainda não foi gravado (isso só acontece depois da
     decisão), e a regra que precisa dele soma o atual uma vez. A exceção
     são as contagens de distintos, que já chegam contando o atual; o
     comentário do campo avisa.
@@ -167,6 +170,8 @@ class PayerHistory:
     # Pix aprovado com este aparelho antes da 0h de hoje, em São Paulo
     device_known_before_today: bool
     device_day_amount: int  # hoje, com este aparelho, qualquer status
+    # Hoje, em todos os aparelhos sem cadastro autoritativo, qualquer status.
+    unregistered_device_day_amount: int = 0
 
 
 @dataclass(frozen=True)
@@ -221,8 +226,10 @@ class PairHistory:
 class Context:
     """Tudo o que o motor sabe de um Pix.
 
-    Quem monta é o controller: o histórico vem dos repositories e o trust
-    factor, do connector do DICT. O motor só lê.
+    Quem monta é o controller: o histórico vem dos repositories, a
+    estatística/evidência de segurança do DICT vem do connector e
+    device_trusted vem do cadastro autoritativo.
+    O motor só lê.
 
     Alguns valores o controller preenche sem consultar, porque saem
     exatos da própria definição. Pagador sem Pix anterior
@@ -238,7 +245,21 @@ class Context:
     device: DeviceHistory
     recipient: RecipientHistory
     pair: PairHistory
-    trust_factor: int | None  # 0 a 100; None quando o DICT falhou
+    dict_security_statistics: int | None  # mock normalizado; None quando DICT falhou
+    # Cadastro autoritativo, independente de Pix aprovados. None só deve
+    # ocorrer quando a fonte de cadastro estiver indisponível.
+    device_trusted: bool | None = None
+    device_registry_available: bool = True
+    # Entradas de fontes externas/restrições. Permanecem internas ao motor:
+    # o contrato HTTP continua recebendo somente o Pix normalizado.
+    restriction_active: bool = False
+    restriction_available: bool = True
+    payer_external_adverse: bool = False
+    payer_external_confirmed: bool = False
+    recipient_external_adverse: bool = False
+    recipient_external_confirmed: bool = False
+    payer_dict_security_assessment: str | None = None
+    recipient_dict_security_assessment: str | None = None
 
 
 @dataclass(frozen=True)

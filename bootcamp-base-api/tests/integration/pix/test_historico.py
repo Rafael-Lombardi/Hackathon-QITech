@@ -3,8 +3,8 @@
 As regras da camada 2 comparam o Pix com o passado, e quase todo erro de
 antifraude mora na definição de passado. As que o motor usa (o bloco
 "Janelas de histórico" de src/antifraud/policy.py):
-  • anterior é o que foi gravado com transaction_date até a do Pix atual —
-    um Pix datado depois não conta, mesmo que tenha chegado antes;
+  • anterior é o que foi recebido com received_at antes da avaliação atual —
+    transaction_date é o relógio de negócio e não move o corte do histórico;
   • rajada e montante (P04, P05, R02, R03...) contam TODA tentativa, até
     as barradas: o invasor insistente não pode sumir depois do 1º 2FA;
   • aparelho conhecido, IP conhecido, par recorrente e mediana contam só
@@ -76,10 +76,12 @@ class TestHistorico:
         dict_mock.set_trust(fresh.document, 12)
         seed_pix(payer, fresh, days_before(T0, 3), expect="two_factor_required")
 
-        pix = post_pix(pix_payload(payer, fresh, T0))
+        pix = post_pix(pix_payload(payer, fresh, T0), auto_register=False)
 
         assert pix.http_status == 201
-        assert {pix.signal_status(code) for code in ACCESS_SIGNALS} == {"unavailable"}
+        assert pix.signal_status("P03") == "triggered"
+        assert pix.signal_status("L02") == "not_triggered"
+        assert {pix.signal_status(code) for code in ("P09", "P10")} == {"unavailable"}
         assert pix.scores["recipient"] == 52
         assert pix.status == "two_factor_required"
         assert pix.decision_rule == "D-RCP"
@@ -175,7 +177,7 @@ class TestHistorico:
         assert pix.sufficiency["payer"] == "low"
 
     def test_r01_olha_a_conta_e_r03_olha_o_titular(self):
-        """As duas identidades do destino (RFC v0.3): a conta e o titular.
+        """As duas identidades do destino (RFC v0.5): a conta e o titular.
 
         O titular tem uma conta antiga e uma aberta há 2 dias. Três
         pagadores novos pagam ele nos últimos 50 minutos, nas duas contas.
@@ -186,7 +188,8 @@ class TestHistorico:
                                        12 + 20 + 15 = 47, teto do
                                        recipient_network: 35
 
-        Os dois aprovados: sem R02 não há D-REJ, e 35 fica abaixo do D-RCP.
+        Os dois aprovados: sem R02 não há rejeição combinada, e 35 fica
+        abaixo do D-RCP.
         """
         old = new_recipient()
         new = old.with_new_account(opening_date=T0 - timedelta(days=2))

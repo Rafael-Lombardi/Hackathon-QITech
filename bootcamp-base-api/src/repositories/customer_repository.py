@@ -1,6 +1,6 @@
 from uuid import uuid4
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert
 
 from database import Context
@@ -79,3 +79,26 @@ class CustomerRepository:
         self.session.execute(
             select(Customer.id).where(Customer.id == customer_id).with_for_update(key_share=True)
         ).scalar_one()
+
+    def lock_for_pix_document(self, *, document_number: str) -> None:
+        """Serializa o pagador antes de criar customer/conta e contar histórico.
+
+        O lock da linha do customer só existe depois do get-or-create. Dois
+        Pix inéditos do mesmo documento podiam atravessar essa janela juntos.
+        O advisory lock é transacional e não cria estado permanente no banco.
+        """
+        self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:document, 0))"),
+            {"document": document_number},
+        )
+
+    def lock_for_pix_many(self, *, customer_ids: tuple[int, ...]) -> None:
+        """Lock payer and recipient in deterministic order for concurrency."""
+        ids = sorted(set(customer_ids))
+        if ids:
+            self.session.execute(
+                select(Customer.id)
+                .where(Customer.id.in_(ids))
+                .order_by(Customer.id)
+                .with_for_update(key_share=True)
+            ).all()

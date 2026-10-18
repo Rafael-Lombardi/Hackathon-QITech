@@ -60,6 +60,6 @@ class DictUnavailable(QIException):
     def __init__(self, reason) -> None:
         title = "DICT Unavailable"
         http_status = 503
-        description = f"The DICT trust factor could not be obtained: {reason}."
-        translation = "Não foi possível consultar o fator de confiança no DICT."
+        description = f"DICT security evidence could not be obtained: {reason}."
+        translation = "Não foi possível consultar a evidência de segurança do DICT."
         super().__init__(title, self.code, http_status, description, translation)

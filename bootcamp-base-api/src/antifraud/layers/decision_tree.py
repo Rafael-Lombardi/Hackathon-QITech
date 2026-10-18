@@ -2,7 +2,7 @@
 histórico.
 
 Cadê a árvore? Cada regra é um galho de dois níveis: tem histórico pra
-responder? Se não tem, unavailable. Se tem, a condição vale? As 14
+responder? Se não tem, unavailable. Se tem, a condição vale? As 15
 rodam sempre, sem atalho de uma pra outra, porque o GET precisa mostrar
 o estado de cada uma. O tronco, que junta os galhos numa decisão, é a
 DECISION_TABLE do policy.py. É `if/else` escrito à mão, e não modelo
@@ -23,6 +23,7 @@ class DecisionTreeLayer:
     def evaluate(self, context: Context) -> list[Signal]:
         return [
             _l02_new_device_over_limit(context),
+            _g01_unusual_location(context),
             _p03_unknown_device(context),
             _p04_many_attempts(context),
             _p05_high_hourly_amount(context),
@@ -37,6 +38,18 @@ class DecisionTreeLayer:
             _rel01_new_relation(context),
             _rel02_recurrent_relation(context),
         ]
+
+
+def _g01_unusual_location(context: Context) -> Signal:
+    distance = context.transaction.location_distance_km
+    if distance is None:
+        return policy.unavailable("G01")
+    if distance > policy.LOCATION_DISTANCE_THRESHOLD_KM:
+        return policy.triggered("G01", {
+            "distance_km": round(distance, 2),
+            "threshold_km": policy.LOCATION_DISTANCE_THRESHOLD_KM,
+        })
+    return policy.not_triggered("G01")
 
 
 # As perguntas de histórico, uma por função. A primeira serve a L02,
@@ -61,7 +74,7 @@ def _recipient_is_new(context: Context) -> bool:
 
 
 def _l02_new_device_over_limit(context: Context) -> Signal:
-    if _short_access_history(context):
+    if context.device_trusted is None:
         return policy.unavailable("L02")
     # A RFC escreve "P03 disparado e (valor > R$ 200 ou soma do dia >
     # R$ 1.000)". Com o P03 da RFC ao pé da letra (aparelho sem registro
@@ -72,9 +85,9 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
     # Pix do dia no aparelho novo também entram na soma.
     payer = context.payer
     amount = context.transaction.amount
-    day_amount = payer.device_day_amount + amount
+    day_amount = payer.unregistered_device_day_amount + amount
     over_limit = amount > policy.NEW_DEVICE_PIX_LIMIT or day_amount > policy.NEW_DEVICE_DAY_LIMIT
-    if not payer.device_known_before_today and over_limit:
+    if context.device_trusted is False and over_limit:
         return policy.triggered("L02", {
             "amount": amount,
             "amount_threshold": policy.NEW_DEVICE_PIX_LIMIT,
@@ -86,11 +99,10 @@ def _l02_new_device_over_limit(context: Context) -> Signal:
 
 
 def _p03_unknown_device(context: Context) -> Signal:
-    if _short_access_history(context):
+    if context.device_trusted is None:
         return policy.unavailable("P03")
-    payer = context.payer
-    if not payer.device_known:
-        return policy.triggered("P03", {"payer_prior_tx": payer.prior_attempts, "device_seen_before": False})
+    if not context.device_trusted:
+        return policy.triggered("P03", {"device_registered": False, "device_seen_before": False})
     return policy.not_triggered("P03")
 
 

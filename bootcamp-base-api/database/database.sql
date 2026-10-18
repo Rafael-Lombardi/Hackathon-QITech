@@ -1,4 +1,4 @@
--- O antifraude Pix, em seis tabelas:
+-- O antifraude Pix, nas tabelas de contrato, histórico e fontes:
 --   pix_transaction_status       os três veredictos do contrato.
 --   pix_signal_status            os três estados de um sinal.
 --   customer                     quem paga ou recebe: um por CPF ou CNPJ (o
@@ -122,6 +122,73 @@ CREATE TABLE account(
 CREATE INDEX account_customer_id_idx
     ON account (customer_id);
 
+-- Cadastro independente de aparelhos confiáveis. Pix aprovado não insere
+-- aqui: a linha só vem de um seed/serviço de identidade e pode ser revogada.
+CREATE TABLE device_registry(
+    id                              BIGSERIAL PRIMARY KEY,
+    customer_id                     BIGINT NOT NULL REFERENCES customer(id),
+    device_id                      VARCHAR(255) NOT NULL,
+    registered_at                  TIMESTAMPTZ NOT NULL,
+    revoked_at                     TIMESTAMPTZ,
+    provenance                     VARCHAR(50) NOT NULL,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(customer_id, device_id),
+    CHECK(revoked_at IS NULL OR revoked_at > registered_at),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX device_registry_customer_device_idx
+    ON device_registry (customer_id, device_id);
+
+-- Fontes autoritativas seedadas para a política v0.5. Não são histórico de
+-- Pix: representam o snapshot recebido de listas de restrição e inteligência
+-- externa no instante da avaliação. occurrence_id torna replays idempotentes.
+CREATE TABLE risk_restriction(
+    id                              BIGSERIAL PRIMARY KEY,
+    scope                           VARCHAR(30) NOT NULL,
+    customer_id                    BIGINT REFERENCES customer(id),
+    account_id                     BIGINT REFERENCES account(id),
+    active_from                    TIMESTAMPTZ NOT NULL,
+    active_until                   TIMESTAMPTZ,
+    status                          VARCHAR(20) NOT NULL DEFAULT('active'),
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(scope IN ('payer', 'recipient_holder', 'recipient_account')),
+    CHECK((scope = 'recipient_account' AND account_id IS NOT NULL)
+          OR (scope <> 'recipient_account' AND customer_id IS NOT NULL)),
+    CHECK(active_until IS NULL OR active_until > active_from),
+    CHECK(status IN ('active', 'revoked')),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX risk_restriction_customer_idx
+    ON risk_restriction (customer_id, active_from);
+CREATE INDEX risk_restriction_account_idx
+    ON risk_restriction (account_id, active_from);
+
+CREATE TABLE external_risk_assessment(
+    id                              BIGSERIAL PRIMARY KEY,
+    customer_id                    BIGINT NOT NULL REFERENCES customer(id),
+    axis                            VARCHAR(10) NOT NULL,
+    assessment                     VARCHAR(30) NOT NULL,
+    valid_from                     TIMESTAMPTZ NOT NULL,
+    valid_until                    TIMESTAMPTZ,
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL UNIQUE,
+    severity                       VARCHAR(20),
+    source_version                 VARCHAR(50),
+    observed_at                    TIMESTAMPTZ,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(axis IN ('payer', 'recipient')),
+    CHECK(assessment IN ('clear', 'suspicious', 'confirmed_in_mock', 'unavailable')),
+    CHECK(valid_until IS NULL OR valid_until > valid_from),
+    CHECK(provenance <> '')
+);
+
+CREATE INDEX external_risk_customer_axis_idx
+    ON external_risk_assessment (customer_id, axis, valid_from);
+
 -- Uma linha por Pix recebido: o que chegou E o que decidimos sobre ele.
 --
 -- Transação e análise moram na mesma tabela de propósito. São 1:1 — o
@@ -202,6 +269,9 @@ CREATE TABLE pix_transaction(
     ip                              VARCHAR(45) NOT NULL,
     latitude                        NUMERIC(9, 6),
     longitude                       NUMERIC(9, 6),
+    received_at                     TIMESTAMPTZ NOT NULL,
+    evaluated_at                    TIMESTAMPTZ NOT NULL,
+    evaluation_context              JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at                      TIMESTAMP NOT NULL DEFAULT(NOW()),
     UNIQUE(pix_transaction_key),
     UNIQUE(external_id),
@@ -219,6 +289,25 @@ CREATE TABLE pix_transaction(
     CHECK(longitude IS NULL OR longitude BETWEEN -180 AND 180)
 );
 
+-- Receipt durável para processamento, falha e recuperação com lease.
+CREATE TABLE pix_transaction_receipt(
+    id                              BIGSERIAL PRIMARY KEY,
+    external_id                    VARCHAR(255) NOT NULL UNIQUE,
+    payload                        JSONB NOT NULL,
+    state                          VARCHAR(20) NOT NULL,
+    owner_token                    VARCHAR(36) NOT NULL,
+    lease_until                    TIMESTAMPTZ NOT NULL,
+    received_at                    TIMESTAMPTZ NOT NULL,
+    evaluated_at                   TIMESTAMPTZ,
+    failure_reason                 TEXT,
+    pix_transaction_id             BIGINT REFERENCES pix_transaction(id),
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    CHECK(state IN ('processing', 'failed', 'completed')),
+    CHECK(jsonb_typeof(payload) = 'object')
+);
+CREATE INDEX pix_transaction_receipt_lease_idx
+    ON pix_transaction_receipt (state, lease_until);
+
 -- Cada índice abaixo responde a uma pergunta de regra, e todos terminam
 -- em transaction_date porque a pergunta é sempre "deste X, numa janela
 -- de tempo". A janela conta em transaction_date, não em created_at:
@@ -233,14 +322,14 @@ CREATE TABLE pix_transaction(
 -- travar a tabela — e não mexe em mais nada. A mesma pergunta por
 -- documento soma as contas do customer, via account_customer_id_idx.
 CREATE INDEX pix_transaction_source_account_id_idx
-    ON pix_transaction (source_account_id, transaction_date);
+    ON pix_transaction (source_account_id, received_at);
 
 -- Conta de destino: muitos pagadores distintos pro mesmo destino em
 -- janela curta (robô multiplicador, loja falsa, conta laranja). Por conta
 -- aqui; por documento é o JOIN com account → customer — o laranja de
 -- customer, lá em cima.
 CREATE INDEX pix_transaction_destination_account_id_idx
-    ON pix_transaction (destination_account_id, transaction_date);
+    ON pix_transaction (destination_account_id, received_at);
 
 -- Aparelho: quantos Pix por device_id, e aparelho compartilhado (um
 -- aparelho pagando por vários documentos distintos é indício de farm de
@@ -248,7 +337,7 @@ CREATE INDEX pix_transaction_destination_account_id_idx
 -- regra de velocity por IP no catálogo — quando houver, o índice volta
 -- com ela.
 CREATE INDEX pix_transaction_device_id_idx
-    ON pix_transaction (device_id, transaction_date);
+    ON pix_transaction (device_id, received_at);
 
 -- A explicação da decisão: uma linha por sinal avaliado, por Pix,
 -- inclusive os unavailable. É daqui que sai metadata.signals da resposta
@@ -304,3 +393,34 @@ CREATE TABLE pix_transaction_rule_result(
     CHECK(points BETWEEN -100 AND 100),
     CHECK(jsonb_typeof(rule_result_data) = 'object')
 );
+
+-- Snapshot imutável das restrições e assessments que o controller consultou
+-- para este Pix. A fonte pode mudar depois; a análise continua auditável.
+CREATE TABLE pix_transaction_risk_evidence(
+    id                              BIGSERIAL PRIMARY KEY,
+    pix_transaction_id              BIGINT NOT NULL REFERENCES pix_transaction(id),
+    source_type                    VARCHAR(30) NOT NULL,
+    axis                            VARCHAR(10),
+    scope                           VARCHAR(30),
+    assessment                     VARCHAR(30),
+    provenance                     VARCHAR(80) NOT NULL,
+    occurrence_id                  VARCHAR(255) NOT NULL,
+    valid_from                     TIMESTAMPTZ NOT NULL,
+    valid_until                    TIMESTAMPTZ,
+    captured_at                    TIMESTAMPTZ NOT NULL,
+    severity                       VARCHAR(20),
+    source_version                 VARCHAR(50),
+    observed_at                    TIMESTAMPTZ,
+    created_at                     TIMESTAMP NOT NULL DEFAULT(NOW()),
+    UNIQUE(pix_transaction_id, source_type, occurrence_id),
+    CHECK(source_type IN ('restriction', 'dict_security')),
+    CHECK(axis IS NULL OR axis IN ('payer', 'recipient')),
+    CHECK(source_type <> 'restriction' OR scope IS NOT NULL),
+    CHECK(source_type <> 'dict_security' OR axis IS NOT NULL),
+    CHECK(provenance <> ''),
+    CHECK(occurrence_id <> ''),
+    CHECK(valid_until IS NULL OR valid_until > valid_from)
+);
+
+CREATE INDEX pix_transaction_risk_evidence_transaction_idx
+    ON pix_transaction_risk_evidence (pix_transaction_id);

@@ -4,25 +4,31 @@
 
 ## Como o motor de decisão funciona
 
+> A modelagem consolidada está na [RFC v0.5 do Notion](https://app.notion.com/p/RFC-v0-5-Modelagem-de-Risco-Antifraude-Pix-1-3fc6b8cbe2cc8022aeeaf6e39530a099), que é a referência operacional.
+
 Uma API, feita a partir do Base Service ([`bootcamp-base-api/`](bootcamp-base-api/)), que recebe um Pix em `POST /pix/transaction` e decide, antes de o dinheiro sair, entre `approved`, `two_factor_required` (pedir ao cliente uma segunda confirmação, o 2FA) e `rejected`; `GET /pix/transaction/{id}` devolve a análise gravada. Em volta do motor, o controller cuida do contrato, da idempotência, da consulta ao DICT (o diretório do Banco Central que liga chave Pix a conta), da trava e do histórico ([passo a passo](bootcamp-base-api/README.md#6-o-caminho-de-uma-requisição)).
 
 O motor ([`src/antifraud/`](bootcamp-base-api/src/antifraud/)) mora fora do controller, onde o Base Service põe a regra, para não se misturar com trava, sessão e commit ([o porquê](bootcamp-base-api/docs/como-o-projeto-e-organizado.md#por-que-o-motor-é-um-pacote-à-parte)). É um pacote puro, determinístico, e roda três camadas em ordem, com o mesmo contrato — recebem o `Context` e devolvem seus sinais:
 
 1. **Validações iniciais** — o que o próprio Pix diz, sem histórico: conta nova, valor alto à noite, mesmo titular.
-2. **Árvore de decisão** — 14 regras `if/else` sobre o histórico, escritas à mão: sem fraude rotulada não há modelo a treinar, e cada resposta precisa caber numa frase.
-3. **Confiabilidade do recebedor** — o trust factor dele no DICT, uma nota de 0 a 100 em que maior é mais confiável. Aqui responde um mock, um servidor de mentira.
+2. **Sinais e política** — regras determinísticas sobre o histórico, escritas à mão: sem fraude rotulada não há modelo a treinar, e cada resposta precisa caber numa frase.
+3. **Evidência de segurança do DICT** — estatísticas e marcações simuladas do recebedor. A política não usa um trust factor único; o endpoint legado do mock mantém esse nome por compatibilidade.
 
 Nenhuma camada lê o sinal de outra; quem junta é o engine, nos tetos, nas notas e na tabela de decisão. Cada sinal sai `triggered`, `not_triggered` ou `unavailable` (falta de histórico não vira ponto nem atestado); os pontos somam por grupo, com teto, em duas notas de 0 a 100 que não são probabilidade, **pagador** e **destino**, cada uma com a **suficiência das evidências**; e na **tabela de decisão** vale a primeira linha que casar. Tudo volta em `metadata` ([exemplo resolvido](#um-exemplo-resolvido)).
 
+### Contrato do DICT nesta demonstração
+
+O DICT é consultado como fonte de evidência de segurança, não como um número universal de confiança. `DICT01` representa estatística desfavorável; `DICT02` e `DICT03`, marcações suspeita e confirmada na fixture. `clear` significa apenas que nenhuma evidência adversa conhecida foi retornada; `unavailable` significa que a fonte não respondeu ou não permitiu concluir. Nenhum dos dois estados prova legitimidade ou fraude. O mock mantém `/trust-factor/...` somente por compatibilidade.
+
 ## Regras
 
-Os 19 sinais, na ordem da resposta. Valores em reais; no payload são centavos (R$ 1.000 é `100000`). Como ler:
+Os 22 sinais, na ordem da resposta. Valores em reais; no payload são centavos (R$ 1.000 é `100000`). Como ler:
 
 - abaixo do nome: camada · família · eixo. **Família** é o rótulo do desafio, que sai na resposta (Velocity é ritmo); **grupo de teto**, por onde os pontos somam;
 - **pagador** e **recebedor** são o documento, somando as contas: o laranja — quem cede a conta para receber dinheiro de golpe e repassar — com três contas é um recebedor só;
-- as janelas contam no tempo do negócio (`transaction_date`), até o Pix atual; "hoje" é o dia civil de São Paulo. Rajadas contam qualquer status, para quem insiste depois do 2FA seguir visível;
-- **`unavailable`** quando falta histórico: L02, P03, P09 e P10 pedem 3 Pix aprovados do pagador (antes, quase todo aparelho é novo); P06, 10 aprovados em 7 dias distintos; as demais, algum Pix anterior do pagador, do aparelho (P08) ou do recebedor (R02 a R04); DICT01, um DICT que responda. A camada 1 sempre responde;
-- os números estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py), e a versão da política (`v0.3.2`) vai gravada em cada análise. Os que não citam o Banco Central são da RFC do time ([`RFC3.pdf`](RFC3.pdf)), sem âncora externa: o "Por quê" dá a lógica ou o custo de errar.
+- as janelas de histórico contam no recebimento (`received_at`), até o Pix atual; `transaction_date` continua sendo o relógio de negócio para hora local e auditoria. "Hoje" é o dia civil de São Paulo. Rajadas contam qualquer status, para quem insiste depois do 2FA seguir visível;
+- **`unavailable`** quando falta histórico ou fonte: cada sinal aplica sua própria pré-condição; DICT01/02/03 dependem da evidência DICT. Indisponibilidade não significa segurança;
+- os números estão em [`policy.py`](bootcamp-base-api/src/antifraud/policy.py), e a versão da política (`v0.5.0`) vai gravada em cada análise. `DICT01` é estatística de segurança mockada; `DICT02`/`DICT03` são evidências antifraude DICT suspeita/confirmada na fixture.
 
 **A conta que guia os pesos:** 2FA pela nota começa em 40, e nenhum sinal chega lá sozinho — o mais pesado, o DICT01, tem 32 —, então cada peso é escolhido pela combinação que leva a 40. As siglas D-* são as linhas da [decisão](#como-as-regras-viram-decisão).
 
@@ -46,7 +52,9 @@ Os 19 sinais, na ordem da resposta. Valores em reais; no payload são centavos (
 | **R04** Conta nova concentrando pagadores<br>camada 2 · Contraparte · destino | Conta de destino com menos de 7 dias **e** a condição do R03. | **+15** · rede do destino, teto 35 | O laranja recém-aberto que já concentra pagadores. Junta duas evidências que já existem: R01 e R03 somam 32, e o R04 só leva a rede ao teto. Nunca muda o status; fica pela nota gravada e pelo motivo legível. |
 | **REL01** Destino inédito para o pagador<br>camada 2 · Contraparte · destino | Nenhum Pix aprovado do pagador para este recebedor. | **+8** · relação, de -10 a +8 | Na falsa central, no falso parente e no QR trocado, o dinheiro vai para alguém que o cliente nunca pagou. Mas todo mundo paga alguém pela primeira vez: 8 só pesa somado ao que se sabe do recebedor. |
 | **REL02** Relação recorrente<br>camada 2 · Contraparte · destino | 3 ou mais Pix aprovados do pagador para este recebedor, o primeiro há 7 dias ou mais, **e** nenhuma rejeição nem 2FA entre os dois nos últimos 7 dias. | ≥ 3 aprovados · primeiro há ≥ 7 dias · **-8** · relação, de -10 a +8 | O aluguel, a diarista, a mesada: três Pix aprovados, o primeiro há uma semana, já são hábito: não deveriam pagar fricção. Um 2FA ou uma rejeição recente no par suspende o desconto, para não facilitar justo a tentativa seguinte. |
-| **DICT01** Destino com baixa confiança no DICT<br>camada 3 · Contraparte · destino | Trust factor do recebedor no DICT abaixo de 30. | < 30 · prazo de 2 s · **+32** · confiança do destino, teto 32 | A pergunta da Contraparte (quem recebe é confiável?) feita ao sistema Pix inteiro, como prevê o Manual do DICT (cap. 18). Sozinho passa: o DICT real atrasa até 12 h. O 30 é chute sobre uma nota de mock; os 2 s cabem nos "poucos segundos" do desafio. |
+| **DICT01** Estatística de segurança desfavorável<br>camada 3 · Contraparte · destino | Estatística de segurança do recebedor abaixo de 30. | < 30 · prazo de 2 s · **+32** · estatística DICT, teto 32 | O DICT fornece evidências institucionais sobre a chave/recebedor. Aqui a resposta é uma simplificação mockada: não é um trust factor universal nem prova de legitimidade. |
+| **DICT02** Marcação de fraude suspeita no DICT<br>camada 3 · Contraparte · destino | O DICT possui uma marcação de fraude suspeita para o recebedor. | fixture `suspicious` · **+20** · evidência DICT, teto 25 | Evidência adversa declarada, mas ainda não confirmada; participa das rejeições demonstrativas quando combinada com outros sinais. |
+| **DICT03** Marcação de fraude confirmada na fixture<br>camada 3 · Contraparte · destino | A fixture possui confirmação de fraude para o recebedor. | fixture `confirmed_in_mock` · **+25** · evidência DICT, teto 25 | Evidência mais forte da demonstração; não é confirmação regulatória nem prova produzida pelo DICT produtivo. |
 
 Os grupos de teto. O pagador chega no máximo a 95, e o destino a 75; o preço do teto é que o segundo indício de um grupo vale menos que o primeiro.
 
@@ -57,18 +65,18 @@ Os grupos de teto. O pagador chega no máximo a 95, e o destino a 75; o preço d
 | rajada do pagador (`payer_velocity`) | P04, P05 | 0 a 25 | a mesma rajada vista por quantidade e por dinheiro: 35 viram 25 |
 | comportamento (`payer_behavior`) | P03, P06, P07, P08, P09, P10 | 0 a 45 | o maior grupo, porque é onde mora a tomada de conta |
 | rede do destino (`recipient_network`) | R01, R02, R03, R04 | 0 a 35 | abaixo de 40: a rede sozinha nunca pede 2FA, e a combinação completa é a rejeição (D-REJ) |
-| confiança do destino (`recipient_trust`) | DICT01 | 0 a 32 | um sinal só, e o teto é o próprio peso: o DICT soma por fora da rede (ver os ajustes abaixo) |
+| estatística DICT (`recipient_trust`, nome legado no código) | DICT01 | 0 a 32 | um sinal só, e o teto é o próprio peso: a evidência DICT soma por fora da rede |
 | relação (`relation`) | REL01, REL02, REL03 | -10 a +8 | o único que desce, e no máximo 10: relação antiga não apaga sinal grave |
 
 **Ajustes à RFC v0.3:**
 
-- **DICT01 (camada 3) é novo**, com teto próprio desde a v0.3.2: dividindo o da rede, conta recém-aberta com nota ruim parava em 35, aprovada.
+- **DICT01 (camada 3) é novo**, com teto próprio desde a versão histórica v0.3.2: dividindo o da rede, conta recém-aberta com nota ruim parava em 35, aprovada.
 - **Conhecido e relação exigem Pix aprovado** (P03, P07, P09, P10, REL01, REL02), e a pré-condição de aparelho e IP conta 3 aprovados: o 2FA não volta para a API e não pode ensinar o aparelho.
 - **L02:** aparelho novo é o sem Pix aprovado antes de hoje; com o "nunca visto" da RFC, a soma do dia seria só o próprio Pix.
 - **REL02:** 3 aprovados, o primeiro há 7 dias ou mais, sem rejeição nem 2FA recente: só relação provada.
 - **A suficiência só informa:** cada regra tem a própria pré-condição de histórico.
 - **D-RCP a partir de 40, sem o teto de 69:** com o destino em até 75, os piores iriam para o D-OK; vão para 2FA, porque rejeição só sai do D-REJ.
-- **A trava** é `FOR NO KEY UPDATE` no `customer` do pagador, e não o advisory lock da RFC: há uma linha por documento.
+- **A concorrência** usa advisory lock transacional pelo documento do pagador e lock determinístico das linhas de customer.
 
 ## Como as regras viram decisão
 
@@ -76,14 +84,18 @@ A tabela, em ordem ([`DECISION_TABLE`](bootcamp-base-api/src/antifraud/policy.py
 
 | Ordem | Linha | Condição | Status | Por quê |
 |---|---|---|---|---|
-| 1 | D-REJ | R01, R02 e R03 disparados | `rejected` | conta de destino nova recebendo de muitos pagadores, em rajada: o desenho do laranja e da isca |
-| 2 | D-ATO-1 | P03 e P06 disparados | `two_factor_required` | aparelho sem Pix aprovado com valor muito fora do padrão: tomada de conta (ATO, de *account takeover*) |
-| 3 | D-ATO-2 | P03 e P09 disparados | `two_factor_required` | aparelho e IP sem Pix aprovado ao mesmo tempo: o ambiente de acesso inteiro trocou |
-| 4 | D-PAY | nota do pagador ≥ 40 | `two_factor_required` | soma de indícios sobre o pagador |
-| 5 | D-RCP | nota do destino ≥ 40 | `two_factor_required` | destino suspeito sem a combinação que rejeita: o único meio-termo do contrato |
-| 6 | D-OK | nenhuma das anteriores | `approved` | nada justificou fricção |
+| 1 | D-RESTRICT-SIM | Restrição simulada ativa | `rejected` | restrição explícita prevalece sobre score |
+| 2 | D-REJ-ATO | combinação extrema de tomada de conta | `rejected` | risco operacional extremo no pagador |
+| 3 | D-REJ-PAY | comportamento extremo do pagador + evidência DICT adversa | `rejected` | rejeição demonstrativa com evidência adicional |
+| 4 | D-REJ-RCP | rede suspeita do recebedor + evidência DICT adversa | `rejected` | destino com padrão de recebimento incompatível |
+| 5 | D-REJ-CROSS | risco alto nos dois eixos + evidência adversa no recebedor | `rejected` | risco combinado de pagador e recebedor |
+| 6 | D-ATO-1 | dispositivo não familiar + valor atípico | `two_factor_required` | possível tomada de conta |
+| 7 | D-ATO-2 | dispositivo e IP não familiares | `two_factor_required` | ambiente de acesso trocado |
+| 8 | D-PAY | risco do pagador ≥ 40 | `two_factor_required` | soma de indícios sobre o pagador |
+| 9 | D-RCP | risco do recebedor ≥ 40 | `two_factor_required` | destino suspeito sem combinação de rejeição |
+| 10 | D-OK | nenhuma das anteriores | `approved` | nenhum caso justificou fricção |
 
-**Por que rejeitar só pelo destino.** O 2FA ajuda quando outra pessoa pode estar usando a conta, mas não quando a vítima foi convencida a pagar: ela confirma, e o dinheiro sai. Suspeita sobre o pagador vira 2FA; rejeição fica para o destino, só com três indícios combinados (R01, R02, R03): bloquear quem paga o aluguel também é prejuízo. O D-REJ vem primeiro: contra um laranja, o 2FA do pagador não protege ninguém. Abaixo dele, o destino suspeito pede 2FA (D-RCP), a pausa onde um produto real mostraria o alerta do golpe.
+**Por que há rejeições com evidência.** O 2FA ajuda quando outra pessoa pode estar usando a conta, mas não quando a vítima foi convencida a pagar: ela confirma, e o dinheiro sai. Por isso a política reserva rejeições para combinações fortes de risco e evidência adversa; os casos intermediários passam por 2FA. As quatro rejeições demonstrativas (`D-REJ-ATO`, `D-REJ-PAY`, `D-REJ-RCP` e `D-REJ-CROSS`) não são prova de fraude nem regra regulatória.
 
 **Por que 40.** No destino, a rede para em 35 e só passa de 40 com o REL01 ou o DICT01; o DICT01 chega lá com qualquer outro indício do destino (R01 dá 44; REL01, 40; R02 ou R03 pegam a conta já aquecida).
 
@@ -91,7 +103,7 @@ A tabela, em ordem ([`DECISION_TABLE`](bootcamp-base-api/src/antifraud/policy.py
 
 **A suficiência** sai dos Pix anteriores (*n*) e dos dias distintos (*d*) de cada eixo: *n* = 0 é `unavailable`; *n* ≥ 30 em *d* ≥ 7 é `high`; *n* ≥ 6 em *d* ≥ 2 é `medium`; o resto, `low`. Não soma ponto: mostra quanto histórico havia por trás da nota.
 
-**A camada 3** só sobe o risco do destino. DICT fora do ar, lento ou torto deixa o DICT01 `unavailable`, e as outras duas camadas decidem.
+**A camada 3** só adiciona evidência de segurança do DICT ao risco do destino. Consulta `clear` não significa legitimidade; DICT fora do ar, lento ou torto deixa os sinais DICT `unavailable`, e a política não transforma ausência em segurança.
 
 **O motivo** é a frase da linha que decidiu, com números. Frases reais:
 
@@ -100,8 +112,8 @@ A tabela, em ordem ([`DECISION_TABLE`](bootcamp-base-api/src/antifraud/policy.py
 | D-REJ | "Conta destino aberta há 2 dias, com 5 pagadores distintos na última hora e 5 tentativas em 10 min" |
 | D-ATO-1 | "Dispositivo sem Pix aprovado deste pagador, com valor 6,2x a mediana" |
 | D-ATO-2 | "Dispositivo e IP sem Pix aprovado deste pagador, que tem 3 Pix anteriores" |
-| D-PAY | "Risco do pagador em 43 (2FA a partir de 40): muitas tentativas em 5 min (P04), vários destinos inéditos em 10 min (P07) e montante alto na última hora (P05)" |
-| D-RCP | "Risco do destino em 44 (2FA a partir de 40): destino com baixa confiança no DICT (DICT01) e conta destino recém-aberta (R01)" |
+| D-PAY | "Risco do pagador em 43 (acima do limiar de 40): muitas tentativas em 5 min (P04), vários destinos inéditos em 10 min (P07) e montante alto na última hora (P05)" |
+| D-RCP | "Risco do destino em 44 (acima do limiar de 40): estatística de segurança DICT desfavorável (DICT01) e conta destino recém-aberta (R01)" |
 | D-OK | "Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)" |
 
 ### Um exemplo resolvido
@@ -113,7 +125,7 @@ O pagador tinha 10 Pix aprovados de R$ 1.000, um por dia, sempre do mesmo aparel
   "key": "aa80f536-0ec7-42d1-b9e8-6e76fbf10fd8",
   "status": "two_factor_required",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-ATO-1",
     "reasons": ["Dispositivo sem Pix aprovado deste pagador, com valor 6,2x a mediana"],
     "scores": {"payer": 46, "recipient": 8},
@@ -186,7 +198,7 @@ Num banco novo, volta **201** (encurtado):
   "key": "b1f7f4da-ee18-403d-903d-9cd63c41fa60",
   "status": "approved",
   "metadata": {
-    "policy_version": "v0.3.2",
+    "policy_version": "v0.5.0",
     "decision_rule": "D-OK",
     "reasons": ["Nenhum indício pesou o bastante para pedir 2FA (risco do pagador 8, do destino 0)"],
     "scores": {"payer": 8, "recipient": 0},
@@ -203,7 +215,7 @@ source .venv/bin/activate
 pytest
 ```
 
-Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre os 18 cenários da RFC; os dois lados dos limiares que a RFC lista, mais P07, P08, REL02, DICT01, a pré-condição de 3 aprovados, a suficiência e o teto do corpo; D-PAY e D-RCP em 39 e 40; os tetos de grupo que dá para passar; o mesmo `id` em corrida, Pix cruzados, conta conjunta e o R$ 1 milhão da v0.3.2. Mapa: [`tests/integration/pix/README.md`](bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](bootcamp-base-api/README.md#7-quando-dá-errado).
+Todos são de integração; nem o motor puro tem unitário, porque o risco está na contagem SQL do histórico e na montagem do `Context`. A suíte cobre os 18 cenários históricos da RFC; os dois lados dos limiares que a RFC lista, mais P07, P08, REL02, DICT01, a pré-condição de 3 aprovados, a suficiência e o teto do corpo; D-PAY e D-RCP em 39 e 40; os tetos de grupo que dá para passar; o mesmo `id` em corrida, Pix cruzados, conta conjunta e o R$ 1 milhão da política histórica v0.3.2. Mapa: [`tests/integration/pix/README.md`](bootcamp-base-api/tests/integration/pix/README.md); portas ocupadas e banco a recriar: [README do serviço](bootcamp-base-api/README.md#7-quando-dá-errado).
 
 ## Modelagem de dados
 
@@ -216,9 +228,9 @@ Seis tabelas, em [`database.sql`](bootcamp-base-api/database/database.sql), cada
 | `customer` | quem paga ou recebe, um por documento (só dígitos, `UNIQUE`); é a linha que a trava segura |
 | `account` | uma conta de um customer, em qualquer banco: `UNIQUE NULLS NOT DISTINCT (participant, branch, account_number, customer_id)`. Conta conjunta vira uma linha por titular, e o ISPB fica `NULL` na origem, que o contrato não traz |
 | `pix_transaction` | um Pix: o payload inteiro (JSONB), as colunas que o motor leu e a decisão explicada. As notas são colunas, para calibrar os pesos com uma consulta; `UNIQUE(external_id)` é a idempotência |
-| `pix_transaction_rule_result` | um sinal avaliado por linha, 19 por Pix, com estado, pontos e evidência: é o `metadata.signals` |
+| `pix_transaction_rule_result` | um sinal avaliado por linha, 22 por Pix, com estado, pontos e evidência: é o `metadata.signals` |
 
-**Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino da RFC v0.3: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `transaction_date`, mais `account(customer_id)`, que leva das contas ao documento.
+**Por que customer e account separados.** Um documento tem contas em bancos diferentes, e o golpe usa isso. As regras do pagador e as do recebedor (R02, R03, REL01) somam todas as contas do `customer`; R01 e R04 olham a idade da conta indicada no Pix. São as duas identidades do destino da RFC v0.3: o titular e a conta. Os índices respondem às perguntas das regras: conta de origem, conta de destino e aparelho, todos terminando em `received_at`, mais `account(customer_id)`, que leva das contas ao documento.
 
 ## Limites conhecidos
 

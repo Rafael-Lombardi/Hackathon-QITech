@@ -58,11 +58,11 @@ services:
       retries: 20
 
   # O DICT do Banco Central, de mentira. A camada 3 do motor pergunta a
-  # ele o trust factor do recebedor, e quem responde e um MockServer: um
+  # ele as evidencias de seguranca do recebedor, e quem responde e um MockServer: um
   # servidor HTTP que devolve o que estiver combinado com ele. Cada
   # combinado e uma expectativa (o pedido que ela reconhece e a resposta
   # que ela da), e as do mockserver/dict-expectations.json sobem junto:
-  # 70 pra qualquer documento, mais os casos de demonstracao do
+  # uma estatistica neutra pra qualquer documento, mais os casos de demonstracao do
   # mockserver/README.md.
   #
   # Conta como infraestrutura de execucao, como o Postgres ali em cima, e

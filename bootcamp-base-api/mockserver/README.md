@@ -1,12 +1,14 @@
 # O DICT de mentira
 
-O DICT é o Diretório de Identificadores de Contas Transacionais, o cadastro do Banco Central que liga chave Pix a conta. O de verdade devolve contadores de fraude por CPF/CNPJ (Manual Operacional do DICT, cap. 18); o time aceitou a ficção de um DICT que já responde a nota. A camada 3 do motor pergunta a ele quão confiável é o recebedor:
+O DICT é o Diretório de Identificadores de Contas Transacionais, o cadastro do Banco Central que liga chave Pix a conta. O DICT produtivo fornece dados de chave, titularidade, estatísticas e marcações de segurança; esta fixture simplifica a estatística em uma resposta numérica e mantém o endpoint legado abaixo. A camada 3 usa isso como evidência sobre o recebedor, não como prova de legitimidade:
 
 ```
 GET /trust-factor/{documento, só dígitos}   ->   200 {"trust_factor": 70}
+
+O caminho e o campo acima são compatibilidade da fixture. Na modelagem v0.5, o conceito é a estatística de segurança do DICT (`DICT01`), não um trust factor universal. As marcações suspeita/confirmada são usadas pelos sinais `DICT02`/`DICT03`.
 ```
 
-O `trust_factor` vai de 0 a 100, e maior é mais confiável.
+O campo legado `trust_factor` vai de 0 a 100. Na política, ele é normalizado como estatística de segurança; maior não é prova de legitimidade.
 
 Quem faz o papel do DICT é um [MockServer](https://www.mock-server.com): o serviço `dict-mock` do `docker-compose.yml`, um servidor HTTP que responde o que estiver combinado com ele. Cada combinado é uma *expectativa*: o pedido que ela reconhece (`httpRequest`) e a resposta que ela dá (`httpResponse`). As do `dict-expectations.json`, deste diretório, sobem com ele. A mesma porta, 1080, faz os dois papéis: responde como DICT em `/trust-factor/...` e recebe os combinados em `/mockserver/...`.
 
@@ -18,7 +20,7 @@ Depois de subir, ele leva alguns segundos pra atender: de 2 a 18 s nas nossas me
 
 | Expectativa (`id`) | Documento do recebedor | Resposta | Pra quê |
 |---|---|---|---|
-| `trust-factor-99999999999` | `999.999.999-99` | `12` | demonstração: abaixo do limiar de 30, o DICT01 dispara |
+| `trust-factor-99999999999` | `999.999.999-99` | `12` | demonstração: estatística desfavorável, DICT01 dispara |
 | `trust-factor-88888888888` | `888.888.888-88` | `70`, depois de 3 s | demonstração: o DICT lento. O prazo da API é 2 s, a camada 3 sai `unavailable` e o Pix é decidido sem ela. Com `DICT_API_TIMEOUT` de 3 s ou mais, a resposta chega a tempo e a demonstração some |
 | `trust-factor-default` | qualquer outro | `70` | o caso comum: nada contra o destino |
 
