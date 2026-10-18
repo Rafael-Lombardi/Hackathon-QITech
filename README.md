@@ -21,7 +21,7 @@ flowchart TD
     G --> H
     H --> I[Análise + sinais + evidências]
     I --> J[(PostgreSQL)]
-    J --> K[GET /pix/transaction/{id}]
+    J --> K["GET /pix/transaction/{id}"]
 ```
 
 As restrições são vetos explícitos e vêm antes dos scores. Os scorers são lógicos: o código compartilha o agregador, mas mantém os eixos separados. O DICT é uma fonte de evidência, não uma probabilidade de fraude. `unavailable` não significa segurança.
