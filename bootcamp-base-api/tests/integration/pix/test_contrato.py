@@ -35,6 +35,7 @@ CATALOG = {
     "R01": (1, "Contraparte", "recipient", "destination_account", 12),
     "REL03": (1, "Contraparte", "recipient", "pair", -5),
     "L02": (2, "Limite", "payer", "payer", 10),
+    "G01": (2, "Localização", "payer", "payer", 6),
     "P03": (2, "Perfil", "payer", "payer", 18),
     "P04": (2, "Velocity", "payer", "payer", 20),
     "P05": (2, "Montante", "payer", "payer", 15),

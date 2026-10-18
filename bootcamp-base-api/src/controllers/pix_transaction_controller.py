@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from sqlalchemy.exc import SQLAlchemyError
@@ -85,6 +86,9 @@ class PixTransactionController(BaseController):
             # A completed receipt normally has a transaction and was caught by
             # the replay above. An active claim is deliberately not a verdict.
             if receipt.pix_transaction_id is None:
+                replayed = self._wait_for_replay(pix_request)
+                if replayed is not None:
+                    return replayed, False
                 raise PixTransactionIdConflict(pix_request.external_id)
             replayed = self._replay_if_recorded(pix_request)
             if replayed is not None:
@@ -102,6 +106,17 @@ class PixTransactionController(BaseController):
                 self.pix_transaction_repository.mark_receipt_failed(failed, str(error))
                 self.session.commit()
             raise
+
+    def _wait_for_replay(self, pix_request: PixRequest) -> dict | None:
+        """Wait briefly for the owner of an active receipt to commit."""
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            self.session.rollback()
+            replayed = self._replay_if_recorded(pix_request)
+            if replayed is not None:
+                return replayed
+            time.sleep(0.01)
+        return None
 
     def _process_claimed(self, pix_request: PixRequest, received_at: datetime, receipt) -> dict:
 
@@ -163,7 +178,7 @@ class PixTransactionController(BaseController):
         self.pix_transaction_repository.mark_receipt_completed(receipt, pix_transaction.id, evaluated_at)
         self.session.commit()
 
-        return pix_transaction_dto, True
+        return pix_transaction_dto
 
     def get_by_external_id(self, external_id: str) -> dict:
         """A análise gravada do Pix com este id do payload.

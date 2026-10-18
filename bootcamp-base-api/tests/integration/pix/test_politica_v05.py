@@ -100,7 +100,8 @@ class TestPoliticaRfcV05:
 
         Preparo: 10 aprovações qualificam a mediana; o device do pagador é
         registrado e também aparece para três outros pagadores (P08). Em
-        seguida há quatro tentativas de R$ 6.000 para destinos inéditos.
+        seguida há quatro tentativas para destinos inéditos; três são de
+        R$ 1.000 e a quarta de R$ 6.000, evitando 2FA antes da rajada final.
         A fixture externa marca o pagador como `suspicious`.
 
             P04 + P05   velocidade/montante, teto 25
@@ -120,15 +121,22 @@ class TestPoliticaRfcV05:
             "registered_at": T0.replace(hour=0),
         }])
         other_payers = [new_payer() for _ in range(3)]
+        # A janela do P08 é estritamente maior que ``T0 - 24h``.  Usar
+        # exatamente um dia antes cai na borda aberta da janela e faz os
+        # três pagadores desaparecerem da contagem, deixando o score em
+        # 2FA (sem os 12 pontos do dispositivo compartilhado).
+        shared_device_moment = T0 - timedelta(hours=23)
         seed([
-            pix_payload(other, usual, days_before(T0, 1)[0], device_id=shared_device)
+            pix_payload(other, usual, shared_device_moment, device_id=shared_device)
             for other in other_payers
         ])
         targets = [new_recipient() for _ in range(4)]
         seed(
             [
-                pix_payload(payer, target, moment, amount=600000, device_id=shared_device)
-                for target, moment in zip(targets, minutes_before(T0, 4))
+                pix_payload(payer, target, moment, amount=amount, device_id=shared_device)
+                for target, moment, amount in zip(
+                    targets, minutes_before(T0, 4), (100000, 100000, 100000, 600000)
+                )
             ],
             expect=["approved", "approved", "approved", "two_factor_required"],
         )

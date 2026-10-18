@@ -32,6 +32,7 @@ Cada teste cria as pessoas dele — documentos, contas, aparelhos e IPs sorteado
 | `test_politica_v05.py` | restrição prioritária e as quatro rejeições demonstrativas da RFC v0.5 com fixtures externas seedadas |
 | `test_contrato.py` | 201, 200, 400, 403, 404 e 409, o corpo da resposta, GET igual ao POST nos mesmos bytes, corpo que nem é JSON, documento com e sem pontuação |
 | `test_concorrencia.py` | POSTs ao mesmo tempo: a trava por pagador, o mesmo id em corrida (200 ou 409, nunca 500) e Pix cruzados de gente nova |
+| `test_geolocalizacao.py` | G01: cobertura insuficiente, viagem distante, múltiplos centros habituais, limiar de 300 km, janela de 24h e combinações de 2FA/rejeição |
 
 Os nomes dos cenários são os da tabela da RFC §9. O cenário 15 está dividido: `test_reenvio_devolve_mesma_analise` e `test_mesmo_id_payload_diferente_409` em `test_contrato.py`, e `test_concorrencia_mesmo_pagador_conta_uma_vez` em `test_concorrencia.py`.
 
@@ -69,6 +70,20 @@ que podem rejeitar e os negativos que devem permanecer em 2FA:
 Cada cenário confere status, regra decisora e score; os casos negativos
 também verificam que a evidência ausente, clara ou expirada não é convertida
 automaticamente em rejeição.
+
+## Cenários geográficos do G01
+
+`test_geolocalizacao.py` documenta a regra geográfica opcional da RFC:
+
+| Cenário | Sinais relevantes | Resultado |
+|---|---|---|
+| Histórico insuficiente | menos de 10 observações ou menos de 7 dias | `G01 unavailable`, aprovação |
+| São Paulo → Porto Alegre | `G01 +6` | `D-OK`; localização isolada não cria fricção |
+| Dois centros habituais | São Paulo e Porto Alegre, ambos qualificados | `G01 not_triggered` |
+| Distância abaixo de 300 km | São Paulo → Campinas | `G01 not_triggered` |
+| Observações nas últimas 24h | histórico recente excluído da janela | `G01 unavailable` |
+| Distante + valor atípico + rajada | `G01 + P06 + P04 + P07` | `D-PAY`, `two_factor_required` |
+| ATO completo com distância | `G01 + P03 + P04 + P06 + P07 + L02` | `D-REJ-ATO`, `rejected` |
 
 ## Como ler a conta dos docstrings
 

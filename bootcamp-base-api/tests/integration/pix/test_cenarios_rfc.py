@@ -42,7 +42,7 @@ from tests.utils.pix import pix_payload, post_pix, seed, seed_pix
 # Os sinais que comparam o Pix com o histórico. No primeiro Pix de todo
 # mundo, todos eles respondem unavailable.
 HISTORICAL_SIGNALS = {
-    "L02", "P03", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
+    "L02", "G01", "P03", "P04", "P05", "P06", "P07", "P08", "P09", "P10",
     "R02", "R03", "R04", "REL01", "REL02",
 }
 
@@ -435,8 +435,8 @@ class TestCenariosRfc:
 
         Preparo: 3 Pix com geolocalização para o mesmo destino, nos 3 dias
         anteriores. Pix: o mesmo, sem o campo geolocation, que o contrato
-        deixa opcional. Nenhum sinal olha geolocalização: o dado é pouco
-        confiável, e a falta dele não é indício de nada.
+        deixa opcional. O G01 fica unavailable sem localização atual; a
+        falta do dado não vira indício de nada.
 
         Nada dispara; pagador 0, destino 0: D-OK.
         """
