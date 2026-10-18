@@ -51,6 +51,18 @@ INSERT INTO pix_signal_status (enumerator) VALUES
 -- documento tem contas em bancos diferentes: o laranja com três contas em
 -- três bancos é um documento só, e as regras por pessoa agrupam por aqui.
 --
+-- É também a linha que o controller trava: SELECT ... FOR NO KEY UPDATE
+-- no customer do pagador, depois dos upserts e na mesma transação do
+-- INSERT do Pix — a estante da RFC da biblioteca: ninguém conta os livros
+-- sem segurar a estante. A trava é no customer, e não na conta de origem,
+-- porque as regras do pagador contam pelo documento, somando as contas:
+-- dois Pix do mesmo CPF por contas diferentes também passam um de cada
+-- vez. Repare no NO KEY: o INSERT de uma conta confere a FK com um FOR KEY
+-- SHARE no customer, e um FOR UPDATE comum brigaria com ele — conta nova
+-- de customer travado esperaria, e dois Pix cruzados que abrem conta (A
+-- paga B, B paga A) dariam deadlock. O resto da história mora no
+-- controller.
+--
 -- Ninguém cadastra customer nem account neste serviço. Os dois nascem na
 -- primeira vez que aparecem num payload, por INSERT ... ON CONFLICT DO
 -- NOTHING no controller — é isso que o resto deste arquivo chama de
@@ -77,15 +89,7 @@ CREATE TABLE customer(
     CHECK(document_number ~ '^[0-9]{11}$' OR document_number ~ '^[0-9]{14}$')
 );
 
--- Uma conta, de qualquer banco, de um customer. É a linha que o
--- controller trava — SELECT ... FOR NO KEY UPDATE na conta de origem,
--- depois dos upserts e na mesma transação do INSERT do Pix — como a
--- estante da RFC da biblioteca: ninguém conta os livros sem segurar a
--- estante. Dois Pix da mesma conta de origem chegando juntos passam um de
--- cada vez. Repare no NO KEY: o INSERT do Pix confere as duas FKs com um
--- FOR KEY SHARE nas contas, e um FOR UPDATE comum brigaria com ele —
--- dois Pix cruzados (1 paga 4, 4 paga 1) dariam deadlock. O resto da
--- história mora no controller.
+-- Uma conta, de qualquer banco, de um customer.
 --
 -- participant é o ISPB, o código de oito dígitos de cada banco no Pix.
 -- Fica NULL na conta de origem: o payload não o traz e o contrato não diz
@@ -275,10 +279,10 @@ CREATE INDEX pix_transaction_ip_idx
 -- atributo, como axis aqui e as sufficiency em pix_transaction, é CHECK.
 --
 -- Append-only: ninguém dá UPDATE aqui, e o controller grava os sinais de
--- um Pix num INSERT só (dezoito idas ao banco custam o dobro de uma). O
+-- um Pix num INSERT só (dezenove idas ao banco custam o dobro de uma). O
 -- UNIQUE diz que cada regra roda uma vez por análise e, de quebra, é o
 -- índice que o GET usa pra montar a resposta. É a tabela que mais cresce
--- — dezoito linhas por Pix, dois terços do disco — e a primeira alavanca
+-- — dezenove linhas por Pix, dois terços do disco — e a primeira alavanca
 -- quando apertar é deixar de gravar os not_triggered e devolvê-los no GET
 -- a partir do catálogo da policy_version: o schema não muda.
 CREATE TABLE pix_transaction_rule_result(

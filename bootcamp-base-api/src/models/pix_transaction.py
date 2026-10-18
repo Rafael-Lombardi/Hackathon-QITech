@@ -25,12 +25,8 @@ class PixTransaction(Base):
     """Um Pix recebido: o payload, as colunas que o motor leu e a decisão.
 
     O porquê de cada coluna está no comentário da tabela, no
-    database.sql. Aqui ficam três detalhes do mapeamento que alguém vai
+    database.sql. Aqui ficam dois detalhes do mapeamento que alguém vai
     errar.
-
-    As duas FKs para account, origem e destino, obrigam o foreign_keys
-    explícito em cada relationship: sem ele o SQLAlchemy não sabe qual
-    das duas seguir e recusa o mapeamento inteiro.
 
     transaction_date volta do banco com fuso, só que no fuso da sessão
     (UTC no container), e não no -03:00 que chegou. É o mesmo instante. A
@@ -88,5 +84,3 @@ class PixTransaction(Base):
     )
 
     status = relationship("PixTransactionStatus", foreign_keys=[status_id])
-    source_account = relationship("Account", foreign_keys=[source_account_id])
-    destination_account = relationship("Account", foreign_keys=[destination_account_id])

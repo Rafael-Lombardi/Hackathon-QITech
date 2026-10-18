@@ -7,8 +7,10 @@ class Customer(Base):
     """Quem paga ou recebe: um por documento, só dígitos (11 ou 14).
 
     Nasce na primeira vez que o documento aparece num payload, pelo
-    CustomerRepository.get_or_create, e não muda depois. As regras "por
-    pessoa" do motor agrupam aqui, somando todas as contas do documento.
+    CustomerRepository.get_or_create, e não muda depois. As regras por
+    pessoa do motor agrupam aqui, somando todas as contas do documento, e
+    é por isso que o customer do pagador é a linha que o controller trava
+    (CustomerRepository.lock_for_pix; o porquê está no database.sql).
     """
 
     __tablename__ = "customer"

@@ -1,88 +1,84 @@
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+"""O histórico que o motor antifraude lê, contado pelo banco.
+
+São quatro métodos, um por grupo do Context do motor — pagador,
+aparelho, recebedor e o par —, cada um numa ida ao banco, e cada um
+devolve direto o tipo de antifraud/contract.py. O porquê de cada campo
+mora lá: por que conhecido é só com approved, por que os distintos já
+contam o atual, onde cabe teto. Aqui fica o como contar.
+
+As definições valem pros quatro. Anterior é o que já está gravado com
+transaction_date até t, inclusive, sendo t o transaction_date do Pix
+atual — ele mesmo só é gravado depois da decisão. "Nos últimos X" é a
+janela (t - X, t]. Dia é o dia civil de São Paulo, cortado no SQL com AT
+TIME ZONE e o LOCAL_TIMEZONE do motor: o banco roda em UTC, e um Pix às
+22h de São Paulo já é o dia seguinte lá. Pagador e recebedor são o
+DOCUMENTO: as contas do customer saem de account_customer_id_idx, e os
+Pix de cada conta, dos índices de conta de origem e de conta de destino.
+
+count(*) FILTER (WHERE ...) conta só as linhas que passam no WHERE, e
+várias contagens assim saem da mesma leitura. percentile_cont(0.5) é a
+mediana — com quantidade par, a média dos dois do meio.
+
+O SQL está escrito à mão, e não na API de expressões do SQLAlchemy: a
+mediana com FILTER nem tem como ser escrita por ela na versão 2.0.23, e
+lido como SQL cada agregado bate com um campo do contrato.
+"""
+
+from datetime import datetime, timedelta
 
 from sqlalchemy import text
 
+from antifraud.contract import LOCAL_TIMEZONE, DeviceHistory, PairHistory, PayerHistory, RecipientHistory
 from database import Context
 from models import PixTransactionStatus
 from repositories.pix_transaction_repository import PixTransactionRepository
 
-
-@dataclass(frozen=True)
-class PayerFeatures:
-    """O passado do pagador, pelo documento."""
-
-    prior_attempts: int
-    prior_days: int
-    device_known: bool
-    ip_known: bool
-    attempts_5m: int
-    amount_1h: int
-    approved_count: int
-    approved_days: int
-    approved_median_amount: float | None
-    new_destinations_10m: int
-    device_known_before_today: bool
-    device_day_amount: int
-
-
-@dataclass(frozen=True)
-class DeviceFeatures:
-    """O passado do aparelho, de qualquer pagador."""
-
-    prior_attempts: int
-    distinct_payers_24h: int
-
-
-@dataclass(frozen=True)
-class RecipientFeatures:
-    """O passado do recebedor, pelo documento."""
-
-    prior_attempts: int
-    prior_days: int
-    attempts_10m: int
-    distinct_payers_1h: int
-
-
-@dataclass(frozen=True)
-class PairFeatures:
-    """O passado do par pagador→recebedor, documento a documento."""
-
-    prior_approved: int
-    first_approved_days_ago: int | None
-    recent_anomaly: bool
-
-
-# Os Pix do pagador viram uma CTE, lida uma vez, e cada feature é um
-# agregado sobre ela. new_destinations é conjunto: os recebedores da
-# janela, mais o atual, menos os que já tinham um Pix approved antes da
-# janela. O UNION junta sem repetir, e o EXCEPT tira.
+# payer_pix lê o histórico inteiro do pagador uma vez, e cada campo é um
+# agregado sobre ela. A linha leva a conta de destino, e não o documento
+# do recebedor: ir de conta a documento custa uma busca por linha, e só
+# new_destinations precisa disso. Ali o caminho é o contrário: primeiro
+# as contas dos candidatos, que são poucas, e depois os approved
+# anteriores à janela pra alguma delas. Repare no MATERIALIZED: sem ele o
+# Postgres embute candidate_account na consulta, reordena o JOIN e volta
+# a buscar a conta de cada approved — medido num pagador com 3 mil Pix,
+# 7.916 páginas em vez de 215.
 _PAYER_QUERY = text("""
     WITH payer_pix AS (
         SELECT pix.transaction_date,
-               (pix.transaction_date AT TIME ZONE 'America/Sao_Paulo')::date AS local_day,
+               (pix.transaction_date AT TIME ZONE :local_timezone)::date AS local_day,
                pix.amount,
                pix.status_id,
                pix.device_id,
                pix.ip,
-               recipient.customer_id AS recipient_customer_id
+               pix.destination_account_id
         FROM account payer
         JOIN pix_transaction pix ON pix.source_account_id = payer.id
-        JOIN account recipient ON recipient.id = pix.destination_account_id
         WHERE payer.customer_id = :payer_customer_id
           AND pix.transaction_date <= :t
     ),
-    new_destinations AS (
-        SELECT recipient_customer_id
+    candidates AS (
+        -- os recebedores da janela, mais o atual
+        SELECT recipient.customer_id
         FROM payer_pix
-        WHERE transaction_date > :new_destinations_since
+        JOIN account recipient ON recipient.id = payer_pix.destination_account_id
+        WHERE payer_pix.transaction_date > :new_destinations_since
         UNION
         SELECT :recipient_customer_id
+    ),
+    candidate_account AS MATERIALIZED (
+        SELECT candidates.customer_id, recipient.id
+        FROM candidates
+        JOIN account recipient ON recipient.customer_id = candidates.customer_id
+    ),
+    new_destinations AS (
+        -- os candidatos, menos os que já tinham approved deste pagador antes da janela
+        SELECT customer_id FROM candidates
         EXCEPT
-        SELECT recipient_customer_id
-        FROM payer_pix
-        WHERE status_id = :approved
-          AND transaction_date <= :new_destinations_since
+        SELECT candidate_account.customer_id
+        FROM candidate_account
+        JOIN payer_pix ON payer_pix.destination_account_id = candidate_account.id
+        WHERE payer_pix.status_id = :approved
+          AND payer_pix.transaction_date <= :new_destinations_since
     )
     SELECT count(*) AS prior_attempts,
            count(DISTINCT local_day) AS prior_days,
@@ -97,19 +93,20 @@ _PAYER_QUERY = text("""
            (SELECT count(*) FROM new_destinations) AS new_destinations_10m,
            count(*) FILTER (WHERE status_id = :approved
                               AND device_id = :device_id
-                              AND local_day < (:t AT TIME ZONE 'America/Sao_Paulo')::date) > 0
+                              AND local_day < (:t AT TIME ZONE :local_timezone)::date) > 0
                AS device_known_before_today,
            coalesce(sum(amount) FILTER (WHERE device_id = :device_id
-                                          AND local_day = (:t AT TIME ZONE 'America/Sao_Paulo')::date), 0)
+                                          AND local_day = (:t AT TIME ZONE :local_timezone)::date), 0)
                AS device_day_amount
     FROM payer_pix
 """)
 
-# O total de Pix do aparelho só precisa das colunas do índice
-# (device_id, transaction_date). O JOIN com account, pra chegar ao
+# prior_attempts sai de um EXISTS, 0 ou 1: um aparelho com milhares de
+# Pix custa uma descida no índice. O JOIN com account, pra chegar ao
 # documento de cada pagador, fica restrito à janela.
 _DEVICE_QUERY = text("""
     WITH payers_in_window AS (
+        -- os pagadores da janela, mais o atual
         SELECT payer.customer_id
         FROM pix_transaction pix
         JOIN account payer ON payer.id = pix.source_account_id
@@ -119,43 +116,89 @@ _DEVICE_QUERY = text("""
         UNION
         SELECT :payer_customer_id
     )
-    SELECT count(*) AS prior_attempts,
+    SELECT EXISTS (
+               SELECT 1
+               FROM pix_transaction
+               WHERE device_id = :device_id
+                 AND transaction_date <= :t
+           )::integer AS prior_attempts,
            (SELECT count(*) FROM payers_in_window) AS distinct_payers_24h
-    FROM pix_transaction
-    WHERE device_id = :device_id
-      AND transaction_date <= :t
 """)
 
-# Mesmo desenho do aparelho. Repare que a leitura do histórico inteiro só
-# usa transaction_date, que está no índice (destination_account_id,
-# transaction_date): um destino popular, com milhares de Pix, é contado
-# sem ler a tabela. O JOIN pros pagadores fica restrito à janela.
+# prior_attempts e prior_days param no teto, e um recebedor com 30 mil
+# Pix custa o mesmo que um com 30. prior_attempts é o count de um LIMIT.
+# prior_days é a parte difícil: contar dias distintos sem ler os Pix um a
+# um. A CTE recursiva desce o histórico de dia em dia. A primeira volta
+# pega o último Pix até t e guarda a meia-noite, em São Paulo, do dia
+# dele. Cada volta seguinte pega o último Pix antes dessa meia-noite, que
+# cai no dia com Pix logo anterior — os dias vazios ficam pulados. Cada
+# busca é um ORDER BY ... DESC LIMIT 1 por conta, uma descida no índice
+# de conta de destino; uma volta é um dia, e o laço para em days_cap.
 _RECIPIENT_QUERY = text("""
-    WITH payers_in_window AS (
+    WITH RECURSIVE recipient_account AS (
+        SELECT id FROM account WHERE customer_id = :recipient_customer_id
+    ),
+    active_day(day_start, n) AS (
+        -- o dia do último Pix até t
+        SELECT date_trunc('day', max(last_pix.transaction_date), :local_timezone), 1
+        FROM recipient_account
+        CROSS JOIN LATERAL (
+            SELECT pix.transaction_date
+            FROM pix_transaction pix
+            WHERE pix.destination_account_id = recipient_account.id
+              AND pix.transaction_date <= :t
+            ORDER BY pix.transaction_date DESC
+            LIMIT 1
+        ) AS last_pix
+        HAVING max(last_pix.transaction_date) IS NOT NULL
+        UNION ALL
+        -- o dia do último Pix antes da meia-noite do dia achado na volta anterior
+        SELECT date_trunc('day', previous.transaction_date, :local_timezone), active_day.n + 1
+        FROM active_day
+        CROSS JOIN LATERAL (
+            SELECT max(last_pix.transaction_date) AS transaction_date
+            FROM recipient_account
+            CROSS JOIN LATERAL (
+                SELECT pix.transaction_date
+                FROM pix_transaction pix
+                WHERE pix.destination_account_id = recipient_account.id
+                  AND pix.transaction_date < active_day.day_start
+                ORDER BY pix.transaction_date DESC
+                LIMIT 1
+            ) AS last_pix
+        ) AS previous
+        WHERE active_day.n < :days_cap
+          AND previous.transaction_date IS NOT NULL
+    ),
+    payers_in_window AS (
+        -- os pagadores da janela, mais o atual
         SELECT payer.customer_id
-        FROM account recipient
-        JOIN pix_transaction pix ON pix.destination_account_id = recipient.id
+        FROM recipient_account
+        JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
         JOIN account payer ON payer.id = pix.source_account_id
-        WHERE recipient.customer_id = :recipient_customer_id
-          AND pix.transaction_date > :payers_since
+        WHERE pix.transaction_date > :payers_since
           AND pix.transaction_date <= :t
         UNION
         SELECT :payer_customer_id
     )
-    SELECT count(*) AS prior_attempts,
-           count(DISTINCT (pix.transaction_date AT TIME ZONE 'America/Sao_Paulo')::date) AS prior_days,
-           count(*) FILTER (WHERE pix.transaction_date > :attempts_since) AS attempts_10m,
+    SELECT (SELECT count(*)
+            FROM (SELECT 1
+                  FROM recipient_account
+                  JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
+                  WHERE pix.transaction_date <= :t
+                  LIMIT :attempts_cap) AS capped) AS prior_attempts,
+           (SELECT count(*) FROM active_day) AS prior_days,
+           (SELECT count(*)
+            FROM recipient_account
+            JOIN pix_transaction pix ON pix.destination_account_id = recipient_account.id
+            WHERE pix.transaction_date > :attempts_since
+              AND pix.transaction_date <= :t) AS attempts_10m,
            (SELECT count(*) FROM payers_in_window) AS distinct_payers_1h
-    FROM account recipient
-    JOIN pix_transaction pix ON pix.destination_account_id = recipient.id
-    WHERE recipient.customer_id = :recipient_customer_id
-      AND pix.transaction_date <= :t
 """)
 
 _PAIR_QUERY = text("""
     SELECT count(*) FILTER (WHERE pix.status_id = :approved) AS prior_approved,
-           floor(EXTRACT(EPOCH FROM (:t - min(pix.transaction_date) FILTER (WHERE pix.status_id = :approved)))
-                 / 86400)::integer AS first_approved_days_ago,
+           min(pix.transaction_date) FILTER (WHERE pix.status_id = :approved) AS first_approved_at,
            count(*) FILTER (WHERE pix.status_id IN (:rejected, :two_factor_required)
                               AND pix.transaction_date > :anomaly_since) > 0 AS recent_anomaly
     FROM account payer
@@ -168,35 +211,10 @@ _PAIR_QUERY = text("""
 
 
 class PixHistoryRepository:
-    """O histórico que o motor lê, contado pelo banco.
-
-    Os quatro métodos são os quatro grupos do Context do motor — pagador,
-    aparelho, recebedor e o par — e cada um é UMA ida ao banco. Os campos
-    das dataclasses têm os nomes do Context, um a um, na mesma ordem: o
-    controller converte com PayerHistory(**asdict(payer_features)).
-
-    As definições valem pros quatro. O Pix atual nunca está aqui: ele só é
-    gravado depois da decisão. Anterior é o que já está gravado com
-    transaction_date até t, inclusive, sendo t o transaction_date do Pix
-    atual. A janela "nos últimos X" é (t − X, t]. Pagador e recebedor são
-    o DOCUMENTO, com todas as contas do customer, achadas por
-    account_customer_id_idx; o Pix chega pelos índices (eixo,
-    transaction_date). Dia é o dia civil de São Paulo, cortado no próprio
-    SQL com AT TIME ZONE — o banco roda em UTC, e um Pix às 22h de São
-    Paulo já é o dia seguinte lá.
-
-    O repository não decide limiar: as janelas chegam como timedelta, e o
-    que fazer com cada contagem é com o motor.
-
-    O SQL está escrito à mão, e não na API de expressões do SQLAlchemy.
-    São contagens com FILTER, mediana com WITHIN GROUP e conjuntos com
-    UNION e EXCEPT; a mediana com FILTER nem tem como ser escrita pela API
-    na versão 2.0.23. Lido como SQL, cada agregado bate com uma linha da
-    tabela de features.
-    """
+    """As quatro consultas de histórico, uma por grupo do Context do motor."""
 
     def __init__(self, context: Context) -> None:
-        self.session = context.get_or_create_session()
+        self.session = context.db_session
         self.pix_transaction_repository = PixTransactionRepository(context)
 
     def get_payer_features(
@@ -210,39 +228,29 @@ class PixHistoryRepository:
         attempts_window: timedelta,
         amount_window: timedelta,
         new_destinations_window: timedelta,
-    ) -> PayerFeatures:
+    ) -> PayerHistory:
         """O pagador: os Pix anteriores de todas as contas do documento.
 
-        As contagens de rajada e de montante (attempts_5m, amount_1h,
-        device_day_amount) pegam qualquer status: a rajada em si é o sinal,
-        e contar só approved esconderia o invasor que insiste depois do
-        primeiro 2FA. Já o que diz como este cliente é — aparelho e IP
-        conhecidos, a mediana, os dias com Pix aprovado — só aprende com
-        approved. Um 2FA que ninguém confirmou não pode ensinar ao motor
-        que o aparelho é do cliente, senão a segunda tentativa do invasor
-        passa limpa.
-
-        new_destinations_10m já inclui o recebedor atual, se ele for
-        inédito, e conta uma vez só quem aparece mais de uma vez na janela.
+        O porquê de cada campo está no PayerHistory, no contrato do motor.
         """
-        t = _as_utc(transaction_date)
         row = self.session.execute(_PAYER_QUERY, {
             "payer_customer_id": payer_customer_id,
             "recipient_customer_id": recipient_customer_id,
             "device_id": device_id,
             "ip": ip,
-            "t": t,
-            "attempts_since": t - attempts_window,
-            "amount_since": t - amount_window,
-            "new_destinations_since": t - new_destinations_window,
+            "t": transaction_date,
+            "attempts_since": transaction_date - attempts_window,
+            "amount_since": transaction_date - amount_window,
+            "new_destinations_since": transaction_date - new_destinations_window,
             "approved": self.pix_transaction_repository.get_status_id(PixTransactionStatus.APPROVED),
+            "local_timezone": LOCAL_TIMEZONE.key,
         }).one()
 
-        # Repare no int() das duas somas. sum de BIGINT volta numeric, que
-        # chega como Decimal — e Decimal na evidência de um sinal quebra o
-        # JSON da resposta. A conversão fica aqui, e não num CAST no SQL,
-        # porque dois Pix no teto do BIGINT somados estourariam o BIGINT.
-        return PayerFeatures(
+        # Repare no int() das duas somas: sum de BIGINT volta numeric, que
+        # chega como Decimal, e o contrato pede int. A conversão fica aqui,
+        # e não num CAST no SQL, porque dois Pix no teto do BIGINT somados
+        # estourariam o BIGINT.
+        return PayerHistory(
             prior_attempts=row.prior_attempts,
             prior_days=row.prior_days,
             device_known=row.device_known,
@@ -264,22 +272,16 @@ class PixHistoryRepository:
         payer_customer_id: int,
         transaction_date: datetime,
         payers_window: timedelta,
-    ) -> DeviceFeatures:
-        """O aparelho, de qualquer pagador.
-
-        distinct_payers_24h já conta o pagador atual — a pergunta do P08 é
-        "quantos documentos pagaram por este aparelho, contando este?". O
-        UNION com o atual não conta duas vezes quem já está na janela.
-        """
-        t = _as_utc(transaction_date)
+    ) -> DeviceHistory:
+        """O aparelho, de qualquer pagador. Os porquês estão no DeviceHistory, no contrato do motor."""
         row = self.session.execute(_DEVICE_QUERY, {
             "device_id": device_id,
             "payer_customer_id": payer_customer_id,
-            "t": t,
-            "payers_since": t - payers_window,
+            "t": transaction_date,
+            "payers_since": transaction_date - payers_window,
         }).one()
 
-        return DeviceFeatures(
+        return DeviceHistory(
             prior_attempts=row.prior_attempts,
             distinct_payers_24h=row.distinct_payers_24h,
         )
@@ -292,22 +294,26 @@ class PixHistoryRepository:
         transaction_date: datetime,
         attempts_window: timedelta,
         payers_window: timedelta,
-    ) -> RecipientFeatures:
-        """O recebedor, pelo documento: o laranja com três contas em três bancos é um recebedor só.
+        attempts_cap: int,
+        days_cap: int,
+    ) -> RecipientHistory:
+        """O recebedor, pelo documento, com teto em prior_attempts e prior_days.
 
-        distinct_payers_1h já conta o pagador atual, como no aparelho;
-        attempts_10m não conta o Pix atual, que o motor soma uma vez.
+        Os tetos chegam como as janelas, por parâmetro. Onde cabe teto, e
+        por quê, o RecipientHistory diz, no contrato do motor.
         """
-        t = _as_utc(transaction_date)
         row = self.session.execute(_RECIPIENT_QUERY, {
             "recipient_customer_id": recipient_customer_id,
             "payer_customer_id": payer_customer_id,
-            "t": t,
-            "attempts_since": t - attempts_window,
-            "payers_since": t - payers_window,
+            "t": transaction_date,
+            "attempts_since": transaction_date - attempts_window,
+            "payers_since": transaction_date - payers_window,
+            "attempts_cap": attempts_cap,
+            "days_cap": days_cap,
+            "local_timezone": LOCAL_TIMEZONE.key,
         }).one()
 
-        return RecipientFeatures(
+        return RecipientHistory(
             prior_attempts=row.prior_attempts,
             prior_days=row.prior_days,
             attempts_10m=row.attempts_10m,
@@ -321,36 +327,27 @@ class PixHistoryRepository:
         recipient_customer_id: int,
         transaction_date: datetime,
         anomaly_window: timedelta,
-    ) -> PairFeatures:
+    ) -> PairHistory:
         """O par pagador→recebedor, documento a documento.
 
-        first_approved_days_ago conta dias de 24 h, como a idade das
-        contas, e não dias de calendário: de segunda às 23h59 até terça às
-        0h01 é zero. Sem nenhum approved no par, sai None. recent_anomaly
-        olha só rejected e two_factor_required — o próprio motor ter
-        desconfiado do par há pouco.
+        O SQL devolve o primeiro approved do par, e os dias saem aqui, com
+        a conta da idade das contas: (transaction_date - primeiro).days.
+        Sem nenhum approved no par, None.
         """
-        t = _as_utc(transaction_date)
         status_id = self.pix_transaction_repository.get_status_id
         row = self.session.execute(_PAIR_QUERY, {
             "payer_customer_id": payer_customer_id,
             "recipient_customer_id": recipient_customer_id,
-            "t": t,
-            "anomaly_since": t - anomaly_window,
+            "t": transaction_date,
+            "anomaly_since": transaction_date - anomaly_window,
             "approved": status_id(PixTransactionStatus.APPROVED),
             "rejected": status_id(PixTransactionStatus.REJECTED),
             "two_factor_required": status_id(PixTransactionStatus.TWO_FACTOR_REQUIRED),
         }).one()
 
-        return PairFeatures(
+        first_approved_at = row.first_approved_at
+        return PairHistory(
             prior_approved=row.prior_approved,
-            first_approved_days_ago=row.first_approved_days_ago,
+            first_approved_days_ago=None if first_approved_at is None else (transaction_date - first_approved_at).days,
             recent_anomaly=row.recent_anomaly,
         )
-
-
-def _as_utc(transaction_date: datetime) -> datetime:
-    # As janelas são subtraídas em UTC. Com um fuso que tem horário de
-    # verão (ZoneInfo), t − 1 h no Python é conta de relógio de parede e
-    # erra por uma hora na virada; em UTC não existe virada.
-    return transaction_date.astimezone(timezone.utc)

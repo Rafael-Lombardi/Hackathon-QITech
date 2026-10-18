@@ -9,13 +9,14 @@ from models import Account
 
 
 class AccountRepository:
-    """As contas, de origem e de destino, e a trava do Pix."""
+    """As contas, de origem e de destino."""
 
     def __init__(self, context: Context) -> None:
-        self.session = context.get_or_create_session()
+        self.session = context.db_session
 
     def get_or_create(
         self,
+        *,
         customer_id: int,
         participant: str | None,
         branch: str,
@@ -30,10 +31,12 @@ class AccountRepository:
         A busca precisa de um if. participant é None na conta de origem, e
         `participant = NULL` nunca é verdade em SQL: a conta não seria
         achada nunca, e todo Pix cairia no INSERT. IS NOT DISTINCT FROM
-        resolveria numa linha só, mas o Postgres não usa índice com ele —
-        cada Pix leria a tabela de contas inteira. IS NULL usa o índice do
-        UNIQUE. O ON CONFLICT dispensa o if: o UNIQUE é NULLS NOT DISTINCT,
-        e para ele None é igual a None.
+        resolveria as duas contas numa linha só, mas com um ISPB do lado
+        de lá o Postgres não usa índice — medido com 44 mil contas, a conta
+        de destino passa a ler a tabela inteira, 18 ms em vez de 0,1. Daí o
+        if: IS NULL na origem, = no destino, e as duas buscas entram pelo
+        índice do UNIQUE. O ON CONFLICT dispensa o if: o UNIQUE é NULLS NOT
+        DISTINCT, e para ele None é igual a None.
 
         E a linha volta como foi gravada na primeira vez. Se o payload
         trouxer outro customer ou outra opening_date para a mesma conta,
@@ -66,25 +69,3 @@ class AccountRepository:
             return created
 
         return self.session.scalars(by_identity).one()
-
-    def lock_for_pix(self, account_id: int) -> None:
-        """Trava a conta de origem até o fim da transação: SELECT ... FOR NO KEY UPDATE.
-
-        Dois Pix da mesma conta chegando juntos passam um de cada vez: o
-        segundo espera aqui o commit (ou o rollback) do primeiro e, quando
-        segue, já enxerga o Pix que o primeiro gravou. É o que faz as
-        contagens de rajada verem a tentativa anterior.
-
-        Repare no NO KEY. O INSERT de um Pix confere as duas FKs com um
-        FOR KEY SHARE nas contas, e um FOR UPDATE comum brigaria com ele:
-        Pix recebido por esta conta esperaria os enviados por ela, e dois
-        Pix cruzados (1 paga 4, 4 paga 1) dariam deadlock. Com NO KEY
-        UPDATE os dois convivem.
-
-        Só funciona em READ COMMITTED, o padrão. Em REPEATABLE READ a
-        segunda transação espera e mesmo assim lê o histórico de antes da
-        espera.
-        """
-        self.session.execute(
-            select(Account.id).where(Account.id == account_id).with_for_update(key_share=True)
-        ).scalar_one()

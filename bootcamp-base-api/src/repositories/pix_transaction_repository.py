@@ -1,7 +1,7 @@
 from uuid import uuid4
 
 from sqlalchemy import insert, select
-from sqlalchemy.orm import contains_eager, joinedload
+from sqlalchemy.orm import joinedload
 
 from database import Context
 from models import PixSignalStatus, PixTransaction, PixTransactionRuleResult, PixTransactionStatus
@@ -16,13 +16,12 @@ class PixTransactionRepository:
 
     # Os ids das tabelas-enum, por enumerator. Vão pra memória na primeira
     # consulta e ficam lá, compartilhados por todas as requisições do
-    # processo: eles não mudam depois do INSERT do database.sql, e uma
-    # base recriada do zero gera os mesmos.
+    # processo: eles não mudam depois do INSERT do database.sql.
     _status_ids: dict[str, int] = {}
     _signal_status_ids: dict[str, int] = {}
 
     def __init__(self, context: Context) -> None:
-        self.session = context.get_or_create_session()
+        self.session = context.db_session
 
     def get_by_external_id(self, external_id: str) -> PixTransaction | None:
         """O Pix pelo id do payload — a idempotência do POST e o {id} do GET.
@@ -32,7 +31,7 @@ class PixTransactionRepository:
         """
         return self.session.scalars(
             select(PixTransaction)
-            .options(joinedload(PixTransaction.status))
+            .options(joinedload(PixTransaction.status, innerjoin=True))
             .where(PixTransaction.external_id == external_id)
         ).one_or_none()
 
@@ -61,6 +60,10 @@ class PixTransactionRepository:
         2.0. Um INSERT por sinal custaria o dobro: medido com 8 clientes,
         550 Pix por segundo em vez de 1.000.
         """
+        # Com a lista vazia, o SQLAlchemy mandaria um INSERT sem valores.
+        if not signals:
+            return
+
         rows = [{**signal, "pix_transaction_id": pix_transaction_id} for signal in signals]
         self.session.execute(insert(PixTransactionRuleResult), rows)
 
@@ -73,8 +76,7 @@ class PixTransactionRepository:
         """
         return list(self.session.scalars(
             select(PixTransactionRuleResult)
-            .join(PixTransactionRuleResult.signal_status)
-            .options(contains_eager(PixTransactionRuleResult.signal_status))
+            .options(joinedload(PixTransactionRuleResult.signal_status, innerjoin=True))
             .where(PixTransactionRuleResult.pix_transaction_id == pix_transaction_id)
             .order_by(PixTransactionRuleResult.id)
         ))
@@ -87,11 +89,19 @@ class PixTransactionRepository:
         """O id de um estado de sinal ("triggered", "not_triggered", "unavailable")."""
         return self._enum_ids(PixSignalStatus, PixTransactionRepository._signal_status_ids)[enumerator]
 
-    def _enum_ids(self, model: type[PixTransactionStatus] | type[PixSignalStatus], cache: dict[str, int]) -> dict[str, int]:
-        # Uma consulta traz a tabela inteira (são três linhas), e não só o
-        # enumerator pedido: assim o cache enche de uma vez. Enumerator que
-        # não existe vira KeyError — erro de programação, que tem de
+    def _enum_ids(
+        self,
+        model: type[PixTransactionStatus] | type[PixSignalStatus],
+        cache: dict[str, int],
+    ) -> dict[str, int]:
+        # Uma consulta traz a tabela inteira, que são três linhas. Repare
+        # que o dict fica pronto ANTES de entrar no cache, num update só:
+        # preenchido linha a linha, outra thread podia achar o cache pela
+        # metade e levar um KeyError — sem a extensão C do SQLAlchemy foram
+        # 400 leituras parciais em 884 mil. Enumerator que não existe
+        # também vira KeyError, mas aí é erro de programação, e tem de
         # aparecer alto.
         if not cache:
-            cache.update(self.session.execute(select(model.enumerator, model.id)).tuples().all())
+            rows = self.session.execute(select(model.enumerator, model.id)).tuples().all()
+            cache.update(dict(rows))
         return cache

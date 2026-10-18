@@ -23,7 +23,7 @@ class PixTransactionRuleResult(Base):
 
     rule_name é o código da regra (P03, REL02...), e o estado vem por
     signal_status. A tabela é só de INSERT: o PixTransactionRepository
-    grava os sinais de um Pix num comando só e os lê de volta na ordem em
+    grava os sinais de um Pix num INSERT só e os lê de volta na ordem em
     que gravou.
     """
 
